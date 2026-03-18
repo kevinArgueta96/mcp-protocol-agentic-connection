@@ -211,7 +211,10 @@ export class McpAgentBridge {
           agentId: z.string().describe("Target agent ID or name (from list_agents)"),
           message: z.string().describe("The message, question, or task to send"),
           skillId: z.string().optional().describe("Skill to invoke: file-search | endpoint-find | code-query | prompt-execute"),
-          input: z.record(z.unknown()).optional().describe("Direct skill input as JSON (overrides message parsing)"),
+          input: z.preprocess(
+            (v) => (typeof v === "string" ? JSON.parse(v) : v),
+            z.record(z.unknown()).optional()
+          ).describe("Direct skill input as JSON (overrides message parsing)"),
         },
       },
       async ({ agentId, message, skillId, input }) => {
@@ -372,7 +375,10 @@ export class McpAgentBridge {
       case "prompt-execute":
         return {
           template: z.string().describe("Prompt template with {{variable}} placeholders"),
-          variables: z.record(z.string()).optional().describe("Variables to inject"),
+          variables: z.preprocess(
+            (v) => (typeof v === "string" ? JSON.parse(v) : v),
+            z.record(z.string()).optional()
+          ).describe("Variables to inject"),
           instruction: z.string().optional().describe("What to do with this prompt"),
         };
       default:
