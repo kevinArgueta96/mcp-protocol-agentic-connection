@@ -60,6 +60,8 @@ export interface TraceEvent {
   stepName?: string;
   toolCallName?: string;
   toolCallArgs?: unknown;
+  clientId?: string;
+  clientName?: string;
 }
 
 export interface ChatMessage {
@@ -95,6 +97,8 @@ export interface TaskUpdatePayload {
   skillId?: string;
   timestamp: string;
   payload?: unknown;
+  clientId?: string;
+  clientName?: string;
 }
 
 export type ConnectionStatus = "connecting" | "connected" | "disconnected" | "error";

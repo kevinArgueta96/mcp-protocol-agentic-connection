@@ -1,72 +1,47 @@
 <template>
   <div
-    class="card p-3 cursor-pointer hover:border-white/10 transition-all fade-in"
-    :class="isClient
-      ? { 'border-violet-500/30': agent.healthy, 'border-red-500/20': !agent.healthy }
-      : { 'border-emerald-500/20': agent.healthy, 'border-red-500/20': !agent.healthy }"
+    class="sig-card fade-in"
+    :class="isClient ? (agent.healthy ? 'card-client-on' : 'card-off') : (agent.healthy ? 'card-agent-on' : 'card-off')"
+    style="padding:10px;cursor:pointer;"
     @click="expanded = !expanded"
   >
-    <!-- Header row -->
-    <div class="flex items-start justify-between gap-2">
-      <div class="flex items-center gap-2 min-w-0">
-        <HealthPulse :healthy="agent.healthy" />
-        <span class="font-mono text-xs font-semibold text-white truncate">{{ displayName }}</span>
-        <!-- Client badge -->
-        <span
-          v-if="isClient"
-          class="shrink-0 px-1 py-0.5 rounded text-[9px] font-mono font-semibold border border-violet-500/40 text-violet-400"
-        >
-          {{ clientLabel }}
-        </span>
-        <!-- Agent project type badge -->
-        <span
-          v-else
-          class="shrink-0 px-1 py-0.5 rounded text-[9px] font-mono font-semibold border"
-          :class="typeClass"
-        >
-          {{ typeBadge }}
-        </span>
-      </div>
-      <span v-if="!isClient" class="font-mono text-[10px] text-white/30 shrink-0">:{{ agent.port }}</span>
+    <!-- Row 1: health + name + type badge -->
+    <div style="display:flex;align-items:center;gap:8px;">
+      <HealthPulse :healthy="agent.healthy" />
+      <span style="font-size:11px;font-weight:600;color:var(--text);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;">{{ displayName }}</span>
+      <span class="chip" :class="isClient ? 'chip-violet' : typeChipClass" style="flex-shrink:0;">
+        {{ isClient ? clientLabel : typeBadge }}
+      </span>
     </div>
 
-    <!-- Heartbeat / path row -->
-    <div class="mt-1.5 flex items-center justify-between">
-      <span class="text-[10px] text-white/30 font-mono">
-        {{ relativeTime }}
+    <!-- Row 2: port / heartbeat + detail link -->
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:6px;">
+      <span style="font-size:10px;color:var(--text-dim);">
+        <span v-if="!isClient" style="color:var(--text-dim);">:{{ agent.port }} · </span>{{ relativeTime }}
       </span>
       <RouterLink
         v-if="!isClient"
         :to="`/agents/${agent.agentId}`"
-        class="text-[10px] text-white/30 hover:text-blue-400 transition-colors font-mono"
+        class="detail-link"
         @click.stop
       >
         detail →
       </RouterLink>
     </div>
 
-    <!-- Client: show project path as "connected from" -->
-    <div v-if="isClient" class="mt-1">
-      <span class="font-mono text-[9px] text-white/25 truncate block">{{ agent.projectPath }}</span>
+    <!-- Client: project path -->
+    <div v-if="isClient" style="margin-top:4px;overflow:hidden;">
+      <span style="font-size:10px;color:var(--text-dim);display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ agent.projectPath }}</span>
     </div>
 
-    <!-- Agent skills row -->
-    <div v-if="!isClient && agent.card.skills.length > 0" class="mt-2 flex flex-wrap gap-1">
-      <SkillBadge
-        v-for="skill in agent.card.skills.slice(0, 4)"
-        :key="skill.id"
-        :skill="skill"
-      />
-      <span
-        v-if="agent.card.skills.length > 4"
-        class="text-[10px] text-white/30 font-mono self-center"
-      >
-        +{{ agent.card.skills.length - 4 }}
-      </span>
+    <!-- Skills -->
+    <div v-if="!isClient && agent.card.skills.length > 0" style="margin-top:8px;display:flex;flex-wrap:wrap;gap:4px;">
+      <SkillBadge v-for="s in agent.card.skills.slice(0, 4)" :key="s.id" :skill="s" />
+      <span v-if="agent.card.skills.length > 4" style="font-size:10px;color:var(--text-dim);align-self:center;">+{{ agent.card.skills.length - 4 }}</span>
     </div>
 
-    <!-- Expanded: full JSON -->
-    <div v-if="expanded" class="mt-3 pt-3 border-t border-white/5">
+    <!-- Expanded JSON -->
+    <div v-if="expanded" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border-dim);">
       <PayloadViewer :data="agentJson" />
     </div>
   </div>
@@ -84,41 +59,30 @@ import type { RegistryAgent } from "@/types";
 
 const CLIENT_LABELS: Record<string, string> = {
   "claude-code": "Claude Code",
-  "claude": "Claude",
-  "codex": "Codex CLI",
-  "gemini-cli": "Gemini CLI",
-  "cursor": "Cursor",
-  "copilot": "Copilot",
+  "claude":      "Claude",
+  "codex":       "Codex CLI",
+  "gemini-cli":  "Gemini CLI",
+  "cursor":      "Cursor",
+  "copilot":     "Copilot",
+};
+const TYPE_CHIP: Record<string, string> = {
+  node: "type-node", rust: "type-rust", go: "type-go",
+  python: "type-python", java: "type-java", unknown: "type-unknown",
 };
 
 const props = defineProps<{ agent: RegistryAgent }>();
 const expanded = ref(false);
-
 const isClient = computed(() => props.agent.entryType === "client");
 const clientLabel = computed(() => CLIENT_LABELS[props.agent.clientInfo?.clientName ?? ""] ?? props.agent.clientInfo?.clientName ?? "AI Client");
 const displayName = computed(() => isClient.value ? clientLabel.value : props.agent.projectName);
-
 const relativeTime = useTimeAgo(computed(() => new Date(props.agent.lastHeartbeat)));
-
 const typeBadge = computed(() => projectTypeBadge(props.agent.projectType));
-
-const typeClass = computed(() => {
-  const map: Record<string, string> = {
-    node: "border-yellow-500/40 text-yellow-400",
-    rust: "border-orange-500/40 text-orange-400",
-    go: "border-cyan-500/40 text-cyan-400",
-    python: "border-blue-500/40 text-blue-400",
-    java: "border-red-500/40 text-red-400",
-    unknown: "border-white/20 text-white/40",
-  };
-  return map[props.agent.projectType] ?? map.unknown;
-});
+const typeChipClass = computed(() => TYPE_CHIP[props.agent.projectType] ?? "type-unknown");
 
 const agentJson = computed(() => ({
   agentId: props.agent.agentId,
   name: props.agent.name,
   url: props.agent.url,
-  wsUrl: props.agent.wsUrl,
   projectPath: props.agent.projectPath,
   projectType: props.agent.projectType,
   healthy: props.agent.healthy,
@@ -126,7 +90,19 @@ const agentJson = computed(() => ({
   lastHeartbeat: new Date(props.agent.lastHeartbeat).toISOString(),
   ...(isClient.value
     ? { clientInfo: props.agent.clientInfo }
-    : { skills: props.agent.card.skills.map((s) => s.id) }
-  ),
+    : { skills: props.agent.card.skills.map((s) => s.id) }),
 }));
 </script>
+
+<style scoped>
+.card-agent-on  { border-color: color-mix(in srgb, var(--emerald) 25%, var(--border-dim)); }
+.card-client-on { border-color: color-mix(in srgb, var(--indigo)  25%, var(--border-dim)); }
+.card-off       { border-color: color-mix(in srgb, var(--red)     20%, var(--border-dim)); }
+.detail-link {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-decoration: none;
+  transition: color 0.15s;
+}
+.detail-link:hover { color: var(--sky); }
+</style>

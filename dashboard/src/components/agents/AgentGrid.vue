@@ -1,55 +1,47 @@
 <template>
-  <div class="flex flex-col h-full min-h-0">
-    <!-- Panel header -->
-    <div class="flex items-center justify-between px-3 py-2 border-b border-white/5 shrink-0">
-      <span class="font-mono text-[10px] text-white/40 uppercase tracking-wider">Agents</span>
-      <span class="font-mono text-[10px] text-white/30">{{ agentList.length }} registered</span>
+  <div class="panel" style="--panel-color: var(--indigo);">
+
+    <div class="panel-header">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span class="panel-label">Agents</span>
+        <span class="panel-sublabel">registry</span>
+      </div>
+      <span style="font-size:10px;color:var(--text-dim);">{{ agentList.length }}</span>
     </div>
 
-    <!-- Empty state -->
-    <div
-      v-if="agentList.length === 0"
-      class="flex flex-col items-center justify-center h-full text-center px-6"
-    >
-      <div class="w-8 h-8 rounded-full border border-white/10 flex items-center justify-center mb-3">
-        <span class="text-white/20 font-mono text-sm">?</span>
+    <!-- Empty -->
+    <div v-if="agentList.length === 0" style="display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:12px;padding:24px;text-align:center;">
+      <div style="width:32px;height:32px;border-radius:50%;border:1px solid var(--border-mid);display:flex;align-items:center;justify-content:center;">
+        <span style="font-size:14px;color:var(--text-ghost);">⬡</span>
       </div>
-      <p class="text-white/30 text-xs font-mono">No agents connected</p>
-      <p class="text-white/20 text-[10px] mt-1 font-mono">
-        Run <span class="text-white/40">agent-bridge start .</span>
-      </p>
+      <div>
+        <p style="font-size:11px;color:var(--text-mid);font-weight:600;margin:0 0 4px;">No agents connected</p>
+        <p style="font-size:10px;color:var(--text-ghost);margin:0;">Run <span style="color:var(--text-dim);">agent-bridge start .</span></p>
+      </div>
     </div>
 
-    <div v-else class="flex-1 overflow-y-auto p-3 flex flex-col gap-3">
-      <!-- AI Clients section -->
-      <div v-if="clientList.length > 0">
-        <div class="flex items-center gap-1.5 mb-2">
-          <span class="font-mono text-[9px] text-violet-400/70 uppercase tracking-wider">Clients</span>
-          <span class="font-mono text-[9px] text-white/20">{{ clientList.length }}</span>
+    <div v-else class="scrollable" style="padding:10px;display:flex;flex-direction:column;gap:10px;">
+      <!-- AI Clients -->
+      <section v-if="clientList.length > 0">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:0 2px;margin-bottom:6px;">
+          <span style="font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:var(--indigo);">● clients</span>
+          <span style="font-size:9px;color:var(--text-ghost);">{{ clientList.length }}</span>
         </div>
-        <div class="flex flex-col gap-2">
-          <AgentCard
-            v-for="agent in clientList"
-            :key="agent.agentId"
-            :agent="agent"
-          />
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          <AgentCard v-for="a in clientList" :key="a.agentId" :agent="a" />
         </div>
-      </div>
+      </section>
 
-      <!-- Skill Agents section -->
-      <div v-if="skillAgentList.length > 0">
-        <div class="flex items-center gap-1.5 mb-2" :class="clientList.length > 0 ? 'mt-1' : ''">
-          <span class="font-mono text-[9px] text-white/40 uppercase tracking-wider">Skill Agents</span>
-          <span class="font-mono text-[9px] text-white/20">{{ skillAgentList.length }}</span>
+      <!-- Skill Agents -->
+      <section v-if="skillAgentList.length > 0">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:0 2px;margin-bottom:6px;">
+          <span style="font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-mid);">◈ skill agents</span>
+          <span style="font-size:9px;color:var(--text-ghost);">{{ skillAgentList.length }}</span>
         </div>
-        <div class="flex flex-col gap-2">
-          <AgentCard
-            v-for="agent in skillAgentList"
-            :key="agent.agentId"
-            :agent="agent"
-          />
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          <AgentCard v-for="a in skillAgentList" :key="a.agentId" :agent="a" />
         </div>
-      </div>
+      </section>
     </div>
   </div>
 </template>

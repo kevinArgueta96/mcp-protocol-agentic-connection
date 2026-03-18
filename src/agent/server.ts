@@ -166,51 +166,54 @@ export class AgentServer {
         };
         const skillId = inferSkillFromMessage(fakeParams);
 
-        if (skillId && ctx.skillRegistry.get(skillId)) {
-          const skill = ctx.skillRegistry.get(skillId)!;
-          const taskId = uuid();
-          const skillCtx = makeSkillContext(ctx.agentId, taskId, ctx.projectPath);
-          const rawInput = parseInputFromMessage(fakeParams);
-          const parsed = skill.inputSchema.safeParse(rawInput);
+        // For natural language: fall back to code-query with the full message as the search term
+        const resolvedSkillId = (skillId && ctx.skillRegistry.get(skillId))
+          ? skillId
+          : "code-query";
 
-          const toolCallId = uuid();
-          const parentMsgId = uuid();
+        const skill = ctx.skillRegistry.get(resolvedSkillId)!;
+        const taskId = uuid();
+        const skillCtx = makeSkillContext(ctx.agentId, taskId, ctx.projectPath);
 
-          emit(stepStarted(skillId));
-          emit(toolCallStart(toolCallId, skillId, parentMsgId));
-          emit(toolCallArgs(toolCallId, JSON.stringify(parsed.success ? parsed.data : rawInput)));
+        // For code-query fallback, use the full user text as the query
+        const rawInput = resolvedSkillId !== skillId
+          ? { query: userText }
+          : parseInputFromMessage(fakeParams);
 
-          // Create task trace event
-          ctx.taskStore.create({ message: fakeParams.message, metadata: { skillId } });
+        const parsed = skill.inputSchema.safeParse(rawInput);
 
-          let result: unknown;
-          if (parsed.success) {
-            result = await skill.execute(parsed.data, skillCtx);
-          } else {
-            result = { error: `Invalid input: ${parsed.error.message}` };
-          }
+        const toolCallId = uuid();
+        const parentMsgId = uuid();
 
-          if (aborted) return;
+        emit(stepStarted(resolvedSkillId));
+        emit(toolCallStart(toolCallId, resolvedSkillId, parentMsgId));
+        emit(toolCallArgs(toolCallId, JSON.stringify(parsed.success ? parsed.data : rawInput)));
 
-          emit(toolCallEnd(toolCallId));
-          emit(stepFinished(skillId));
+        ctx.taskStore.create({ message: fakeParams.message, metadata: { skillId: resolvedSkillId } });
 
-          // Stream result as text message
-          const msgId = uuid();
-          const resultText = typeof result === "string" ? result : JSON.stringify(result, null, 2);
-          emit(textMessageStart(msgId));
-          emit(textMessageContent(msgId, resultText));
-          emit(textMessageEnd(msgId));
+        let result: unknown;
+        if (parsed.success) {
+          result = await skill.execute(parsed.data, skillCtx);
         } else {
-          // No skill — stream a default response
-          const msgId = uuid();
-          const defaultText = skillId
-            ? `Skill "${skillId}" not found. Available: ${ctx.skillRegistry.list().map((s) => s.id).join(", ")}`
-            : `No skill matched. Available skills: ${ctx.skillRegistry.list().map((s) => s.id).join(", ")}. Try asking about endpoints, files, or code.`;
-          emit(textMessageStart(msgId));
-          emit(textMessageContent(msgId, defaultText));
-          emit(textMessageEnd(msgId));
+          result = { error: `Invalid input: ${parsed.error.message}` };
         }
+
+        if (aborted) return;
+
+        emit(toolCallEnd(toolCallId));
+        emit(stepFinished(resolvedSkillId));
+
+        // Stream result as text message
+        const msgId = uuid();
+        const resultText = typeof result === "string" ? result : JSON.stringify(result, null, 2);
+        if (!resultText) {
+          emit(runError("Empty result from skill"));
+          res.end();
+          return;
+        }
+        emit(textMessageStart(msgId));
+        emit(textMessageContent(msgId, resultText));
+        emit(textMessageEnd(msgId));
 
         emit(runFinished(threadId, runId));
       } catch (err: unknown) {

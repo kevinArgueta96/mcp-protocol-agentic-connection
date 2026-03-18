@@ -1,48 +1,52 @@
 <template>
-  <header class="flex items-center justify-between px-4 h-10 border-b border-white/5 bg-[#0a0e14] shrink-0">
-    <!-- Left: brand -->
-    <div class="flex items-center gap-3">
-      <span class="font-mono text-xs font-semibold text-emerald-400 tracking-wider uppercase">
-        agent-bridge
-      </span>
-      <span class="text-white/20 text-xs">|</span>
-      <span class="text-white/40 text-xs">mission control</span>
+  <header style="display:flex;align-items:center;justify-content:space-between;padding:0 16px;height:40px;background:var(--surface-0);border-bottom:1px solid var(--border-dim);flex-shrink:0;">
+
+    <!-- Brand -->
+    <div style="display:flex;align-items:center;gap:8px;">
+      <div style="display:flex;align-items:center;gap:2px;">
+        <span style="width:3px;height:10px;border-radius:1px;background:var(--sky);opacity:0.5;display:block;" />
+        <span style="width:3px;height:14px;border-radius:1px;background:var(--sky);opacity:0.8;display:block;" />
+        <span style="width:3px;height:10px;border-radius:1px;background:var(--sky);opacity:0.5;display:block;" />
+      </div>
+      <span style="font-size:13px;font-weight:700;color:var(--text);letter-spacing:0.02em;">agent-bridge</span>
+      <span style="font-size:10px;color:var(--text-dim);">/ mission control</span>
     </div>
 
-    <!-- Center: nav tabs -->
-    <nav class="flex items-center gap-1">
+    <!-- Nav -->
+    <nav style="display:flex;align-items:center;gap:4px;">
       <RouterLink
         v-for="tab in tabs"
         :key="tab.to"
         :to="tab.to"
-        class="px-3 py-1 rounded text-xs font-mono transition-colors"
-        :class="[$route.path === tab.to ? 'bg-white/8 text-white' : 'text-white/40 hover:text-white/70']"
+        class="nav-tab"
+        :class="$route.path === tab.to ? 'nav-tab--active' : ''"
       >
         {{ tab.label }}
       </RouterLink>
     </nav>
 
-    <!-- Right: status indicators -->
-    <div class="flex items-center gap-4">
-      <!-- WS status -->
-      <div class="flex items-center gap-1.5">
+    <!-- Status -->
+    <div style="display:flex;align-items:center;gap:16px;">
+      <div style="display:flex;align-items:center;gap:6px;">
         <span
-          class="w-1.5 h-1.5 rounded-full"
+          class="health-dot"
           :class="{
-            'bg-emerald-400 pulse-healthy': status === 'connected',
-            'bg-amber-400 pulse-working': status === 'connecting',
-            'bg-red-400': status === 'disconnected' || status === 'error',
+            'pulse-healthy': status === 'connected',
+            'pulse-working': status === 'connecting',
+            'pulse-error':   status === 'disconnected' || status === 'error',
+          }"
+          :style="{
+            background: status === 'connected' ? 'var(--emerald)' :
+                        status === 'connecting' ? 'var(--amber)' : 'var(--red)'
           }"
         />
-        <span class="font-mono text-xs text-white/40">{{ statusLabel }}</span>
+        <span style="font-size:10px;color:var(--text-dim);">{{ statusLabel }}</span>
       </div>
-
-      <!-- Agent count -->
-      <div class="flex items-center gap-1.5 font-mono text-xs">
-        <span class="text-white/40">agents</span>
-        <span class="text-emerald-400 font-semibold">{{ healthyCount }}</span>
-        <span class="text-white/20">/</span>
-        <span class="text-white/60">{{ agentCount }}</span>
+      <div style="display:flex;align-items:center;gap:4px;font-size:10px;">
+        <span style="color:var(--text-dim);">agents</span>
+        <span style="color:var(--emerald);font-weight:700;">{{ healthyCount }}</span>
+        <span style="color:var(--text-ghost);">/</span>
+        <span style="color:var(--text-mid);">{{ agentCount }}</span>
       </div>
     </div>
   </header>
@@ -60,17 +64,31 @@ const status = computed(() => store.status);
 const agentCount = computed(() => store.agentCount);
 const healthyCount = computed(() => store.healthyCount);
 
-const statusLabel = computed(() => {
-  const map: Record<string, string> = {
-    connected: "live",
-    connecting: "connecting...",
-    disconnected: "offline",
-    error: "error",
-  };
-  return map[status.value] ?? status.value;
-});
+const statusLabel = computed(() => ({
+  connected: "live",
+  connecting: "connecting…",
+  disconnected: "offline",
+  error: "error",
+}[status.value] ?? status.value));
 
-const tabs = [
-  { to: "/", label: "dashboard" },
-];
+const tabs = [{ to: "/", label: "dashboard" }];
 </script>
+
+<style scoped>
+.nav-tab {
+  padding: 3px 10px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-dim);
+  text-decoration: none;
+  transition: color 0.15s, background 0.15s;
+  border: 1px solid transparent;
+}
+.nav-tab:hover { color: var(--text-mid); }
+.nav-tab--active {
+  color: var(--text);
+  background: var(--surface-2);
+  border-color: var(--border-mid);
+}
+</style>

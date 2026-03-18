@@ -1,42 +1,68 @@
 <template>
-  <div class="flex items-center gap-2 px-3 py-2 border-b border-white/5 shrink-0">
-    <span class="font-mono text-[10px] text-white/40 uppercase tracking-wider shrink-0">Filter</span>
+  <div style="display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid var(--border-dim);flex-shrink:0;flex-wrap:wrap;background:color-mix(in srgb,var(--surface-1) 50%,transparent);">
 
     <!-- Agent filter -->
-    <select
-      class="flex-1 bg-white/5 border border-white/10 rounded px-2 py-0.5 text-[10px] font-mono text-white/60 focus:outline-none focus:border-white/20"
-      :value="filters.agentId ?? ''"
-      @change="(e) => store.setFilter('agentId', (e.target as HTMLSelectElement).value)"
-    >
-      <option value="">all agents</option>
-      <option v-for="agent in agentList" :key="agent.agentId" :value="agent.agentId">
-        {{ agent.projectName }}
-      </option>
-    </select>
+    <div style="display:flex;align-items:center;gap:4px;">
+      <label style="font-size:9px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--text-ghost);flex-shrink:0;">agent</label>
+      <div style="position:relative;display:inline-flex;align-items:center;">
+        <select
+          class="sig-select"
+          style="padding:3px 18px 3px 7px;height:24px;"
+          :value="filters.agentId ?? ''"
+          @change="(e) => store.setFilter('agentId', (e.target as HTMLSelectElement).value)"
+        >
+          <option value="">all</option>
+          <option v-for="a in agentList" :key="a.agentId" :value="a.agentId">{{ a.projectName }}</option>
+        </select>
+        <span style="position:absolute;right:4px;pointer-events:none;font-size:8px;color:var(--text-ghost);">▾</span>
+      </div>
+    </div>
 
     <!-- State filter -->
-    <select
-      class="flex-1 bg-white/5 border border-white/10 rounded px-2 py-0.5 text-[10px] font-mono text-white/60 focus:outline-none focus:border-white/20"
-      :value="filters.state ?? ''"
-      @change="(e) => store.setFilter('state', (e.target as HTMLSelectElement).value as TaskState)"
-    >
-      <option value="">all states</option>
-      <option v-for="s in states" :key="s" :value="s">{{ s }}</option>
-    </select>
+    <div style="display:flex;align-items:center;gap:4px;">
+      <label style="font-size:9px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--text-ghost);flex-shrink:0;">state</label>
+      <div style="position:relative;display:inline-flex;align-items:center;">
+        <select
+          class="sig-select"
+          style="padding:3px 18px 3px 7px;height:24px;"
+          :value="filters.state ?? ''"
+          @change="(e) => store.setFilter('state', (e.target as HTMLSelectElement).value as TaskState)"
+        >
+          <option value="">all</option>
+          <option v-for="s in states" :key="s" :value="s">{{ s }}</option>
+        </select>
+        <span style="position:absolute;right:4px;pointer-events:none;font-size:8px;color:var(--text-ghost);">▾</span>
+      </div>
+    </div>
 
-    <!-- Clear -->
-    <button
-      v-if="hasFilters"
-      class="text-[10px] font-mono text-white/30 hover:text-white/60 transition-colors shrink-0"
-      @click="store.clearFilters()"
-    >
-      clear
-    </button>
+    <!-- Client filter -->
+    <div v-if="clientList.length > 0" style="display:flex;align-items:center;gap:4px;">
+      <label style="font-size:9px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--text-ghost);flex-shrink:0;">client</label>
+      <div style="position:relative;display:inline-flex;align-items:center;">
+        <select
+          class="sig-select"
+          style="padding:3px 18px 3px 7px;height:24px;"
+          :value="filters.clientId ?? ''"
+          @change="(e) => store.setFilter('clientId', (e.target as HTMLSelectElement).value)"
+        >
+          <option value="">all</option>
+          <option v-for="c in clientList" :key="c.agentId" :value="c.agentId">{{ c.clientInfo?.clientName ?? c.name }}</option>
+        </select>
+        <span style="position:absolute;right:4px;pointer-events:none;font-size:8px;color:var(--text-ghost);">▾</span>
+      </div>
+    </div>
 
-    <!-- Event count -->
-    <span class="font-mono text-[10px] text-white/30 shrink-0 ml-auto">
-      {{ filteredCount }}/{{ totalCount }}
-    </span>
+    <!-- Clear + count -->
+    <div style="display:flex;align-items:center;gap:8px;margin-left:auto;">
+      <button v-if="hasFilters" class="btn-ghost" style="padding:2px 6px;font-size:9px;" @click="store.clearFilters()">
+        ✕ clear
+      </button>
+      <span style="font-size:10px;font-weight:600;font-variant-numeric:tabular-nums;">
+        <span :style="{ color: hasFilters ? 'var(--sky)' : 'var(--text-dim)' }">{{ filteredCount }}</span>
+        <span style="color:var(--text-ghost);">/{{ totalCount }}</span>
+      </span>
+    </div>
+
   </div>
 </template>
 
@@ -50,8 +76,9 @@ const store = useTraceStore();
 const registryStore = useRegistryStore();
 
 const filters = computed(() => store.filters);
-const agentList = computed(() => registryStore.agentList);
-const hasFilters = computed(() => !!(filters.value.agentId || filters.value.state || filters.value.skillId));
+const agentList = computed(() => registryStore.agentList.filter((a) => a.entryType !== "client"));
+const clientList = computed(() => registryStore.agentList.filter((a) => a.entryType === "client"));
+const hasFilters = computed(() => !!(filters.value.agentId || filters.value.state || filters.value.skillId || filters.value.clientId));
 const filteredCount = computed(() => store.filteredEvents.length);
 const totalCount = computed(() => store.events.length);
 

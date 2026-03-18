@@ -12,6 +12,7 @@
 
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { RegistryClient } from "../client/registry-client.js";
 import { A2AClient } from "../client/a2a-client.js";
@@ -304,6 +305,8 @@ export class McpAgentBridge {
         try {
           const entry = await this.resolveAgent(agentId);
           const client = new A2AClient(entry.url);
+          const taskId = randomUUID();
+          await this.emitTraceEvent({ agentId: entry.agentId, agentName: entry.name, taskId, state: "submitted", skillId });
           const task = await client.sendTask({
             message: { role: "user", parts: [{ type: "text", text: message }] },
             metadata: {
@@ -311,6 +314,7 @@ export class McpAgentBridge {
               ...(input ? { input } : {}),
             },
           });
+          await this.emitTraceEvent({ agentId: entry.agentId, agentName: entry.name, taskId, state: "completed", skillId });
           const artifact = task.artifacts[0];
           if (artifact?.parts[0]?.type === "data") {
             return { content: [{ type: "text" as const, text: JSON.stringify(artifact.parts[0].data, null, 2) }] };
@@ -412,10 +416,13 @@ export class McpAgentBridge {
           async (input) => {
             try {
               const client = new A2AClient(agent.url);
+              const taskId = randomUUID();
+              await this.emitTraceEvent({ agentId: agent.agentId, agentName: agent.name, taskId, state: "submitted", skillId: skill.id });
               const task = await client.sendTask({
                 message: { role: "user", parts: [{ type: "text", text: JSON.stringify(input) }] },
                 metadata: { skillId: skill.id, input },
               });
+              await this.emitTraceEvent({ agentId: agent.agentId, agentName: agent.name, taskId, state: "completed", skillId: skill.id });
               const artifact = task.artifacts[0];
               const data = artifact?.parts[0];
               if (data?.type === "data") {
@@ -552,6 +559,37 @@ export class McpAgentBridge {
         }],
       })
     );
+  }
+
+  // ── Trace helpers ──────────────────────────────────────────────────────────
+
+  private getClientDisplayName(): string {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const innerServer = (this.server as unknown as { server: any }).server;
+    return innerServer?.getClientVersion?.()?.name ?? "unknown";
+  }
+
+  private async emitTraceEvent(params: {
+    agentId: string;
+    agentName: string;
+    taskId: string;
+    state: string;
+    skillId?: string;
+  }): Promise<void> {
+    if (!this.clientAgentId) return;
+    const clientName = this.getClientDisplayName();
+    try {
+      await fetch(`${this.options.registryUrl}/events`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...params,
+          timestamp: new Date().toISOString(),
+          clientId: this.clientAgentId,
+          clientName,
+        }),
+      });
+    } catch { /* ignore */ }
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────────

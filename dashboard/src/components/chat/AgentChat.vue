@@ -1,89 +1,66 @@
 <template>
-  <div class="flex flex-col h-full min-h-0">
-    <!-- Panel header -->
-    <div class="flex items-center justify-between px-3 py-2 border-b border-white/5 shrink-0">
-      <span class="font-mono text-[10px] text-white/40 uppercase tracking-wider">Chat</span>
-      <button
-        v-if="messages.length > 0"
-        class="text-[9px] font-mono text-white/20 hover:text-white/50 transition-colors"
-        @click="chatStore.clearMessages()"
-      >
+  <div class="panel" style="--panel-color: var(--emerald);">
+
+    <div class="panel-header">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span class="panel-label">Chat</span>
+        <span class="panel-sublabel">ask an agent</span>
+      </div>
+      <button v-if="messages.length > 0" class="btn-ghost" style="font-size:9px;padding:1px 6px;" @click="chatStore.clearMessages()">
         clear
       </button>
     </div>
 
     <!-- Agent selector -->
-    <div class="px-3 pt-2 pb-2 border-b border-white/5 shrink-0">
+    <div style="padding:7px 10px;border-bottom:1px solid var(--border-dim);flex-shrink:0;">
       <AgentSelector />
     </div>
 
-    <!-- No agent selected state -->
-    <div
-      v-if="!selectedAgent"
-      class="flex flex-col items-center justify-center flex-1 px-4 text-center"
-    >
-      <p class="text-white/25 text-xs font-mono">Select an agent to start chatting</p>
+    <!-- No agent selected -->
+    <div v-if="!selectedAgent" style="display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:8px;padding:16px;text-align:center;">
+      <span style="font-size:24px;opacity:0.08;">⬡</span>
+      <p style="font-size:11px;color:var(--text-mid);font-weight:600;margin:0;">Select an agent</p>
+      <p style="font-size:10px;color:var(--text-ghost);margin:0;">Choose a skill agent above to start chatting</p>
     </div>
 
     <!-- Messages -->
-    <div
-      v-else
-      ref="messagesEl"
-      class="flex-1 overflow-y-auto px-3 py-2 flex flex-col gap-3"
-    >
-      <div
-        v-if="messages.length === 0"
-        class="flex flex-col items-center justify-center h-full text-center"
-      >
-        <p class="text-white/25 text-xs font-mono">
-          Chatting with <span class="text-white/50">{{ selectedAgent.projectName }}</span>
+    <div v-else ref="messagesEl" class="scrollable" style="padding:10px;display:flex;flex-direction:column;gap:8px;">
+      <div v-if="messages.length === 0" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:80px;text-align:center;gap:6px;">
+        <p style="font-size:11px;color:var(--text-dim);margin:0;">
+          Chatting with <span style="color:var(--text);">{{ selectedAgent.projectName }}</span>
         </p>
-        <p class="text-white/15 text-[10px] mt-1 font-mono">
-          Try: "list files" or "find endpoints"
-        </p>
+        <p style="font-size:10px;color:var(--text-ghost);margin:0;">Try: "list files" · "find endpoints"</p>
       </div>
-
-      <ChatMessage
-        v-for="msg in messages"
-        :key="msg.id"
-        :message="msg"
-      />
+      <ChatMessage v-for="msg in messages" :key="msg.id" :message="msg" />
     </div>
 
-    <!-- Error banner -->
-    <div
-      v-if="error"
-      class="mx-3 mb-2 px-2 py-1.5 rounded border border-red-500/30 bg-red-500/10 text-[10px] font-mono text-red-400 shrink-0"
-    >
+    <!-- Error -->
+    <div v-if="error" style="margin:0 10px 6px;padding:6px 10px;border-radius:3px;border:1px solid color-mix(in srgb,var(--red) 40%,transparent);background:color-mix(in srgb,var(--red) 8%,transparent);font-size:10px;color:var(--red);flex-shrink:0;">
       {{ error }}
     </div>
 
     <!-- Input -->
-    <div class="px-3 pb-3 shrink-0">
-      <div class="flex items-end gap-2 bg-white/4 border border-white/10 rounded-lg px-3 py-2 focus-within:border-white/20 transition-colors">
+    <div style="padding:8px 10px 10px;flex-shrink:0;">
+      <div class="input-box" :class="{ 'input-box--focus': focused }">
         <textarea
           ref="inputEl"
           v-model="input"
           rows="1"
-          class="flex-1 bg-transparent text-xs font-mono text-white/80 placeholder-white/25 resize-none focus:outline-none"
-          placeholder="Send a message..."
+          class="chat-textarea"
+          placeholder="Send a message…"
           :disabled="!selectedAgent || isStreaming"
+          @focus="focused = true"
+          @blur="focused = false"
           @keydown.enter.exact.prevent="submit"
           @keydown.enter.shift.exact="() => {}"
           @input="autoResize"
         />
-        <button
-          class="shrink-0 w-6 h-6 rounded flex items-center justify-center transition-colors"
-          :class="canSend
-            ? 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30'
-            : 'bg-white/5 text-white/20 cursor-not-allowed'"
-          :disabled="!canSend"
-          @click="submit"
-        >
-          <span class="text-[10px]">↑</span>
+        <button class="send-btn" :class="canSend ? 'send-btn--on' : ''" :disabled="!canSend" @click="submit">
+          <span v-if="isStreaming" class="cursor-blink" style="font-size:9px;">■</span>
+          <span v-else>↑</span>
         </button>
       </div>
-      <p class="mt-1 text-[9px] text-white/20 font-mono">Enter to send · Shift+Enter for newline</p>
+      <p style="margin:4px 0 0;font-size:9px;color:var(--text-ghost);text-align:right;">Enter to send · Shift+Enter for newline</p>
     </div>
   </div>
 </template>
@@ -98,15 +75,13 @@ const chatStore = useChatStore();
 const input = ref("");
 const inputEl = ref<HTMLTextAreaElement | null>(null);
 const messagesEl = ref<HTMLElement | null>(null);
+const focused = ref(false);
 
 const messages = computed(() => chatStore.messages);
 const selectedAgent = computed(() => chatStore.selectedAgent);
 const isStreaming = computed(() => chatStore.isStreaming);
 const error = computed(() => chatStore.error);
-
-const canSend = computed(() =>
-  !!selectedAgent.value && !isStreaming.value && input.value.trim().length > 0
-);
+const canSend = computed(() => !!selectedAgent.value && !isStreaming.value && input.value.trim().length > 0);
 
 async function submit() {
   if (!canSend.value) return;
@@ -123,14 +98,60 @@ function autoResize() {
   inputEl.value.style.height = Math.min(inputEl.value.scrollHeight, 80) + "px";
 }
 
-// Scroll to bottom on new messages
-watch(
-  () => messages.value.length,
-  async () => {
-    await nextTick();
-    if (messagesEl.value) {
-      messagesEl.value.scrollTop = messagesEl.value.scrollHeight;
-    }
-  }
-);
+watch(() => messages.value.length, async () => {
+  await nextTick();
+  if (messagesEl.value) messagesEl.value.scrollTop = messagesEl.value.scrollHeight;
+});
 </script>
+
+<style scoped>
+.input-box {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  background: var(--surface-1);
+  border: 1px solid var(--border-mid);
+  border-radius: 4px;
+  padding: 7px 8px;
+  transition: border-color 0.15s;
+}
+.input-box--focus { border-color: var(--emerald); }
+.chat-textarea {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-family: var(--font);
+  font-size: 11px;
+  color: var(--text);
+  resize: none;
+  line-height: 1.5;
+  min-height: 18px;
+}
+.chat-textarea::placeholder { color: var(--text-dim); }
+.chat-textarea:disabled { opacity: 0.4; }
+.send-btn {
+  flex-shrink: 0;
+  width: 24px; height: 24px;
+  border-radius: 3px;
+  border: 1px solid var(--border-mid);
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font-family: var(--font);
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: not-allowed;
+  transition: all 0.15s;
+}
+.send-btn--on {
+  border-color: color-mix(in srgb, var(--emerald) 50%, transparent);
+  background: color-mix(in srgb, var(--emerald) 12%, transparent);
+  color: var(--emerald);
+  cursor: pointer;
+}
+.send-btn--on:hover {
+  background: color-mix(in srgb, var(--emerald) 20%, transparent);
+}
+</style>

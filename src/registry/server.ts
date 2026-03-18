@@ -106,7 +106,7 @@ export class RegistryServer {
 
     // Task lifecycle events from agents
     this.app.post("/events", (req, res) => {
-      const { agentId, agentName, taskId, state, skillId, timestamp, payload } = req.body as {
+      const { agentId, agentName, taskId, state, skillId, timestamp, payload, clientId, clientName } = req.body as {
         agentId: string;
         agentName: string;
         taskId: string;
@@ -114,12 +114,14 @@ export class RegistryServer {
         skillId?: string;
         timestamp: string;
         payload?: unknown;
+        clientId?: string;
+        clientName?: string;
       };
 
       const event: RegistryEvent = {
         type: "task.update",
         timestamp: timestamp ?? new Date().toISOString(),
-        data: { agentId, agentName, taskId, state, skillId, timestamp, payload },
+        data: { agentId, agentName, taskId, state, skillId, timestamp, payload, clientId, clientName },
       };
 
       this.eventBus.broadcast(event);

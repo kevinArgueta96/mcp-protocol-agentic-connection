@@ -11,6 +11,7 @@ export interface TraceFilters {
   agentId?: string;
   skillId?: string;
   state?: TaskState;
+  clientId?: string;
 }
 
 export const useTraceStore = defineStore("trace", () => {
@@ -39,6 +40,8 @@ export const useTraceStore = defineStore("trace", () => {
             state: msg.data.state,
             skillId: msg.data.skillId,
             payload: msg.data.payload,
+            clientId: msg.data.clientId,
+            clientName: msg.data.clientName,
             expanded: false,
           });
         }
@@ -74,6 +77,7 @@ export const useTraceStore = defineStore("trace", () => {
       if (filters.value.agentId && e.agentId !== filters.value.agentId) return false;
       if (filters.value.skillId && e.skillId !== filters.value.skillId) return false;
       if (filters.value.state && e.state !== filters.value.state) return false;
+      if (filters.value.clientId && e.clientId !== filters.value.clientId) return false;
       return true;
     });
   });

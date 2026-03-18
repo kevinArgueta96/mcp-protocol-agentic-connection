@@ -1,54 +1,34 @@
 <template>
-  <div
-    class="border-l-2 pl-3 py-2 pr-2 cursor-pointer hover:bg-white/2 transition-colors rounded-r"
-    :class="borderClass"
-    @click="store.toggleExpanded(event.id)"
-  >
-    <!-- Top row -->
-    <div class="flex items-center justify-between gap-2">
-      <div class="flex items-center gap-2 min-w-0">
-        <!-- State badge -->
-        <span
-          class="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-mono font-semibold border"
-          :class="stateClass"
-        >
-          {{ event.state }}
-        </span>
-        <!-- Agent name -->
-        <span class="font-mono text-[10px] text-white/60 truncate">{{ event.agentName }}</span>
-        <!-- Skill / step / tool badge -->
-        <span
-          v-if="badgeLabel"
-          class="shrink-0 text-[9px] font-mono px-1 rounded border"
-          :class="badgeClass"
-        >
-          {{ badgeLabel }}
-        </span>
-        <!-- Kind indicator -->
-        <span
-          v-if="event.kind && event.kind !== 'task'"
-          class="shrink-0 text-[8px] font-mono px-1 rounded"
-          :class="event.kind === 'ag-ui-tool' ? 'bg-violet-500/15 text-violet-400' : 'bg-cyan-500/15 text-cyan-400'"
-        >
-          {{ event.kind === "ag-ui-tool" ? "tool" : "step" }}
-        </span>
-      </div>
-      <!-- Timestamp -->
-      <span class="font-mono text-[9px] text-white/25 shrink-0">{{ formattedTime }}</span>
+  <div class="trace-entry fade-in" :class="borderClass" @click="store.toggleExpanded(event.id)">
+
+    <!-- Row 1: state + agent + badges + time -->
+    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+      <span class="state-badge" :class="`state-${event.state}`">{{ event.state }}</span>
+      <span style="font-size:10px;font-weight:600;color:var(--text);">{{ event.agentName }}</span>
+
+      <span v-if="badgeLabel" class="chip" :class="badgeChipClass">{{ badgeLabel }}</span>
+
+      <span v-if="event.kind && event.kind !== 'task'" class="chip" :class="event.kind === 'ag-ui-tool' ? 'chip-violet' : 'chip-cyan'">
+        {{ event.kind === "ag-ui-tool" ? "tool" : "step" }}
+      </span>
+
+      <span v-if="event.clientName" class="chip chip-violet" style="font-size:8px;">{{ event.clientName }}</span>
+
+      <span style="font-size:9px;color:var(--text-ghost);font-variant-numeric:tabular-nums;margin-left:auto;flex-shrink:0;">{{ formattedTime }}</span>
     </div>
 
-    <!-- Task / thread ID -->
-    <div class="mt-0.5">
-      <span class="font-mono text-[9px] text-white/25">{{ shortTaskId }}</span>
+    <!-- Row 2: task ID -->
+    <div style="margin-top:3px;">
+      <span style="font-size:9px;color:var(--text-ghost);font-variant-numeric:tabular-nums;">{{ shortTaskId }}</span>
     </div>
 
-    <!-- Tool call args (ag-ui-tool) -->
-    <div v-if="event.kind === 'ag-ui-tool' && event.toolCallArgs" class="mt-1">
-      <pre class="font-mono text-[9px] text-white/30 whitespace-pre-wrap break-all bg-white/2 rounded px-1.5 py-1">{{ argsPreview }}</pre>
+    <!-- Tool args preview -->
+    <div v-if="event.kind === 'ag-ui-tool' && event.toolCallArgs" style="margin-top:6px;">
+      <pre style="font-family:var(--font);font-size:9px;color:var(--text-dim);background:var(--surface-0);border:1px solid var(--border-dim);border-radius:2px;padding:4px 6px;white-space:pre-wrap;word-break:break-all;margin:0;">{{ argsPreview }}</pre>
     </div>
 
     <!-- Expanded payload -->
-    <div v-if="event.expanded && event.payload" class="mt-2 pt-2 border-t border-white/5">
+    <div v-if="event.expanded && event.payload" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border-dim);">
       <PayloadViewer :data="event.payload" />
     </div>
   </div>
@@ -58,40 +38,37 @@
 import { computed } from "vue";
 import { useTraceStore } from "@/stores/trace";
 import PayloadViewer from "./PayloadViewer.vue";
-import { formatTimestamp, STATE_COLORS } from "@/lib/utils";
+import { formatTimestamp } from "@/lib/utils";
 import type { TraceEvent } from "@/types";
 
 const props = defineProps<{ event: TraceEvent }>();
 const store = useTraceStore();
 
 const formattedTime = computed(() => formatTimestamp(props.event.timestamp));
-const shortTaskId = computed(() => props.event.taskId.slice(0, 8) + "...");
+const shortTaskId = computed(() => props.event.taskId.slice(0, 8) + "…");
 
 const borderClass = computed(() => {
-  if (props.event.kind === "ag-ui-tool") return "border-violet-500";
-  if (props.event.kind === "ag-ui-step") return "border-cyan-500";
+  if (props.event.kind === "ag-ui-tool") return "border-l-indigo";
+  if (props.event.kind === "ag-ui-step") return "border-l-sky";
   const map: Record<string, string> = {
-    submitted: "border-blue-500",
-    working: "border-amber-500",
-    completed: "border-emerald-500",
-    failed: "border-red-500",
-    canceled: "border-zinc-500",
+    submitted: "border-l-blue",
+    working:   "border-l-amber",
+    completed: "border-l-emerald",
+    failed:    "border-l-red",
+    canceled:  "border-l-dim",
   };
-  return map[props.event.state] ?? "border-white/20";
+  return map[props.event.state] ?? "border-l-dim";
 });
-
-const stateClass = computed(() => STATE_COLORS[props.event.state] ?? "text-white/40 border-white/20");
 
 const badgeLabel = computed(() => {
   if (props.event.kind === "ag-ui-tool") return props.event.toolCallName;
   if (props.event.kind === "ag-ui-step") return props.event.stepName;
   return props.event.skillId;
 });
-
-const badgeClass = computed(() => {
-  if (props.event.kind === "ag-ui-tool") return "text-violet-300 border-violet-500/30";
-  if (props.event.kind === "ag-ui-step") return "text-cyan-300 border-cyan-500/30";
-  return "text-white/30 border-white/10";
+const badgeChipClass = computed(() => {
+  if (props.event.kind === "ag-ui-tool") return "chip-violet";
+  if (props.event.kind === "ag-ui-step") return "chip-cyan";
+  return "chip-dim";
 });
 
 const argsPreview = computed(() => {
@@ -101,3 +78,24 @@ const argsPreview = computed(() => {
   return str.length > 200 ? str.slice(0, 200) + "…" : str;
 });
 </script>
+
+<style scoped>
+.trace-entry {
+  padding: 7px 8px;
+  border-radius: 3px;
+  background: var(--surface-1);
+  border: 1px solid var(--border-dim);
+  border-left-width: 2px;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+.trace-entry:hover { background: var(--surface-2); }
+
+.border-l-blue    { border-left-color: var(--blue); }
+.border-l-amber   { border-left-color: var(--amber); }
+.border-l-emerald { border-left-color: var(--emerald); }
+.border-l-red     { border-left-color: var(--red); }
+.border-l-indigo  { border-left-color: var(--indigo); }
+.border-l-sky     { border-left-color: var(--sky); }
+.border-l-dim     { border-left-color: var(--border-mid); }
+</style>

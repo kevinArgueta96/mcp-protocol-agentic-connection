@@ -1,17 +1,16 @@
 <template>
-  <div class="flex flex-col h-screen bg-[#0a0e14]">
+  <div style="height:100vh;display:flex;flex-direction:column;background:var(--bg);overflow:hidden;">
     <AppHeader />
-
-    <!-- 3-panel layout -->
-    <div class="flex-1 grid grid-cols-[280px_1fr_320px] min-h-0 divide-x divide-white/5">
-      <!-- Left: Agent grid -->
-      <AgentGrid />
-
-      <!-- Center: Trace timeline -->
-      <TraceTimeline />
-
-      <!-- Right: Chat -->
-      <AgentChat />
+    <div style="flex:1;display:grid;grid-template-columns:260px 1fr 300px;min-height:0;overflow:hidden;">
+      <div style="border-right:1px solid var(--border-dim);overflow:hidden;display:flex;flex-direction:column;">
+        <AgentGrid />
+      </div>
+      <div style="border-right:1px solid var(--border-dim);overflow:hidden;display:flex;flex-direction:column;">
+        <TraceTimeline />
+      </div>
+      <div style="overflow:hidden;display:flex;flex-direction:column;">
+        <AgentChat />
+      </div>
     </div>
   </div>
 </template>

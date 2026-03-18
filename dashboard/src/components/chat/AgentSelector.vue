@@ -1,7 +1,8 @@
 <template>
-  <div class="relative">
+  <div style="position:relative;display:flex;align-items:center;">
     <select
-      class="w-full bg-white/5 border border-white/10 rounded px-2 py-1.5 text-xs font-mono text-white/70 focus:outline-none focus:border-white/25 appearance-none"
+      class="sig-select"
+      style="width:100%;padding:5px 24px 5px 9px;height:30px;font-size:11px;color:var(--text);"
       :value="selectedId"
       @change="onSelect"
     >
@@ -12,10 +13,10 @@
         :value="agent.agentId"
         :disabled="!agent.healthy"
       >
-        {{ agent.projectName }} (:{{ agent.port }}) {{ agent.healthy ? "" : "[offline]" }}
+        {{ agent.projectName }} (:{{ agent.port }}){{ agent.healthy ? "" : " [offline]" }}
       </option>
     </select>
-    <span class="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-white/30 text-[10px]">▾</span>
+    <span style="position:absolute;right:7px;pointer-events:none;font-size:9px;color:var(--text-dim);">▾</span>
   </div>
 </template>
 
@@ -27,7 +28,7 @@ import { useChatStore } from "@/stores/chat";
 const registryStore = useRegistryStore();
 const chatStore = useChatStore();
 
-const agentList = computed(() => registryStore.agentList);
+const agentList = computed(() => registryStore.agentList.filter((a) => a.entryType !== "client"));
 const selectedId = computed(() => chatStore.selectedAgent?.agentId ?? "");
 
 function onSelect(e: Event) {

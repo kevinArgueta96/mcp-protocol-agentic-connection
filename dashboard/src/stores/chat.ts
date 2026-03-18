@@ -1,11 +1,24 @@
-// Pinia store — agent chat via AG-UI HTTP streaming
+// Pinia store — agent chat via native fetch SSE streaming
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import { randomUUID } from "@/lib/utils";
 import type { ChatMessage, RegistryAgent } from "@/types";
-import { HttpAgent, EventType } from "@ag-ui/client";
-import type { BaseEvent } from "@ag-ui/client";
 import { useTraceStore } from "@/stores/trace";
+
+// AG-UI event type strings (mirrors @ag-ui/core EventType)
+const EV = {
+  RUN_STARTED: "RUN_STARTED",
+  TEXT_MESSAGE_START: "TEXT_MESSAGE_START",
+  TEXT_MESSAGE_CONTENT: "TEXT_MESSAGE_CONTENT",
+  TEXT_MESSAGE_END: "TEXT_MESSAGE_END",
+  TOOL_CALL_START: "TOOL_CALL_START",
+  TOOL_CALL_ARGS: "TOOL_CALL_ARGS",
+  TOOL_CALL_END: "TOOL_CALL_END",
+  STEP_STARTED: "STEP_STARTED",
+  STEP_FINISHED: "STEP_FINISHED",
+  RUN_FINISHED: "RUN_FINISHED",
+  RUN_ERROR: "RUN_ERROR",
+} as const;
 
 export const useChatStore = defineStore("chat", () => {
   const messages = ref<ChatMessage[]>([]);
@@ -13,12 +26,11 @@ export const useChatStore = defineStore("chat", () => {
   const isStreaming = ref(false);
   const error = ref<string | null>(null);
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let activeSubscription: { unsubscribe(): void } | null = null;
+  let abortController: AbortController | null = null;
 
   function selectAgent(agent: RegistryAgent | null) {
-    activeSubscription?.unsubscribe();
-    activeSubscription = null;
+    abortController?.abort();
+    abortController = null;
     selectedAgent.value = agent;
     messages.value = [];
     error.value = null;
@@ -56,96 +68,136 @@ export const useChatStore = defineStore("chat", () => {
     const messageId = randomUUID();
     const traceStore = useTraceStore();
 
-    // Track tool call message IDs (toolCallId → message id in messages array)
     const toolCallMsgMap = new Map<string, string>();
 
-    const agent = new HttpAgent({ url: `${agentUrl}/ag-ui` });
+    abortController = new AbortController();
 
-    const observable = agent.run({
-      threadId,
-      runId,
-      messages: [{ id: messageId, role: "user" as const, content: text.trim() }],
-      tools: [],
-      context: [],
-    });
+    try {
+      const response = await fetch(`${agentUrl}/ag-ui`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "text/event-stream",
+        },
+        body: JSON.stringify({
+          threadId,
+          runId,
+          messages: [{ id: messageId, role: "user", content: text.trim() }],
+          tools: [],
+          context: [],
+        }),
+        signal: abortController.signal,
+      });
 
-    activeSubscription = observable.subscribe({
-      next(event: BaseEvent) {
-        const e = event as BaseEvent & Record<string, unknown>;
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
 
-        switch (e.type) {
-          case EventType.TEXT_MESSAGE_CONTENT: {
-            const delta = (e.delta as string) ?? "";
-            updateMessageContent(agentMsgId, delta);
-            break;
-          }
-          case EventType.TEXT_MESSAGE_END: {
-            setMessageStreaming(agentMsgId, false);
-            break;
-          }
-          case EventType.STEP_STARTED: {
-            traceStore.addAgUiEvent({ type: "STEP_STARTED", agentId, agentName, threadId, runId, stepName: e.stepName as string });
-            break;
-          }
-          case EventType.STEP_FINISHED: {
-            traceStore.addAgUiEvent({ type: "STEP_FINISHED", agentId, agentName, threadId, runId, stepName: e.stepName as string });
-            break;
-          }
-          case EventType.TOOL_CALL_START: {
-            const toolCallId = e.toolCallId as string;
-            const toolCallName = e.toolCallName as string;
-            traceStore.addAgUiEvent({ type: "TOOL_CALL_START", agentId, agentName, threadId, runId, toolCallName });
-            const toolMsgId = randomUUID();
-            toolCallMsgMap.set(toolCallId, toolMsgId);
-            const toolMsg: ChatMessage = {
-              id: toolMsgId,
-              role: "tool",
-              content: "",
-              timestamp: new Date().toISOString(),
-              streaming: true,
-              toolCall: { name: toolCallName, argsRaw: "", streaming: true },
-            };
-            messages.value = [...messages.value, toolMsg];
-            break;
-          }
-          case EventType.TOOL_CALL_ARGS: {
-            const toolCallId = e.toolCallId as string;
-            const delta = (e.delta as string) ?? "";
-            const toolMsgId = toolCallMsgMap.get(toolCallId);
-            if (toolMsgId) appendToolCallArgs(toolMsgId, delta);
-            break;
-          }
-          case EventType.TOOL_CALL_END: {
-            const toolCallId = e.toolCallId as string;
-            const toolMsgId = toolCallMsgMap.get(toolCallId);
-            if (toolMsgId) {
-              const toolMsg = messages.value.find((m) => m.id === toolMsgId);
-              traceStore.addAgUiEvent({ type: "TOOL_CALL_END", agentId, agentName, threadId, runId, toolCallName: toolMsg?.toolCall?.name, toolCallArgs: toolMsg?.toolCall?.args });
-              finalizeToolCall(toolMsgId);
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error("No response body");
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // Parse SSE lines: events separated by \n\n, each line "data: {...}"
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() ?? "";
+
+        for (const part of parts) {
+          for (const line of part.split("\n")) {
+            if (!line.startsWith("data:")) continue;
+            const raw = line.slice(5).trim();
+            if (!raw) continue;
+
+            let evt: Record<string, unknown>;
+            try {
+              evt = JSON.parse(raw) as Record<string, unknown>;
+            } catch {
+              continue;
             }
-            break;
-          }
-          case EventType.RUN_ERROR: {
-            const msg = (e.message as string) ?? "Unknown error";
-            error.value = msg;
-            setMessageStreaming(agentMsgId, false);
-            updateMessageContent(agentMsgId, `Error: ${msg}`, true);
-            break;
+
+            const type = evt.type as string;
+
+            switch (type) {
+              case EV.TEXT_MESSAGE_CONTENT: {
+                const delta = (evt.delta as string) ?? "";
+                if (delta) updateMessageContent(agentMsgId, delta);
+                break;
+              }
+              case EV.TEXT_MESSAGE_END: {
+                setMessageStreaming(agentMsgId, false);
+                break;
+              }
+              case EV.STEP_STARTED: {
+                traceStore.addAgUiEvent({ type: "STEP_STARTED", agentId, agentName, threadId, runId, stepName: evt.stepName as string });
+                break;
+              }
+              case EV.STEP_FINISHED: {
+                traceStore.addAgUiEvent({ type: "STEP_FINISHED", agentId, agentName, threadId, runId, stepName: evt.stepName as string });
+                break;
+              }
+              case EV.TOOL_CALL_START: {
+                const toolCallId = evt.toolCallId as string;
+                const toolCallName = evt.toolCallName as string;
+                traceStore.addAgUiEvent({ type: "TOOL_CALL_START", agentId, agentName, threadId, runId, toolCallName });
+                const toolMsgId = randomUUID();
+                toolCallMsgMap.set(toolCallId, toolMsgId);
+                const toolMsg: ChatMessage = {
+                  id: toolMsgId,
+                  role: "tool",
+                  content: "",
+                  timestamp: new Date().toISOString(),
+                  streaming: true,
+                  toolCall: { name: toolCallName, argsRaw: "", streaming: true },
+                };
+                messages.value = [...messages.value, toolMsg];
+                break;
+              }
+              case EV.TOOL_CALL_ARGS: {
+                const toolCallId = evt.toolCallId as string;
+                const delta = (evt.delta as string) ?? "";
+                const toolMsgId = toolCallMsgMap.get(toolCallId);
+                if (toolMsgId) appendToolCallArgs(toolMsgId, delta);
+                break;
+              }
+              case EV.TOOL_CALL_END: {
+                const toolCallId = evt.toolCallId as string;
+                const toolMsgId = toolCallMsgMap.get(toolCallId);
+                if (toolMsgId) {
+                  const toolMsg = messages.value.find((m) => m.id === toolMsgId);
+                  traceStore.addAgUiEvent({ type: "TOOL_CALL_END", agentId, agentName, threadId, runId, toolCallName: toolMsg?.toolCall?.name, toolCallArgs: toolMsg?.toolCall?.args });
+                  finalizeToolCall(toolMsgId);
+                }
+                break;
+              }
+              case EV.RUN_ERROR: {
+                const msg = (evt.message as string) ?? "Unknown error";
+                error.value = msg;
+                setMessageStreaming(agentMsgId, false);
+                updateMessageContent(agentMsgId, `Error: ${msg}`, true);
+                break;
+              }
+            }
           }
         }
-      },
-      error(err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        error.value = msg;
-        setMessageStreaming(agentMsgId, false);
-        updateMessageContent(agentMsgId, `Error: ${msg}`, true);
-        isStreaming.value = false;
-      },
-      complete() {
-        setMessageStreaming(agentMsgId, false);
-        isStreaming.value = false;
-      },
-    });
+      }
+    } catch (err: unknown) {
+      if ((err as { name?: string }).name === "AbortError") return;
+      const msg = err instanceof Error ? err.message : String(err);
+      error.value = msg;
+      setMessageStreaming(agentMsgId, false);
+      updateMessageContent(agentMsgId, `Error: ${msg}`, true);
+    } finally {
+      setMessageStreaming(agentMsgId, false);
+      isStreaming.value = false;
+      abortController = null;
+    }
   }
 
   function updateMessageContent(id: string, delta: string, replace = false) {

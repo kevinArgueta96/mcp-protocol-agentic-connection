@@ -1,76 +1,36 @@
 <template>
-  <!-- Tool call message -->
-  <div v-if="message.role === 'tool'" class="flex gap-2 fade-in flex-row">
-    <!-- Tool avatar -->
-    <div
-      class="w-5 h-5 rounded-full shrink-0 flex items-center justify-center text-[8px] font-mono font-bold mt-0.5 bg-violet-500/20 text-violet-400"
-    >
-      T
+  <!-- Tool call -->
+  <div v-if="message.role === 'tool'" class="msg-tool fade-in">
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
+      <span class="tool-avatar">T</span>
+      <span style="font-size:10px;font-weight:700;color:var(--indigo);">{{ message.toolCall?.name ?? "tool" }}</span>
+      <span v-if="message.toolCall?.streaming" class="cursor-blink" style="font-size:8px;color:var(--indigo);">■</span>
     </div>
 
-    <!-- Tool bubble -->
-    <div class="max-w-[85%] px-3 py-2 rounded-lg border text-xs leading-relaxed bg-violet-500/5 border-violet-500/20">
-      <!-- Skill name -->
-      <div class="font-mono font-semibold text-violet-400 text-[10px] mb-1">
-        {{ message.toolCall?.name ?? "tool" }}
-        <span v-if="message.toolCall?.streaming" class="inline-block w-1.5 h-2.5 bg-violet-400/70 animate-pulse ml-1 align-middle" />
-      </div>
-
-      <!-- Args -->
-      <div v-if="message.toolCall?.argsRaw || message.toolCall?.args" class="mb-1">
-        <div class="text-[9px] text-white/30 mb-0.5">args</div>
-        <pre class="font-mono text-[9px] whitespace-pre-wrap break-all bg-white/3 rounded px-2 py-1 text-white/50">{{ argsDisplay }}</pre>
-      </div>
-
-      <!-- Result -->
-      <div v-if="message.toolCall?.result !== undefined">
-        <div class="text-[9px] text-emerald-400/60 mb-0.5">result</div>
-        <pre class="font-mono text-[9px] whitespace-pre-wrap break-all bg-emerald-500/5 rounded px-2 py-1 text-emerald-300/70">{{ resultDisplay }}</pre>
-      </div>
-
-      <div class="mt-1 text-[9px] text-white/25 font-mono">{{ time }}</div>
+    <div v-if="message.toolCall?.argsRaw || message.toolCall?.args" style="margin-top:4px;">
+      <span style="font-size:9px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--text-dim);display:block;margin-bottom:3px;">args</span>
+      <pre class="code-pre">{{ argsDisplay }}</pre>
     </div>
+
+    <div v-if="message.toolCall?.result !== undefined" style="margin-top:6px;">
+      <span style="font-size:9px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--emerald);display:block;margin-bottom:3px;">result</span>
+      <pre class="code-pre code-pre--result">{{ resultDisplay }}</pre>
+    </div>
+
+    <span style="font-size:9px;color:var(--text-ghost);font-variant-numeric:tabular-nums;display:block;margin-top:4px;">{{ time }}</span>
   </div>
 
-  <!-- Regular user/agent message -->
-  <div
-    v-else
-    class="flex gap-2 fade-in"
-    :class="message.role === 'user' ? 'flex-row-reverse' : 'flex-row'"
-  >
-    <!-- Avatar -->
-    <div
-      class="w-5 h-5 rounded-full shrink-0 flex items-center justify-center text-[8px] font-mono font-bold mt-0.5"
-      :class="message.role === 'user' ? 'bg-blue-500/30 text-blue-300' : 'bg-emerald-500/20 text-emerald-400'"
-    >
+  <!-- User / Agent -->
+  <div v-else class="msg-row fade-in" :class="message.role === 'user' ? 'msg-row--user' : 'msg-row--agent'">
+    <span class="avatar" :class="message.role === 'user' ? 'avatar--user' : 'avatar--agent'">
       {{ message.role === "user" ? "U" : "A" }}
-    </div>
-
-    <!-- Bubble -->
-    <div
-      class="max-w-[85%] px-3 py-2 rounded-lg border text-xs leading-relaxed"
-      :class="message.role === 'user'
-        ? 'bg-blue-500/10 border-blue-500/20 text-blue-100'
-        : 'bg-white/4 border-white/8 text-white/80'"
-    >
-      <!-- Streaming cursor -->
-      <span v-if="message.streaming && !message.content" class="inline-block w-2 h-3 bg-emerald-400/70 animate-pulse" />
-
-      <!-- Content -->
-      <pre
-        v-else-if="isJson"
-        class="font-mono text-[10px] whitespace-pre-wrap break-all text-white/60"
-      >{{ message.content }}</pre>
-      <p v-else class="font-sans whitespace-pre-wrap break-words">{{ message.content }}</p>
-
-      <!-- Streaming indicator -->
-      <span
-        v-if="message.streaming && message.content"
-        class="inline-block w-1.5 h-3 bg-emerald-400/70 animate-pulse ml-0.5 align-middle"
-      />
-
-      <!-- Timestamp -->
-      <div class="mt-1 text-[9px] text-white/25 font-mono">{{ time }}</div>
+    </span>
+    <div class="bubble" :class="message.role === 'user' ? 'bubble--user' : 'bubble--agent'">
+      <span v-if="message.streaming && !message.content" class="stream-cursor cursor-blink" />
+      <pre v-else-if="isJson" style="font-family:var(--font);font-size:10px;white-space:pre-wrap;word-break:break-all;color:var(--text-mid);margin:0;">{{ message.content }}</pre>
+      <p v-else style="margin:0;white-space:pre-wrap;word-break:break-word;">{{ message.content }}</p>
+      <span v-if="message.streaming && message.content" class="cursor-blink" style="font-size:9px;opacity:0.7;margin-left:2px;">▌</span>
+      <span style="font-size:9px;color:var(--text-ghost);font-variant-numeric:tabular-nums;display:block;margin-top:4px;">{{ time }}</span>
     </div>
   </div>
 </template>
@@ -81,21 +41,19 @@ import { formatTimestamp } from "@/lib/utils";
 import type { ChatMessage } from "@/types";
 
 const props = defineProps<{ message: ChatMessage }>();
-
 const time = computed(() => formatTimestamp(props.message.timestamp));
 
 const isJson = computed(() => {
   if (!props.message.content) return false;
-  const trimmed = props.message.content.trim();
-  return (trimmed.startsWith("{") || trimmed.startsWith("[")) && trimmed.length > 20;
+  const t = props.message.content.trim();
+  return (t.startsWith("{") || t.startsWith("[")) && t.length > 20;
 });
 
 const argsDisplay = computed(() => {
-  if (props.message.toolCall?.args !== undefined) {
+  if (props.message.toolCall?.args !== undefined)
     return typeof props.message.toolCall.args === "string"
       ? props.message.toolCall.args
       : JSON.stringify(props.message.toolCall.args, null, 2);
-  }
   return props.message.toolCall?.argsRaw ?? "";
 });
 
@@ -105,3 +63,88 @@ const resultDisplay = computed(() => {
   return typeof r === "string" ? r : JSON.stringify(r, null, 2);
 });
 </script>
+
+<style scoped>
+/* Tool message */
+.msg-tool {
+  background: color-mix(in srgb, var(--indigo) 6%, var(--surface-1));
+  border: 1px solid color-mix(in srgb, var(--indigo) 20%, var(--border-dim));
+  border-left: 2px solid var(--indigo);
+  border-radius: 3px;
+  padding: 8px 10px;
+}
+.tool-avatar {
+  width: 18px; height: 18px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--indigo) 20%, transparent);
+  color: var(--indigo);
+  font-size: 9px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.code-pre {
+  font-family: var(--font);
+  font-size: 9px;
+  color: var(--text-mid);
+  background: var(--surface-0);
+  border: 1px solid var(--border-dim);
+  border-radius: 2px;
+  padding: 4px 7px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+  max-height: 120px;
+  overflow-y: auto;
+}
+.code-pre--result { color: color-mix(in srgb, var(--emerald) 80%, var(--text-mid)); }
+
+/* Row layout */
+.msg-row {
+  display: flex;
+  gap: 7px;
+  align-items: flex-start;
+}
+.msg-row--user { flex-direction: row-reverse; }
+
+.avatar {
+  width: 20px; height: 20px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.avatar--user  { background: color-mix(in srgb, var(--blue) 20%, transparent); color: var(--blue); }
+.avatar--agent { background: color-mix(in srgb, var(--emerald) 15%, transparent); color: var(--emerald); }
+
+.bubble {
+  max-width: 88%;
+  padding: 8px 10px;
+  border-radius: 4px;
+  border: 1px solid;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.bubble--user {
+  background: color-mix(in srgb, var(--blue) 8%, var(--surface-1));
+  border-color: color-mix(in srgb, var(--blue) 25%, var(--border-dim));
+  color: var(--text);
+}
+.bubble--agent {
+  background: var(--surface-1);
+  border-color: var(--border-mid);
+  color: var(--text);
+}
+.stream-cursor {
+  display: inline-block;
+  width: 7px; height: 13px;
+  background: var(--emerald);
+  vertical-align: text-bottom;
+}
+</style>
