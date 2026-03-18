@@ -2,7 +2,7 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import { randomUUID } from "@/lib/utils";
-import type { TraceEvent, WsMessage, TaskState } from "@/types";
+import type { TraceEvent, WsMessage, TaskState, TraceEventKind } from "@/types";
 
 const REGISTRY_WS = import.meta.env.VITE_REGISTRY_WS ?? "ws://localhost:4999/ws";
 const MAX_EVENTS = 500;
@@ -97,6 +97,46 @@ export const useTraceStore = defineStore("trace", () => {
     events.value = [];
   }
 
+  function addAgUiEvent(agUiEvent: {
+    type: string;
+    agentId: string;
+    agentName: string;
+    threadId: string;
+    runId: string;
+    stepName?: string;
+    toolCallName?: string;
+    toolCallArgs?: unknown;
+  }) {
+    const kindMap: Record<string, TraceEventKind> = {
+      STEP_STARTED: "ag-ui-step",
+      STEP_FINISHED: "ag-ui-step",
+      TOOL_CALL_START: "ag-ui-tool",
+      TOOL_CALL_END: "ag-ui-tool",
+    };
+    const kind = kindMap[agUiEvent.type] ?? "task";
+    const stateMap: Record<string, TaskState> = {
+      STEP_STARTED: "working",
+      TOOL_CALL_START: "working",
+      STEP_FINISHED: "completed",
+      TOOL_CALL_END: "completed",
+    };
+    const state: TaskState = stateMap[agUiEvent.type] ?? "working";
+    addEvent({
+      id: randomUUID(),
+      timestamp: new Date().toISOString(),
+      agentId: agUiEvent.agentId,
+      agentName: agUiEvent.agentName,
+      taskId: agUiEvent.threadId,
+      state,
+      skillId: agUiEvent.toolCallName ?? agUiEvent.stepName,
+      expanded: false,
+      kind,
+      stepName: agUiEvent.stepName,
+      toolCallName: agUiEvent.toolCallName,
+      toolCallArgs: agUiEvent.toolCallArgs,
+    });
+  }
+
   function destroy() {
     destroyed = true;
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
@@ -115,6 +155,7 @@ export const useTraceStore = defineStore("trace", () => {
     clearFilters,
     toggleExpanded,
     clearEvents,
+    addAgUiEvent,
     destroy,
   };
 });

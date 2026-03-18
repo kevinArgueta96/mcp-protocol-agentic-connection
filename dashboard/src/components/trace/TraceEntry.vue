@@ -16,21 +16,35 @@
         </span>
         <!-- Agent name -->
         <span class="font-mono text-[10px] text-white/60 truncate">{{ event.agentName }}</span>
-        <!-- Skill badge -->
+        <!-- Skill / step / tool badge -->
         <span
-          v-if="event.skillId"
-          class="shrink-0 text-[9px] font-mono text-white/30 border border-white/10 px-1 rounded"
+          v-if="badgeLabel"
+          class="shrink-0 text-[9px] font-mono px-1 rounded border"
+          :class="badgeClass"
         >
-          {{ event.skillId }}
+          {{ badgeLabel }}
+        </span>
+        <!-- Kind indicator -->
+        <span
+          v-if="event.kind && event.kind !== 'task'"
+          class="shrink-0 text-[8px] font-mono px-1 rounded"
+          :class="event.kind === 'ag-ui-tool' ? 'bg-violet-500/15 text-violet-400' : 'bg-cyan-500/15 text-cyan-400'"
+        >
+          {{ event.kind === "ag-ui-tool" ? "tool" : "step" }}
         </span>
       </div>
       <!-- Timestamp -->
       <span class="font-mono text-[9px] text-white/25 shrink-0">{{ formattedTime }}</span>
     </div>
 
-    <!-- Task ID -->
+    <!-- Task / thread ID -->
     <div class="mt-0.5">
       <span class="font-mono text-[9px] text-white/25">{{ shortTaskId }}</span>
+    </div>
+
+    <!-- Tool call args (ag-ui-tool) -->
+    <div v-if="event.kind === 'ag-ui-tool' && event.toolCallArgs" class="mt-1">
+      <pre class="font-mono text-[9px] text-white/30 whitespace-pre-wrap break-all bg-white/2 rounded px-1.5 py-1">{{ argsPreview }}</pre>
     </div>
 
     <!-- Expanded payload -->
@@ -54,6 +68,8 @@ const formattedTime = computed(() => formatTimestamp(props.event.timestamp));
 const shortTaskId = computed(() => props.event.taskId.slice(0, 8) + "...");
 
 const borderClass = computed(() => {
+  if (props.event.kind === "ag-ui-tool") return "border-violet-500";
+  if (props.event.kind === "ag-ui-step") return "border-cyan-500";
   const map: Record<string, string> = {
     submitted: "border-blue-500",
     working: "border-amber-500",
@@ -65,4 +81,23 @@ const borderClass = computed(() => {
 });
 
 const stateClass = computed(() => STATE_COLORS[props.event.state] ?? "text-white/40 border-white/20");
+
+const badgeLabel = computed(() => {
+  if (props.event.kind === "ag-ui-tool") return props.event.toolCallName;
+  if (props.event.kind === "ag-ui-step") return props.event.stepName;
+  return props.event.skillId;
+});
+
+const badgeClass = computed(() => {
+  if (props.event.kind === "ag-ui-tool") return "text-violet-300 border-violet-500/30";
+  if (props.event.kind === "ag-ui-step") return "text-cyan-300 border-cyan-500/30";
+  return "text-white/30 border-white/10";
+});
+
+const argsPreview = computed(() => {
+  const args = props.event.toolCallArgs;
+  if (!args) return "";
+  const str = typeof args === "string" ? args : JSON.stringify(args, null, 2);
+  return str.length > 200 ? str.slice(0, 200) + "…" : str;
+});
 </script>

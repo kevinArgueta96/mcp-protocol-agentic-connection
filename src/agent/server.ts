@@ -8,8 +8,15 @@ import type { AgentCard } from "../types/a2a.js";
 import type { JsonRpcRequest } from "../types/jsonrpc.js";
 import { detectProjectType } from "./project-detector.js";
 import { generateAgentCard } from "./card.js";
-import { TaskStore, RequestRouter } from "./handlers.js";
+import { TaskStore, RequestRouter, inferSkillFromMessage, parseInputFromMessage, makeSkillContext } from "./handlers.js";
 import type { RouterContext, TaskUpdateEvent } from "./handlers.js";
+import {
+  runStarted, runFinished, runError,
+  stepStarted, stepFinished,
+  textMessageStart, textMessageContent, textMessageEnd,
+  toolCallStart, toolCallArgs, toolCallEnd,
+  sseLine,
+} from "./ag-ui-events.js";
 import { createDefaultRegistry } from "../skills/index.js";
 import type { BaseSkill } from "../skills/framework.js";
 
@@ -119,6 +126,99 @@ export class AgentServer {
       const rpcReq = req.body as JsonRpcRequest;
       const response = await this.router.dispatch(rpcReq, this.routerCtx!);
       res.json(response);
+    });
+
+    // ── AG-UI: SSE streaming endpoint ────────────────────────────────────────
+    app.post("/ag-ui", async (req, res) => {
+      const { randomUUID: uuid } = await import("node:crypto");
+      const body = req.body as {
+        threadId?: string;
+        runId?: string;
+        messages?: Array<{ id?: string; role: string; content: string }>;
+      };
+
+      const threadId = body.threadId ?? uuid();
+      const runId = body.runId ?? uuid();
+      const ctx = this.routerCtx!;
+
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      res.flushHeaders();
+
+      let aborted = false;
+      res.on("close", () => { aborted = true; });
+
+      const emit = (event: unknown) => {
+        if (!aborted) res.write(sseLine(event));
+      };
+
+      try {
+        emit(runStarted(threadId, runId));
+
+        // Extract user text from last user message
+        const lastUserMsg = [...(body.messages ?? [])].reverse().find((m) => m.role === "user");
+        const userText = lastUserMsg?.content ?? "";
+
+        // Infer skill from text
+        const fakeParams = {
+          message: { role: "user" as const, parts: [{ type: "text" as const, text: userText }] },
+        };
+        const skillId = inferSkillFromMessage(fakeParams);
+
+        if (skillId && ctx.skillRegistry.get(skillId)) {
+          const skill = ctx.skillRegistry.get(skillId)!;
+          const taskId = uuid();
+          const skillCtx = makeSkillContext(ctx.agentId, taskId, ctx.projectPath);
+          const rawInput = parseInputFromMessage(fakeParams);
+          const parsed = skill.inputSchema.safeParse(rawInput);
+
+          const toolCallId = uuid();
+          const parentMsgId = uuid();
+
+          emit(stepStarted(skillId));
+          emit(toolCallStart(toolCallId, skillId, parentMsgId));
+          emit(toolCallArgs(toolCallId, JSON.stringify(parsed.success ? parsed.data : rawInput)));
+
+          // Create task trace event
+          ctx.taskStore.create({ message: fakeParams.message, metadata: { skillId } });
+
+          let result: unknown;
+          if (parsed.success) {
+            result = await skill.execute(parsed.data, skillCtx);
+          } else {
+            result = { error: `Invalid input: ${parsed.error.message}` };
+          }
+
+          if (aborted) return;
+
+          emit(toolCallEnd(toolCallId));
+          emit(stepFinished(skillId));
+
+          // Stream result as text message
+          const msgId = uuid();
+          const resultText = typeof result === "string" ? result : JSON.stringify(result, null, 2);
+          emit(textMessageStart(msgId));
+          emit(textMessageContent(msgId, resultText));
+          emit(textMessageEnd(msgId));
+        } else {
+          // No skill — stream a default response
+          const msgId = uuid();
+          const defaultText = skillId
+            ? `Skill "${skillId}" not found. Available: ${ctx.skillRegistry.list().map((s) => s.id).join(", ")}`
+            : `No skill matched. Available skills: ${ctx.skillRegistry.list().map((s) => s.id).join(", ")}. Try asking about endpoints, files, or code.`;
+          emit(textMessageStart(msgId));
+          emit(textMessageContent(msgId, defaultText));
+          emit(textMessageEnd(msgId));
+        }
+
+        emit(runFinished(threadId, runId));
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        emit(runError(msg));
+      }
+
+      res.end();
     });
 
     // ── Health check ─────────────────────────────────────────────────────────

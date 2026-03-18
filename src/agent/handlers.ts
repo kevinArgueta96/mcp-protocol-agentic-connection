@@ -301,7 +301,7 @@ export class RequestRouter {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function makeSkillContext(agentId: string, taskId: string, projectPath: string): SkillContext {
+export function makeSkillContext(agentId: string, taskId: string, projectPath: string): SkillContext {
   return {
     agentId,
     taskId,
@@ -311,7 +311,7 @@ function makeSkillContext(agentId: string, taskId: string, projectPath: string):
 }
 
 /** Try to infer skillId from message text keywords */
-function inferSkillFromMessage(params: TaskSendParams): string | undefined {
+export function inferSkillFromMessage(params: TaskSendParams): string | undefined {
   const text = params.message.parts
     .filter((p) => p.type === "text")
     .map((p) => (p as { text: string }).text)
@@ -326,7 +326,7 @@ function inferSkillFromMessage(params: TaskSendParams): string | undefined {
 }
 
 /** Parse skill input from message text — tries JSON first, then plain string as query */
-function parseInputFromMessage(params: TaskSendParams): Record<string, unknown> {
+export function parseInputFromMessage(params: TaskSendParams): Record<string, unknown> {
   const textParts = params.message.parts
     .filter((p) => p.type === "text")
     .map((p) => (p as { text: string }).text);

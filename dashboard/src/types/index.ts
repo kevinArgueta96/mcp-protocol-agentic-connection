@@ -38,6 +38,8 @@ export interface RegistryAgent {
   healthy: boolean;
 }
 
+export type TraceEventKind = "task" | "ag-ui-step" | "ag-ui-tool";
+
 export interface TraceEvent {
   id: string;
   timestamp: string;
@@ -49,18 +51,24 @@ export interface TraceEvent {
   duration?: number;
   payload?: unknown;
   expanded?: boolean;
+  kind?: TraceEventKind;
+  stepName?: string;
+  toolCallName?: string;
+  toolCallArgs?: unknown;
 }
 
 export interface ChatMessage {
   id: string;
-  role: "user" | "agent";
+  role: "user" | "agent" | "tool";
   content: string;
   timestamp: string;
   streaming?: boolean;
   toolCall?: {
     name: string;
     args?: unknown;
+    argsRaw?: string;
     result?: unknown;
+    streaming?: boolean;
   };
 }
 
