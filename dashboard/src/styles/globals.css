@@ -1,0 +1,103 @@
+@import "tailwindcss";
+
+:root {
+  --color-bg: #0a0e14;
+  --color-surface: #111827;
+  --color-border: rgba(255, 255, 255, 0.06);
+  --color-healthy: #00ff88;
+  --color-error: #ef4444;
+  --color-working: #f59e0b;
+  --color-submitted: #3b82f6;
+  --font-mono: "JetBrains Mono", "Fira Code", monospace;
+  --font-sans: "IBM Plex Sans", system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: var(--color-bg);
+  color: #e2e8f0;
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Mono font utility */
+.font-mono {
+  font-family: var(--font-mono) !important;
+}
+
+/* Health pulse animation */
+@keyframes pulse-healthy {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(0, 255, 136, 0.5); }
+  50% { box-shadow: 0 0 0 6px rgba(0, 255, 136, 0); }
+}
+
+@keyframes pulse-error {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5); }
+  50% { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
+}
+
+@keyframes pulse-working {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.5); }
+  50% { box-shadow: 0 0 0 6px rgba(245, 158, 11, 0); }
+}
+
+.pulse-healthy {
+  animation: pulse-healthy 2s infinite;
+}
+
+.pulse-error {
+  animation: pulse-error 2s infinite;
+}
+
+.pulse-working {
+  animation: pulse-working 1s infinite;
+}
+
+/* Card style */
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  backdrop-filter: blur(4px);
+}
+
+/* Fade-in entrance */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.fade-in {
+  animation: fade-in 0.2s ease-out;
+}
+
+/* State color classes */
+.state-submitted { color: #3b82f6; border-color: #3b82f6; }
+.state-working { color: #f59e0b; border-color: #f59e0b; }
+.state-completed { color: #00ff88; border-color: #00ff88; }
+.state-failed { color: #ef4444; border-color: #ef4444; }
+.state-canceled { color: #6b7280; border-color: #6b7280; }

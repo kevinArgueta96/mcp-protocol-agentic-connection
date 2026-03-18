@@ -10,8 +10,37 @@ import type { SkillContext } from "../types/skills.js";
 
 // ─── Task Store ───────────────────────────────────────────────────────────────
 
+export interface TaskUpdateEvent {
+  agentId: string;
+  taskId: string;
+  state: string;
+  skillId?: string;
+  timestamp: string;
+  payload?: unknown;
+}
+
 export class TaskStore {
   private tasks = new Map<string, Task>();
+  private agentId: string;
+  private onTaskUpdate?: (event: TaskUpdateEvent) => void;
+
+  constructor(agentId?: string, onTaskUpdate?: (event: TaskUpdateEvent) => void) {
+    this.agentId = agentId ?? "";
+    this.onTaskUpdate = onTaskUpdate;
+  }
+
+  private fireUpdate(taskId: string, state: string, skillId?: string, payload?: unknown): void {
+    if (this.onTaskUpdate) {
+      this.onTaskUpdate({
+        agentId: this.agentId,
+        taskId,
+        state,
+        skillId,
+        timestamp: new Date().toISOString(),
+        payload,
+      });
+    }
+  }
 
   create(params: TaskSendParams): Task {
     const id = params.id ?? randomUUID();
@@ -24,6 +53,7 @@ export class TaskStore {
       metadata: params.metadata,
     };
     this.tasks.set(id, task);
+    this.fireUpdate(id, "submitted", params.metadata?.skillId as string | undefined);
     return task;
   }
 
@@ -36,6 +66,7 @@ export class TaskStore {
     if (!task) throw { code: RpcErrorCodes.TASK_NOT_FOUND, message: `Task ${id} not found` };
     const updated: Task = { ...task, status, artifacts: artifacts ?? task.artifacts };
     this.tasks.set(id, updated);
+    this.fireUpdate(id, status.state);
     return updated;
   }
 
@@ -45,27 +76,47 @@ export class TaskStore {
       lastChunk: true,
       parts: [{ type: "data", data: result as Record<string, unknown> }],
     };
-    return this.update(
-      id,
-      { state: "completed", timestamp: new Date().toISOString() },
-      [artifact]
-    );
+    const task = this.tasks.get(id);
+    if (!task) throw { code: RpcErrorCodes.TASK_NOT_FOUND, message: `Task ${id} not found` };
+    const updated: Task = {
+      ...task,
+      status: { state: "completed", timestamp: new Date().toISOString() },
+      artifacts: [artifact],
+    };
+    this.tasks.set(id, updated);
+    this.fireUpdate(id, "completed", undefined, result);
+    return updated;
   }
 
   fail(id: string, message: string): Task {
     const errorPart: TextPart = { type: "text", text: message };
-    return this.update(
-      id,
-      {
+    const task = this.tasks.get(id);
+    if (!task) throw { code: RpcErrorCodes.TASK_NOT_FOUND, message: `Task ${id} not found` };
+    const updated: Task = {
+      ...task,
+      status: {
         state: "failed",
         timestamp: new Date().toISOString(),
         message: { role: "agent", parts: [errorPart] },
-      }
-    );
+      },
+      artifacts: task.artifacts,
+    };
+    this.tasks.set(id, updated);
+    this.fireUpdate(id, "failed", undefined, { error: message });
+    return updated;
   }
 
   cancel(id: string): Task {
-    return this.update(id, { state: "canceled", timestamp: new Date().toISOString() });
+    const task = this.tasks.get(id);
+    if (!task) throw { code: RpcErrorCodes.TASK_NOT_FOUND, message: `Task ${id} not found` };
+    const updated: Task = {
+      ...task,
+      status: { state: "canceled", timestamp: new Date().toISOString() },
+      artifacts: task.artifacts,
+    };
+    this.tasks.set(id, updated);
+    this.fireUpdate(id, "canceled");
+    return updated;
   }
 
   list(): Task[] {
@@ -82,6 +133,7 @@ export interface RouterContext {
   projectType: string;
   taskStore: TaskStore;
   skillRegistry: SkillRegistry;
+  registryUrl?: string;
 }
 
 type Handler = (params: unknown, ctx: RouterContext) => Promise<unknown>;

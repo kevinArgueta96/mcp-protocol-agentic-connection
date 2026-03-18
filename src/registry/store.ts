@@ -1,11 +1,14 @@
 // In-memory agent store for the registry
 import type { AgentRegistration, AgentListFilter, RegistryEntry } from "../types/messages.js";
+import type { RegistryEventBus } from "./events.js";
 
 const UNHEALTHY_THRESHOLD_MS = 90_000;   // 90 seconds
 const REMOVE_THRESHOLD_MS = 300_000;      // 5 minutes
 
 export class AgentStore {
   private agents = new Map<string, RegistryEntry>();
+
+  constructor(private readonly eventBus?: RegistryEventBus) {}
 
   register(registration: AgentRegistration): RegistryEntry {
     const entry: RegistryEntry = {
@@ -14,17 +17,36 @@ export class AgentStore {
       healthy: true,
     };
     this.agents.set(registration.agentId, entry);
+    this.eventBus?.broadcast({
+      type: "agent.registered",
+      timestamp: new Date().toISOString(),
+      data: entry,
+    });
     return entry;
   }
 
   deregister(agentId: string): boolean {
-    return this.agents.delete(agentId);
+    const removed = this.agents.delete(agentId);
+    if (removed) {
+      this.eventBus?.broadcast({
+        type: "agent.deregistered",
+        timestamp: new Date().toISOString(),
+        data: { agentId },
+      });
+    }
+    return removed;
   }
 
   heartbeat(agentId: string): boolean {
     const entry = this.agents.get(agentId);
     if (!entry) return false;
+    const timestamp = new Date().toISOString();
     this.agents.set(agentId, { ...entry, lastHeartbeat: Date.now(), healthy: true });
+    this.eventBus?.broadcast({
+      type: "agent.heartbeat",
+      timestamp,
+      data: { agentId, timestamp },
+    });
     return true;
   }
 
@@ -72,8 +94,18 @@ export class AgentStore {
       const age = now - entry.lastHeartbeat;
       if (age > REMOVE_THRESHOLD_MS) {
         this.agents.delete(id);
-      } else if (age > UNHEALTHY_THRESHOLD_MS) {
+        this.eventBus?.broadcast({
+          type: "agent.removed",
+          timestamp: new Date().toISOString(),
+          data: { agentId: id },
+        });
+      } else if (age > UNHEALTHY_THRESHOLD_MS && entry.healthy) {
         this.agents.set(id, { ...entry, healthy: false });
+        this.eventBus?.broadcast({
+          type: "agent.unhealthy",
+          timestamp: new Date().toISOString(),
+          data: { agentId: id },
+        });
       }
     }
   }

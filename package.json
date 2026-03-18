@@ -13,7 +13,10 @@
     "build": "tsc",
     "dev": "tsx src/cli/index.ts",
     "start": "node dist/cli/index.js",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "build:dashboard": "cd dashboard && npm run build",
+    "build:all": "npm run build && npm run build:dashboard && cp -r dashboard/dist dist/dashboard",
+    "dev:dashboard": "cd dashboard && npm run dev"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.0",

@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Local environments
+.env
+.env.local
+.env.*.local
+.venv/
+
+# IDE and local tooling
+.idea/
+.claude/
+.jbeval/
+.DS_Store
+
+# Logs and coverage
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+coverage/
+
+# TypeScript cache
+*.tsbuildinfo

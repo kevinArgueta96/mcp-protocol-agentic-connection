@@ -10,6 +10,10 @@
       "env": {
         "AGENT_BRIDGE_PROJECT": "/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection"
       }
+    },
+    "chrome-devtools": {
+      "command": "npx",
+      "args": ["chrome-devtools-mcp@latest"]
     }
   }
 }

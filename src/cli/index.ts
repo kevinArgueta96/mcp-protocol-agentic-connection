@@ -9,6 +9,7 @@ import { registerFindCommand } from "./commands/find.js";
 import { registerDelegateCommand } from "./commands/delegate.js";
 import { registerBroadcastCommand } from "./commands/broadcast.js";
 import { registerMcpCommand } from "./commands/mcp.js";
+import { registerDashboardCommand } from "./commands/dashboard.js";
 
 const program = new Command();
 
@@ -26,5 +27,6 @@ registerFindCommand(program);
 registerDelegateCommand(program);
 registerBroadcastCommand(program);
 registerMcpCommand(program);
+registerDashboardCommand(program);
 
 program.parse(process.argv);

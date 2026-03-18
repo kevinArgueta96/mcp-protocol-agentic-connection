@@ -9,7 +9,7 @@ import type { JsonRpcRequest } from "../types/jsonrpc.js";
 import { detectProjectType } from "./project-detector.js";
 import { generateAgentCard } from "./card.js";
 import { TaskStore, RequestRouter } from "./handlers.js";
-import type { RouterContext } from "./handlers.js";
+import type { RouterContext, TaskUpdateEvent } from "./handlers.js";
 import { createDefaultRegistry } from "../skills/index.js";
 import type { BaseSkill } from "../skills/framework.js";
 
@@ -37,7 +37,7 @@ export interface StartResult {
 export class AgentServer {
   private agentId: string;
   private card: AgentCard | null = null;
-  private taskStore = new TaskStore();
+  private taskStore: TaskStore | null = null;
   private router = new RequestRouter();
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private httpServer: ReturnType<typeof createServer> | null = null;
@@ -65,6 +65,28 @@ export class AgentServer {
       skills: skillRegistry.toAgentSkills(),
     });
 
+    const registryUrl = this.options.registryUrl ?? REGISTRY_URL;
+
+    const postTaskUpdate = (event: TaskUpdateEvent): void => {
+      fetch(`${registryUrl}/events`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          agentId: event.agentId,
+          agentName: projectInfo.name,
+          taskId: event.taskId,
+          state: event.state,
+          skillId: event.skillId,
+          timestamp: event.timestamp,
+          payload: event.payload,
+        }),
+      }).catch(() => {
+        // Registry down — silently continue
+      });
+    };
+
+    this.taskStore = new TaskStore(this.agentId, postTaskUpdate);
+
     this.routerCtx = {
       agentId: this.agentId,
       projectPath,
@@ -72,10 +94,20 @@ export class AgentServer {
       projectType: projectInfo.type,
       taskStore: this.taskStore,
       skillRegistry,
+      registryUrl,
     };
 
     const app = express();
     app.use(express.json());
+
+    // ── CORS for dashboard browser access ────────────────────────────────────
+    app.use((_req, res, next) => {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+      next();
+    });
+    app.options("/{*path}", (_req, res) => { res.sendStatus(204); });
 
     // ── A2A: Agent Card ──────────────────────────────────────────────────────
     app.get("/.well-known/agent.json", (_req, res) => {
