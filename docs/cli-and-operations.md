@@ -7,7 +7,7 @@ La CLI publica se registra en [`src/cli/index.ts`](/Users/kevin/Documents/dev_pr
 En desarrollo, los ejemplos de este documento usan:
 
 ```bash
-npm run dev -- <comando>
+pnpm run dev -- <comando>
 ```
 
 Con build compilado, el equivalente es:
@@ -32,9 +32,9 @@ Opciones:
 Ejemplos:
 
 ```bash
-npm run dev -- start .
-npm run dev -- start /ruta/al/proyecto --port 5007
-npm run dev -- start . --registry-url http://localhost:4999
+pnpm run dev -- start .
+pnpm run dev -- start /ruta/al/proyecto --port 5007
+pnpm run dev -- start . --registry-url http://localhost:4999
 ```
 
 Comportamiento:
@@ -54,7 +54,7 @@ Opciones:
 Ejemplo:
 
 ```bash
-npm run dev -- registry start
+pnpm run dev -- registry start
 ```
 
 ### `registry status`
@@ -68,7 +68,7 @@ Opciones:
 Ejemplo:
 
 ```bash
-npm run dev -- registry status
+pnpm run dev -- registry status
 ```
 
 ### `list`
@@ -85,10 +85,10 @@ Opciones:
 Ejemplos:
 
 ```bash
-npm run dev -- list
-npm run dev -- list --skill endpoint-find
-npm run dev -- list --project billing
-npm run dev -- list --json
+pnpm run dev -- list
+pnpm run dev -- list --skill endpoint-find
+pnpm run dev -- list --project billing
+pnpm run dev -- list --json
 ```
 
 ### `health [agent-id]`
@@ -103,8 +103,8 @@ Opciones:
 Ejemplos:
 
 ```bash
-npm run dev -- health
-npm run dev -- health 7c3cc0aa
+pnpm run dev -- health
+pnpm run dev -- health 7c3cc0aa
 ```
 
 Comportamiento:
@@ -127,9 +127,9 @@ Opciones:
 Ejemplos:
 
 ```bash
-npm run dev -- ask billing-api "find payment endpoint"
-npm run dev -- ask billing-api "list files" --skill file-search
-npm run dev -- ask 7c3cc0aa "auth route" --skill endpoint-find
+pnpm run dev -- ask billing-api "find payment endpoint"
+pnpm run dev -- ask billing-api "list files" --skill file-search
+pnpm run dev -- ask 7c3cc0aa "auth route" --skill endpoint-find
 ```
 
 Resolución del agente:
@@ -149,8 +149,8 @@ Opciones:
 Ejemplos:
 
 ```bash
-npm run dev -- find endpoint-find
-npm run dev -- find billing
+pnpm run dev -- find endpoint-find
+pnpm run dev -- find billing
 ```
 
 ### `delegate <skill-id> <message>`
@@ -165,7 +165,7 @@ Opciones:
 Ejemplo:
 
 ```bash
-npm run dev -- delegate code-query "search for paymentRetry"
+pnpm run dev -- delegate code-query "search for paymentRetry"
 ```
 
 Comportamiento actual:
@@ -186,7 +186,7 @@ Opciones:
 Ejemplo:
 
 ```bash
-npm run dev -- broadcast "project info"
+pnpm run dev -- broadcast "project info"
 ```
 
 La salida usa `Promise.allSettled`, por lo que cada agente puede fallar sin abortar todo el broadcast.
@@ -207,7 +207,7 @@ Opciones:
 Ejemplo:
 
 ```bash
-npm run dev -- mcp start
+pnpm run dev -- mcp start
 ```
 
 Auto mode actual:
@@ -227,7 +227,7 @@ Opciones:
 Ejemplo:
 
 ```bash
-npm run dev -- mcp server --port 6000
+pnpm run dev -- mcp server --port 6000
 ```
 
 Endpoints expuestos:
@@ -248,9 +248,9 @@ Opciones:
 Ejemplos:
 
 ```bash
-npm run dev -- mcp config
-npm run dev -- mcp config --write
-npm run dev -- mcp config --write --global
+pnpm run dev -- mcp config
+pnpm run dev -- mcp config --write
+pnpm run dev -- mcp config --write --global
 ```
 
 ### `mcp status`
@@ -265,7 +265,7 @@ Muestra:
 Ejemplo:
 
 ```bash
-npm run dev -- mcp status
+pnpm run dev -- mcp status
 ```
 
 ## Dashboard
@@ -282,7 +282,7 @@ Opciones:
 Ejemplo:
 
 ```bash
-npm run dev -- dashboard --no-open
+pnpm run dev -- dashboard --no-open
 ```
 
 ## Operación típica
@@ -290,10 +290,10 @@ npm run dev -- dashboard --no-open
 ### Flujo mínimo
 
 ```bash
-npm run dev -- registry start
-npm run dev -- start .
-npm run dev -- list
-npm run dev -- ask <agent-id> "project info"
+pnpm run dev -- registry start
+pnpm run dev -- start .
+pnpm run dev -- list
+pnpm run dev -- ask <agent-id> "project info"
 ```
 
 ### Flujo con dashboard
@@ -301,19 +301,19 @@ npm run dev -- ask <agent-id> "project info"
 Terminal 1:
 
 ```bash
-npm run dev -- registry start
+pnpm run dev -- registry start
 ```
 
 Terminal 2:
 
 ```bash
-npm run dev -- start .
+pnpm run dev -- start .
 ```
 
 Terminal 3:
 
 ```bash
-npm run dev:dashboard
+pnpm run dev:dashboard
 ```
 
 ## Señales operativas importantes

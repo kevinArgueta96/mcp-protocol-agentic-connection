@@ -47,7 +47,7 @@ export class RegistryServer {
     } else {
       this.app.get("/dashboard", (_req, res) => {
         res.status(503).send(
-          "Dashboard not built. Run: npm run build:dashboard"
+          "Dashboard not built. Run: pnpm run build:dashboard"
         );
       });
     }

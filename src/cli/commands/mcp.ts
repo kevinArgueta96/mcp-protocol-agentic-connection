@@ -49,7 +49,7 @@ export function registerMcpCommand(program: Command): void {
     .command("config")
     .description("Print the .mcp.json config to add agent-bridge to Claude Code")
     .option("--write", "Write .mcp.json to the current directory")
-    .option("--global", "Use global installation path (npx)")
+    .option("--global", "Use global installation path (pnpm dlx)")
     .action(async (options) => {
       const cliPath = resolve(process.argv[1]);
 
@@ -59,8 +59,8 @@ export function registerMcpCommand(program: Command): void {
         ? {
             mcpServers: {
               "agent-bridge": {
-                command: "npx",
-                args: ["agent-bridge", "mcp", "start"],
+                command: "pnpm",
+                args: ["dlx", "agent-bridge", "mcp", "start"],
                 env: { AGENT_BRIDGE_PROJECT: projectPath },
               },
             },

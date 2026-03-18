@@ -464,7 +464,7 @@ NOTAS CRÍTICAS:
 ## Verificación end-to-end
 
 ```bash
-npm run build                          # Debe compilar sin errores TypeScript
+pnpm run build                          # Debe compilar sin errores TypeScript
 agent-bridge registry start            # Registry en :4999
 agent-bridge start . --port 5001       # Agente en :5001
 agent-bridge start ~/other-project     # Agente en :5002

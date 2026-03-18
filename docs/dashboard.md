@@ -24,7 +24,7 @@ Referencias:
 
 ```bash
 cd dashboard
-npm run dev
+pnpm run dev
 ```
 
 Por defecto:
@@ -37,7 +37,7 @@ Por defecto:
 
 ```bash
 cd dashboard
-npm run build
+pnpm run build
 ```
 
 ### Servido desde el registry
@@ -51,7 +51,7 @@ http://localhost:4999/dashboard
 Si no existe, responde:
 
 ```text
-Dashboard not built. Run: npm run build:dashboard
+Dashboard not built. Run: pnpm run build:dashboard
 ```
 
 ## Variables de entorno

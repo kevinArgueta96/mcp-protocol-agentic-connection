@@ -11,8 +11,8 @@ El repositorio tiene dos superficies principales:
 
 El proyecto compila hoy y ya cubre el flujo local básico:
 
-- `npm run build` en la raíz compila el backend TypeScript.
-- `npm run build` dentro de `dashboard/` compila el frontend Vue.
+- `pnpm run build` en la raíz compila el backend TypeScript.
+- `pnpm run build` dentro de `dashboard/` compila el frontend Vue.
 - El registry expone HTTP y WebSocket en `localhost`.
 - Los agentes se registran en el registry, publican heartbeat y emiten eventos de tareas.
 - El dashboard consume el WebSocket del registry y permite chat HTTP con agentes.
@@ -28,13 +28,13 @@ También hay limitaciones que deben asumirse como parte del comportamiento actua
 ## Requisitos
 
 - Node.js `>=22`
-- `npm`
+- `pnpm`
 
 ## Instalación
 
 ```bash
-npm install
-cd dashboard && npm install
+pnpm install
+cd dashboard && pnpm install
 ```
 
 ## Estructura rápida
@@ -59,7 +59,7 @@ cd dashboard && npm install
 ### 1. Levantar el registry
 
 ```bash
-npm run dev -- registry start
+pnpm run dev -- registry start
 ```
 
 Registry por defecto:
@@ -73,13 +73,13 @@ Registry por defecto:
 Desde la raíz de este repositorio o cualquier otro proyecto local:
 
 ```bash
-npm run dev -- start .
+pnpm run dev -- start .
 ```
 
 Opcionalmente:
 
 ```bash
-npm run dev -- start . --port 5005
+pnpm run dev -- start . --port 5005
 ```
 
 Al arrancar, el agente:
@@ -93,31 +93,31 @@ Al arrancar, el agente:
 ### 3. Listar agentes
 
 ```bash
-npm run dev -- list
+pnpm run dev -- list
 ```
 
 Con salida JSON:
 
 ```bash
-npm run dev -- list --json
+pnpm run dev -- list --json
 ```
 
 ### 4. Enviar una tarea a un agente
 
 ```bash
-npm run dev -- ask <agent-id-o-nombre> "find payment endpoint"
+pnpm run dev -- ask <agent-id-o-nombre> "find payment endpoint"
 ```
 
 Forzando skill:
 
 ```bash
-npm run dev -- ask <agent-id-o-nombre> "find payment endpoint" --skill endpoint-find
+pnpm run dev -- ask <agent-id-o-nombre> "find payment endpoint" --skill endpoint-find
 ```
 
 ### 5. Delegar por skill
 
 ```bash
-npm run dev -- delegate endpoint-find "search checkout flow"
+pnpm run dev -- delegate endpoint-find "search checkout flow"
 ```
 
 ### 6. Abrir el dashboard
@@ -125,7 +125,7 @@ npm run dev -- delegate endpoint-find "search checkout flow"
 En desarrollo:
 
 ```bash
-npm run dev:dashboard
+pnpm run dev:dashboard
 ```
 
 Luego abre:
@@ -137,7 +137,7 @@ http://localhost:5173
 Si ya compilaste el dashboard y el registry esta arriba:
 
 ```bash
-npm run dev -- dashboard --no-open
+pnpm run dev -- dashboard --no-open
 ```
 
 ### 7. Usar como servidor MCP
@@ -145,7 +145,7 @@ npm run dev -- dashboard --no-open
 Arranque rapido en `stdio`:
 
 ```bash
-npm run dev -- mcp start
+pnpm run dev -- mcp start
 ```
 
 Esto intenta:
@@ -158,7 +158,7 @@ Esto intenta:
 Generar configuracion `.mcp.json`:
 
 ```bash
-npm run dev -- mcp config
+pnpm run dev -- mcp config
 ```
 
 ## Scripts
@@ -167,13 +167,13 @@ npm run dev -- mcp config
 
 | Script | Descripción |
 | --- | --- |
-| `npm run build` | Compila TypeScript a `dist/` |
-| `npm run dev` | Ejecuta la CLI desde `src/cli/index.ts` con `tsx` |
-| `npm run start` | Ejecuta la CLI compilada desde `dist/cli/index.js` |
-| `npm run clean` | Borra `dist/` |
-| `npm run build:dashboard` | Compila solo el dashboard |
-| `npm run build:all` | Compila backend, dashboard y copia `dashboard/dist` a `dist/dashboard` |
-| `npm run dev:dashboard` | Levanta Vite para el dashboard |
+| `pnpm run build` | Compila TypeScript a `dist/` |
+| `pnpm run dev` | Ejecuta la CLI desde `src/cli/index.ts` con `tsx` |
+| `pnpm run start` | Ejecuta la CLI compilada desde `dist/cli/index.js` |
+| `pnpm run clean` | Borra `dist/` |
+| `pnpm run build:dashboard` | Compila solo el dashboard |
+| `pnpm run build:all` | Compila backend, dashboard y copia `dashboard/dist` a `dist/dashboard` |
+| `pnpm run dev:dashboard` | Levanta Vite para el dashboard |
 
 ### Dashboard
 
@@ -181,9 +181,9 @@ Dentro de `dashboard/`:
 
 | Script | Descripción |
 | --- | --- |
-| `npm run dev` | Levanta Vite en `localhost:5173` |
-| `npm run build` | Ejecuta `vue-tsc --noEmit` y build de Vite |
-| `npm run preview` | Sirve el build del dashboard |
+| `pnpm run dev` | Levanta Vite en `localhost:5173` |
+| `pnpm run build` | Ejecuta `vue-tsc --noEmit` y build de Vite |
+| `pnpm run preview` | Sirve el build del dashboard |
 
 ## Comandos CLI
 
@@ -271,8 +271,8 @@ Referencias:
 
 Se verificó en este repositorio:
 
-- `npm run build` en la raíz: OK
-- `npm run build` en `dashboard/`: OK
+- `pnpm run build` en la raíz: OK
+- `pnpm run build` en `dashboard/`: OK
 
 ## Documentación detallada
 

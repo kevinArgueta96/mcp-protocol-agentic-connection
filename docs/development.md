@@ -3,13 +3,13 @@
 ## Requisitos
 
 - Node.js `>=22`
-- `npm`
+- `pnpm`
 
 ## Instalación para desarrollo
 
 ```bash
-npm install
-cd dashboard && npm install
+pnpm install
+cd dashboard && pnpm install
 ```
 
 ## Layout del repositorio
@@ -35,26 +35,26 @@ PLAN.md
 Arrancar el registry:
 
 ```bash
-npm run dev -- registry start
+pnpm run dev -- registry start
 ```
 
 Arrancar un agente:
 
 ```bash
-npm run dev -- start .
+pnpm run dev -- start .
 ```
 
 Probar operación:
 
 ```bash
-npm run dev -- list
-npm run dev -- ask <agent> "project info"
+pnpm run dev -- list
+pnpm run dev -- ask <agent> "project info"
 ```
 
 ### Frontend
 
 ```bash
-npm run dev:dashboard
+pnpm run dev:dashboard
 ```
 
 ## Builds
@@ -62,7 +62,7 @@ npm run dev:dashboard
 ### Backend
 
 ```bash
-npm run build
+pnpm run build
 ```
 
 Salida:
@@ -72,7 +72,7 @@ Salida:
 ### Dashboard
 
 ```bash
-npm run build:dashboard
+pnpm run build:dashboard
 ```
 
 Salida:
@@ -82,7 +82,7 @@ Salida:
 ### Build combinado
 
 ```bash
-npm run build:all
+pnpm run build:all
 ```
 
 Acciones:
@@ -132,10 +132,10 @@ Si no detecta nada:
 
 ## Checklist de verificación manual
 
-- `npm run build` en la raíz
-- `cd dashboard && npm run build`
-- `npm run dev -- registry start`
-- `npm run dev -- start .`
-- `npm run dev -- list`
-- `npm run dev -- ask <agent> "project info"`
+- `pnpm run build` en la raíz
+- `cd dashboard && pnpm run build`
+- `pnpm run dev -- registry start`
+- `pnpm run dev -- start .`
+- `pnpm run dev -- list`
+- `pnpm run dev -- ask <agent> "project info"`
 - abrir `http://localhost:4999/dashboard` si el dashboard fue compilado

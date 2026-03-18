@@ -117,13 +117,13 @@ The registry broadcasts JSON messages to all connected dashboards:
 
 ```bash
 # In repo root — start the registry
-npm run dev -- registry start
+pnpm run dev -- registry start
 
 # In repo root — start an agent
-npm run dev -- start .
+pnpm run dev -- start .
 
 # In dashboard/ — start the Vite dev server
-npm run dev:dashboard
+pnpm run dev:dashboard
 ```
 
 The Vite dev server proxies `/ws`, `/agents`, `/events` to `localhost:4999`.
@@ -132,7 +132,7 @@ The Vite dev server proxies `/ws`, `/agents`, `/events` to `localhost:4999`.
 
 ```bash
 # Build both backend and frontend
-npm run build:all
+pnpm run build:all
 
 # This compiles:
 # 1. TypeScript → dist/
