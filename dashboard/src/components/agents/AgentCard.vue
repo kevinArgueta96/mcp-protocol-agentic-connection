@@ -1,13 +1,11 @@
 <template>
   <div
-    class="sig-card fade-in"
-    :class="isClient ? (agent.healthy ? 'card-client-on' : 'card-off') : (agent.healthy ? 'card-agent-on' : 'card-off')"
-    style="padding:10px;cursor:pointer;"
+    class="sig-card fade-in agent-card"
+    :class="isClient ? 'card-client' : 'card-agent'"
     @click="expanded = !expanded"
   >
-    <!-- Row 1: health + name + type badge -->
+    <!-- Row 1: name + type badge -->
     <div style="display:flex;align-items:center;gap:8px;">
-      <HealthPulse :healthy="agent.healthy" />
       <span style="font-size:11px;font-weight:600;color:var(--text);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;">{{ displayName }}</span>
       <span class="chip" :class="isClient ? 'chip-violet' : typeChipClass" style="flex-shrink:0;">
         {{ isClient ? clientLabel : typeBadge }}
@@ -51,7 +49,6 @@
 import { ref, computed } from "vue";
 import { RouterLink } from "vue-router";
 import { useTimeAgo } from "@vueuse/core";
-import HealthPulse from "./HealthPulse.vue";
 import SkillBadge from "./SkillBadge.vue";
 import PayloadViewer from "@/components/trace/PayloadViewer.vue";
 import { projectTypeBadge } from "@/lib/utils";
@@ -95,9 +92,23 @@ const agentJson = computed(() => ({
 </script>
 
 <style scoped>
-.card-agent-on  { border-color: color-mix(in srgb, var(--emerald) 25%, var(--border-dim)); }
-.card-client-on { border-color: color-mix(in srgb, var(--indigo)  25%, var(--border-dim)); }
-.card-off       { border-color: color-mix(in srgb, var(--red)     20%, var(--border-dim)); }
+.agent-card {
+  padding: 10px;
+  cursor: pointer;
+  border-left: 3px solid transparent;
+  transition: background-color 0.15s, border-color 0.15s;
+}
+.agent-card:hover {
+  background-color: color-mix(in srgb, var(--text) 4%, transparent);
+}
+.card-agent {
+  border-color: color-mix(in srgb, var(--emerald) 25%, var(--border-dim));
+  border-left-color: var(--emerald);
+}
+.card-client {
+  border-color: color-mix(in srgb, var(--indigo) 25%, var(--border-dim));
+  border-left-color: var(--indigo);
+}
 .detail-link {
   font-size: 10px;
   color: var(--text-dim);

@@ -27,9 +27,9 @@
           <span style="font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:var(--indigo);">● clients</span>
           <span style="font-size:9px;color:var(--text-ghost);">{{ clientList.length }}</span>
         </div>
-        <div style="display:flex;flex-direction:column;gap:6px;">
+        <TransitionGroup tag="div" name="agent-fade" style="display:flex;flex-direction:column;gap:6px;">
           <AgentCard v-for="a in clientList" :key="a.agentId" :agent="a" />
-        </div>
+        </TransitionGroup>
       </section>
 
       <!-- Skill Agents -->
@@ -38,21 +38,37 @@
           <span style="font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-mid);">◈ skill agents</span>
           <span style="font-size:9px;color:var(--text-ghost);">{{ skillAgentList.length }}</span>
         </div>
-        <div style="display:flex;flex-direction:column;gap:6px;">
+        <TransitionGroup tag="div" name="agent-fade" style="display:flex;flex-direction:column;gap:6px;">
           <AgentCard v-for="a in skillAgentList" :key="a.agentId" :agent="a" />
-        </div>
+        </TransitionGroup>
       </section>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, TransitionGroup } from "vue";
 import { useRegistryStore } from "@/stores/registry";
 import AgentCard from "./AgentCard.vue";
 
 const store = useRegistryStore();
-const agentList = computed(() => store.agentList);
+const agentList = computed(() => store.agentList.filter(a => a.healthy));
 const clientList = computed(() => agentList.value.filter((a) => a.entryType === "client"));
 const skillAgentList = computed(() => agentList.value.filter((a) => a.entryType !== "client"));
 </script>
+
+<style scoped>
+.agent-fade-enter-active,
+.agent-fade-leave-active {
+  transition: all 0.3s ease;
+}
+.agent-fade-enter-from,
+.agent-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+.agent-fade-leave-active {
+  position: absolute;
+  width: 100%;
+}
+</style>
