@@ -1,15 +1,21 @@
 /**
  * MCP Adapter — Bridges local A2A agents as MCP tools for Claude Code, Codex, Gemini CLI
  *
- * When connected, Claude Code sees:
- *  - One MCP tool per skill per agent (e.g. "billing_api__endpoint_find")
- *  - Meta-tools: list_agents, agent_health, project_files, project_info
- *  - Resources: each agent's Agent Card at agents://{agentId}/card
- *  - A prompt showing what agents are connected and what they can do
+ * AUTO MODE (default):
+ *   If no registry is running at localhost:4999, starts one in-process.
+ *   Also auto-starts a local agent for the current working directory.
+ *   This means `mcp start` is fully self-contained — no manual setup needed.
+ *
+ * MANUAL MODE:
+ *   Run registry + agents separately, then `mcp start` discovers them.
  */
 export interface McpAdapterOptions {
     registryUrl?: string;
-    /** If true, also register per-agent per-skill tools (verbose but powerful) */
+    /** Auto-start registry + local agent if none found (default: true) */
+    auto?: boolean;
+    /** Project path for the auto-started agent (default: cwd) */
+    projectPath?: string;
+    /** Register per-agent skill tools in addition to meta-tools (default: true) */
     registerSkillTools?: boolean;
 }
 export declare class McpAgentBridge {
@@ -17,15 +23,13 @@ export declare class McpAgentBridge {
     private registry;
     private options;
     constructor(options?: McpAdapterOptions);
-    /** Discover agents, register all tools and resources, then connect transport */
     start(transport?: "stdio" | "http", httpPort?: number): Promise<void>;
+    private ensureInfrastructure;
     private registerMetaTools;
     private registerAgentSkillTools;
-    /** Map skill IDs to their known Zod input schemas */
     private getSkillInputSchema;
     private registerResources;
     private registerPrompts;
-    /** Resolve agentId by exact ID, name match, or short ID prefix */
     private resolveAgent;
     private startHttpTransport;
 }

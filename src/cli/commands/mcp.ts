@@ -11,13 +11,19 @@ export function registerMcpCommand(program: Command): void {
   // ── mcp start ─────────────────────────────────────────────────────────────
   mcp
     .command("start")
-    .description("Start MCP adapter in stdio mode (used by Claude Code and other MCP clients)")
+    .description(
+      "Start MCP adapter in stdio mode (used by Claude Code and other MCP clients). " +
+      "Auto-starts an embedded registry and local agent if none are running."
+    )
     .option("--registry-url <url>", "Registry URL", "http://localhost:4999")
+    .option("--project <path>", "Project path for the auto-started agent (default: cwd)")
+    .option("--no-auto", "Disable auto-start of registry/agent (require manual setup)")
     .option("--no-skill-tools", "Only register meta-tools, not per-agent skill tools")
     .action(async (options) => {
-      // stdio mode: no stdout, only stderr
       const bridge = new McpAgentBridge({
         registryUrl: options.registryUrl,
+        auto: options.auto !== false,
+        projectPath: options.project ?? process.env["AGENT_BRIDGE_PROJECT"] ?? process.cwd(),
         registerSkillTools: options.skillTools !== false,
       });
       await bridge.start("stdio");
@@ -47,13 +53,15 @@ export function registerMcpCommand(program: Command): void {
     .action(async (options) => {
       const cliPath = resolve(process.argv[1]);
 
+      const projectPath = resolve(process.cwd());
+
       const config = options.global
         ? {
             mcpServers: {
               "agent-bridge": {
                 command: "npx",
                 args: ["agent-bridge", "mcp", "start"],
-                description: "agent-bridge — local A2A agent protocol",
+                env: { AGENT_BRIDGE_PROJECT: projectPath },
               },
             },
           }
@@ -62,7 +70,7 @@ export function registerMcpCommand(program: Command): void {
               "agent-bridge": {
                 command: "node",
                 args: [cliPath, "mcp", "start"],
-                description: "agent-bridge — local A2A agent protocol",
+                env: { AGENT_BRIDGE_PROJECT: projectPath },
               },
             },
           };
@@ -71,12 +79,14 @@ export function registerMcpCommand(program: Command): void {
 
       if (options.write) {
         await writeFile(".mcp.json", json, "utf-8");
-        console.log(chalk.green("✓") + " .mcp.json written to current directory");
-        console.log(chalk.dim("  Restart Claude Code to pick up the new MCP server"));
+        console.log(chalk.green("✓") + " .mcp.json written");
+        console.log(chalk.dim(`  Project: ${projectPath}`));
+        console.log(chalk.dim("  Restart Claude Code to pick up the new server"));
       } else {
         console.log("\n" + chalk.bold("Add to your .mcp.json:") + "\n");
         console.log(json);
-        console.log("\n" + chalk.dim("Or run: agent-bridge mcp config --write"));
+        console.log();
+        console.log(chalk.dim("Or run: agent-bridge mcp config --write"));
         console.log(chalk.dim("Or run: claude mcp add agent-bridge -- node " + cliPath + " mcp start"));
       }
     });
