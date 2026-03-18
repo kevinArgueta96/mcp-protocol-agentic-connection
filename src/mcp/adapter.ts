@@ -56,6 +56,8 @@ export class McpAgentBridge {
   private server: McpServer;
   private registry: RegistryClient;
   private options: Required<McpAdapterOptions>;
+  private clientAgentId: string | null = null;
+  private clientHeartbeatTimer: NodeJS.Timeout | null = null;
 
   constructor(options: McpAdapterOptions = {}) {
     this.options = {
@@ -81,7 +83,10 @@ export class McpAgentBridge {
     this.registerResources(agents);
     this.registerPrompts(agents);
 
-    // ── 3. Connect transport ───────────────────────────────────────────────
+    // ── 3. Setup client detection (must be before connect) ─────────────────
+    this.setupClientDetection();
+
+    // ── 4. Connect transport ───────────────────────────────────────────────
     if (transport === "stdio") {
       const stdioTransport = new StdioServerTransport();
       await this.server.connect(stdioTransport);
@@ -129,6 +134,84 @@ export class McpAgentBridge {
     }
 
     return agents;
+  }
+
+  // ── Client detection ───────────────────────────────────────────────────────
+
+  private setupClientDetection(): void {
+    // Access the underlying MCP SDK Server to hook into the initialize handshake
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const innerServer = (this.server as unknown as { server: any }).server;
+    if (!innerServer) return;
+
+    innerServer.oninitialized = async () => {
+      try {
+        const clientVersion = innerServer.getClientVersion?.();
+        if (!clientVersion?.name) return;
+
+        const clientName: string = clientVersion.name;
+        const version: string = clientVersion.version ?? "unknown";
+        this.clientAgentId = `client-${clientName}-${Date.now()}`;
+
+        const registration = {
+          agentId: this.clientAgentId,
+          name: clientName,
+          url: "",
+          wsUrl: "",
+          port: 0,
+          projectPath: this.options.projectPath,
+          projectName: clientName,
+          projectType: "unknown",
+          card: {
+            name: clientName,
+            description: `AI client: ${clientName} v${version}`,
+            url: "",
+            version,
+            capabilities: { streaming: false, pushNotifications: false, stateTransitionHistory: false },
+            defaultInputModes: ["text"],
+            defaultOutputModes: ["text"],
+            skills: [],
+          },
+          registeredAt: Date.now(),
+          entryType: "client" as const,
+          clientInfo: { clientName, clientVersion: version },
+        };
+
+        await fetch(`${this.options.registryUrl}/agents`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(registration),
+        });
+        console.error(`[MCP] Registered client: ${clientName} v${version}`);
+
+        this.clientHeartbeatTimer = setInterval(async () => {
+          if (!this.clientAgentId) return;
+          try {
+            await fetch(`${this.options.registryUrl}/agents/${this.clientAgentId}/heartbeat`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ agentId: this.clientAgentId, timestamp: Date.now(), status: "alive" }),
+            });
+          } catch { /* ignore heartbeat errors */ }
+        }, 30_000);
+
+        const cleanup = async () => {
+          if (this.clientHeartbeatTimer) { clearInterval(this.clientHeartbeatTimer); this.clientHeartbeatTimer = null; }
+          if (this.clientAgentId) {
+            try {
+              await fetch(`${this.options.registryUrl}/agents/${this.clientAgentId}`, { method: "DELETE" });
+            } catch { /* ignore */ }
+            this.clientAgentId = null;
+          }
+        };
+
+        process.once("SIGINT", cleanup);
+        process.once("SIGTERM", cleanup);
+        process.once("beforeExit", cleanup);
+      } catch (err) {
+        console.error("[MCP] Failed to register client:", err);
+      }
+    };
   }
 
   // ── Meta-tools ─────────────────────────────────────────────────────────────

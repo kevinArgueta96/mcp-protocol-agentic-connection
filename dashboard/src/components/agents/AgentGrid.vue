@@ -20,13 +20,36 @@
       </p>
     </div>
 
-    <!-- Agent cards -->
-    <div v-else class="flex-1 overflow-y-auto p-3 flex flex-col gap-2">
-      <AgentCard
-        v-for="agent in agentList"
-        :key="agent.agentId"
-        :agent="agent"
-      />
+    <div v-else class="flex-1 overflow-y-auto p-3 flex flex-col gap-3">
+      <!-- AI Clients section -->
+      <div v-if="clientList.length > 0">
+        <div class="flex items-center gap-1.5 mb-2">
+          <span class="font-mono text-[9px] text-violet-400/70 uppercase tracking-wider">Clients</span>
+          <span class="font-mono text-[9px] text-white/20">{{ clientList.length }}</span>
+        </div>
+        <div class="flex flex-col gap-2">
+          <AgentCard
+            v-for="agent in clientList"
+            :key="agent.agentId"
+            :agent="agent"
+          />
+        </div>
+      </div>
+
+      <!-- Skill Agents section -->
+      <div v-if="skillAgentList.length > 0">
+        <div class="flex items-center gap-1.5 mb-2" :class="clientList.length > 0 ? 'mt-1' : ''">
+          <span class="font-mono text-[9px] text-white/40 uppercase tracking-wider">Skill Agents</span>
+          <span class="font-mono text-[9px] text-white/20">{{ skillAgentList.length }}</span>
+        </div>
+        <div class="flex flex-col gap-2">
+          <AgentCard
+            v-for="agent in skillAgentList"
+            :key="agent.agentId"
+            :agent="agent"
+          />
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -38,4 +61,6 @@ import AgentCard from "./AgentCard.vue";
 
 const store = useRegistryStore();
 const agentList = computed(() => store.agentList);
+const clientList = computed(() => agentList.value.filter((a) => a.entryType === "client"));
+const skillAgentList = computed(() => agentList.value.filter((a) => a.entryType !== "client"));
 </script>

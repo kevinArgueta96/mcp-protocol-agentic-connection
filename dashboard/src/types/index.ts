@@ -36,6 +36,11 @@ export interface RegistryAgent {
   registeredAt: number;
   lastHeartbeat: number;
   healthy: boolean;
+  entryType?: "agent" | "client";
+  clientInfo?: {
+    clientName: string;
+    clientVersion: string;
+  };
 }
 
 export type TraceEventKind = "task" | "ag-ui-step" | "ag-ui-tool";

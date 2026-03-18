@@ -12,6 +12,11 @@ export interface AgentRegistration {
   projectType: string;
   card: AgentCard;
   registeredAt: number;
+  entryType?: "agent" | "client";
+  clientInfo?: {
+    clientName: string;
+    clientVersion: string;
+  };
 }
 
 export interface AgentHeartbeat {
