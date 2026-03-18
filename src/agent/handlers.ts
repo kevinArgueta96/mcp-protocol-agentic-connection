@@ -310,7 +310,7 @@ export function makeSkillContext(agentId: string, taskId: string, projectPath: s
   };
 }
 
-/** Try to infer skillId from message text keywords */
+/** Try to infer skillId from message text keywords — natural language aware */
 export function inferSkillFromMessage(params: TaskSendParams): string | undefined {
   const text = params.message.parts
     .filter((p) => p.type === "text")
@@ -318,10 +318,14 @@ export function inferSkillFromMessage(params: TaskSendParams): string | undefine
     .join(" ")
     .toLowerCase();
 
-  if (text.includes("endpoint") || text.includes("route") || text.includes("api")) return "endpoint-find";
-  if (text.includes("search") || text.includes("find") || text.includes("grep")) return "code-query";
-  if (text.includes("file") || text.includes("list")) return "file-search";
-  if (text.includes("prompt") || text.includes("template")) return "prompt-execute";
+  // Endpoint / route discovery
+  if (/endpoint|route|api|path|url|controller|handler|http|rest|graphql|webhook/.test(text)) return "endpoint-find";
+  // File listing / navigation
+  if (/list files?|show files?|what files?|directory|folder|structure|tree|glob/.test(text)) return "file-search";
+  // Code search / analysis
+  if (/find|search|where|locate|grep|look for|contains?|usage|references?|import|function|class|variable|constant|interface|type/.test(text)) return "code-query";
+  // Prompt templates
+  if (/prompt|template|generate|fill|placeholder/.test(text)) return "prompt-execute";
   return undefined;
 }
 

@@ -166,17 +166,26 @@ export class AgentServer {
         };
         const skillId = inferSkillFromMessage(fakeParams);
 
-        // For natural language: fall back to code-query with the full message as the search term
+        // Resolve skill: inferred → fallback to best available skill for the text
+        const availableSkills = ctx.skillRegistry.list().map((s) => s.id);
         const resolvedSkillId = (skillId && ctx.skillRegistry.get(skillId))
           ? skillId
-          : "code-query";
+          : availableSkills.includes("code-query")
+            ? "code-query"
+            : availableSkills[0] ?? "code-query";
 
-        const skill = ctx.skillRegistry.get(resolvedSkillId)!;
+        const skill = ctx.skillRegistry.get(resolvedSkillId);
+        if (!skill) {
+          emit(runError(`No skills available. Registered: ${availableSkills.join(", ") || "none"}`));
+          res.end();
+          return;
+        }
+
         const taskId = uuid();
         const skillCtx = makeSkillContext(ctx.agentId, taskId, ctx.projectPath);
 
-        // For code-query fallback, use the full user text as the query
-        const rawInput = resolvedSkillId !== skillId
+        // Build skill input: if inferred skill matches, parse from message; otherwise use full text as query
+        const rawInput = (resolvedSkillId !== skillId)
           ? { query: userText }
           : parseInputFromMessage(fakeParams);
 
@@ -193,7 +202,7 @@ export class AgentServer {
 
         let result: unknown;
         if (parsed.success) {
-          result = await skill.execute(parsed.data, skillCtx);
+          result = await skill!.execute(parsed.data, skillCtx);
         } else {
           result = { error: `Invalid input: ${parsed.error.message}` };
         }

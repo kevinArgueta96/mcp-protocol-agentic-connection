@@ -60,7 +60,6 @@ export const useChatStore = defineStore("chat", () => {
     messages.value = [...messages.value, agentMsg];
     isStreaming.value = true;
 
-    const agentUrl = selectedAgent.value.url;
     const agentId = selectedAgent.value.agentId;
     const agentName = selectedAgent.value.name;
     const threadId = randomUUID();
@@ -73,7 +72,9 @@ export const useChatStore = defineStore("chat", () => {
     abortController = new AbortController();
 
     try {
-      const response = await fetch(`${agentUrl}/ag-ui`, {
+      // Use registry proxy (/agents/:id/ag-ui) to avoid cross-origin issues.
+      // Vite dev proxy maps /agents → http://localhost:4999; production is same-origin.
+      const response = await fetch(`/agents/${agentId}/ag-ui`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

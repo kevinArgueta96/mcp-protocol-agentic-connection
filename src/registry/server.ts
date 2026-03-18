@@ -104,6 +104,50 @@ export class RegistryServer {
       });
     });
 
+    // AG-UI SSE proxy — forward streaming from dashboard → agent
+    // Avoids cross-origin fetch issues; dashboard uses /agents/:id/ag-ui (same-origin via proxy)
+    this.app.post("/agents/:id/ag-ui", async (req, res) => {
+      const entry = this.store.get(req.params.id);
+      if (!entry || !entry.url) {
+        res.status(404).json({ error: "Agent not found or has no URL" });
+        return;
+      }
+
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.flushHeaders();
+
+      let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+      req.on("close", () => { reader?.cancel(); });
+
+      try {
+        const upstream = await fetch(`${entry.url}/ag-ui`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(req.body),
+        });
+
+        if (!upstream.ok || !upstream.body) {
+          res.write(`data: ${JSON.stringify({ type: "RUN_ERROR", message: `Agent HTTP ${upstream.status}` })}\n\n`);
+          res.end();
+          return;
+        }
+
+        reader = upstream.body.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done || !res.writable) break;
+          res.write(value);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        res.write(`data: ${JSON.stringify({ type: "RUN_ERROR", message: msg })}\n\n`);
+      }
+      res.end();
+    });
+
     // Task lifecycle events from agents
     this.app.post("/events", (req, res) => {
       const { agentId, agentName, taskId, state, skillId, timestamp, payload, clientId, clientName } = req.body as {
