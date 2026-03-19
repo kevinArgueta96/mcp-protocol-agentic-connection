@@ -301,9 +301,14 @@ export class McpAgentBridge {
     // Check if any agents are registered
     let agents = await this.registry.listAgents({ healthy: true });
 
-    if (agents.length === 0 && this.options.auto) {
+    // Check if there's already an agent for THIS project specifically
+    const hasAgentForThisProject = agents.some(
+      (a) => a.entryType !== "client" && a.projectPath === this.options.projectPath
+    );
+
+    if (!hasAgentForThisProject && this.options.auto) {
       // Auto-start a local agent for the current project
-      console.error(`[MCP] No agents found — starting agent for: ${this.options.projectPath}`);
+      console.error(`[MCP] No agent for ${this.options.projectPath} — starting one`);
       this.embeddedAgent = new AgentServer({
         projectPath: this.options.projectPath,
         registryUrl: this.options.registryUrl,
