@@ -17,7 +17,7 @@ import {
   toolCallStart, toolCallArgs, toolCallEnd,
   sseLine,
 } from "./ag-ui-events.js";
-import { createDefaultRegistry } from "../skills/index.js";
+import { createDefaultRegistry, createClaudeRegistry } from "../skills/index.js";
 import type { BaseSkill } from "../skills/framework.js";
 import type { AgentMessage } from "../types/messages.js";
 
@@ -31,6 +31,7 @@ export interface AgentServerOptions {
   projectPath?: string;
   extraSkills?: BaseSkill[];
   registryUrl?: string;
+  useClaudeCode?: boolean;
   name?: string;
 }
 
@@ -63,7 +64,9 @@ export class AgentServer {
   async start(): Promise<StartResult> {
     const projectPath = resolve(this.options.projectPath ?? process.cwd());
     const projectInfo = await detectProjectType(projectPath);
-    const skillRegistry = createDefaultRegistry();
+    const skillRegistry = this.options.useClaudeCode
+      ? createClaudeRegistry(projectPath)
+      : createDefaultRegistry();
 
     for (const skill of this.options.extraSkills ?? []) {
       skillRegistry.register(skill);
