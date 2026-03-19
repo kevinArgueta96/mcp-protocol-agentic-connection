@@ -1,6 +1,9 @@
 // Built-in skill: execute complex tasks using Claude Code CLI subprocess
 import { z } from "zod";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import { BaseSkill } from "../framework.js";
 import type { SkillContext } from "../../types/skills.js";
 
@@ -21,11 +24,25 @@ const outputSchema = z.object({
 type Input = z.infer<typeof inputSchema>;
 type Output = z.infer<typeof outputSchema>;
 
-// Find the claude CLI: prefer local install, fall back to PATH
-function getClaudePath(): string {
-  // Use the locally installed claude from node_modules
-  return "claude";
+// Resolve the claude CLI path once at module load
+// Checks known locations before falling back to PATH lookup
+function resolveClaudePath(): string {
+  const candidates = [
+    join(homedir(), ".local", "bin", "claude"),
+    "/usr/local/bin/claude",
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  // Try PATH resolution
+  try {
+    return execFileSync("which", ["claude"], { encoding: "utf8" }).trim();
+  } catch {
+    return "claude"; // let the OS find it
+  }
 }
+
+const CLAUDE_PATH = resolveClaudePath();
 
 export class ClaudeExecuteSkill extends BaseSkill<Input, Output> {
   readonly id = "claude-execute";
@@ -37,7 +54,7 @@ export class ClaudeExecuteSkill extends BaseSkill<Input, Output> {
 
   async execute(input: Input, context: SkillContext): Promise<Output> {
     const tools = input.allowedTools ?? ["Read", "Glob", "Grep", "Bash"];
-    const claudePath = getClaudePath();
+    const claudePath = CLAUDE_PATH;
 
     context.log("info", `Claude Code executing: "${input.prompt.slice(0, 80)}..."`);
 
