@@ -1,5 +1,6 @@
-// Built-in skill: execute complex tasks using Claude Code SDK
+// Built-in skill: execute complex tasks using Claude Code CLI subprocess
 import { z } from "zod";
+import { spawn } from "node:child_process";
 import { BaseSkill } from "../framework.js";
 import type { SkillContext } from "../../types/skills.js";
 
@@ -20,6 +21,12 @@ const outputSchema = z.object({
 type Input = z.infer<typeof inputSchema>;
 type Output = z.infer<typeof outputSchema>;
 
+// Find the claude CLI: prefer local install, fall back to PATH
+function getClaudePath(): string {
+  // Use the locally installed claude from node_modules
+  return "claude";
+}
+
 export class ClaudeExecuteSkill extends BaseSkill<Input, Output> {
   readonly id = "claude-execute";
   readonly name = "Claude Code Execute";
@@ -28,45 +35,69 @@ export class ClaudeExecuteSkill extends BaseSkill<Input, Output> {
   readonly tags = ["ai", "code", "analysis", "modification", "review"];
   readonly inputSchema = inputSchema;
 
-  // Session persistence: projectPath → claude sessionId
-  private sessions = new Map<string, string>();
-
   async execute(input: Input, context: SkillContext): Promise<Output> {
-    // @ts-expect-error — @anthropic-ai/claude-code has no TypeScript module exports
-    const { query } = await import("@anthropic-ai/claude-code");
-
-    const existingSession = this.sessions.get(context.projectPath);
+    const tools = input.allowedTools ?? ["Read", "Glob", "Grep", "Bash"];
+    const claudePath = getClaudePath();
 
     context.log("info", `Claude Code executing: "${input.prompt.slice(0, 80)}..."`);
 
-    const messages = query({
-      prompt: input.prompt,
-      options: {
-        ...(existingSession ? { resume: existingSession } : {}),
+    const args = [
+      "-p", input.prompt,
+      "--output-format", "stream-json",
+      "--allowedTools", tools.join(","),
+    ];
+
+    return new Promise<Output>((resolve, reject) => {
+      const proc = spawn(claudePath, args, {
         cwd: context.projectPath,
-        allowedTools: input.allowedTools ?? ["Read", "Glob", "Grep", "Bash"],
-      },
-    });
+        env: { ...process.env },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
 
-    let resultText = "";
-    let sessionId: string | null = null;
-    let cost = 0;
+      let resultText = "";
+      let sessionId: string | null = null;
+      let cost = 0;
+      let stderrOutput = "";
+      let buffer = "";
 
-    for await (const msg of messages) {
-      sessionId = msg.session_id ?? sessionId;
-      if (msg.type === "result" && "result" in msg) {
-        resultText = typeof msg.result === "string" ? msg.result : JSON.stringify(msg.result);
-        if ("total_cost_usd" in msg && typeof msg.total_cost_usd === "number") {
-          cost = msg.total_cost_usd;
+      proc.stdout.on("data", (chunk: Buffer) => {
+        buffer += chunk.toString();
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          try {
+            const msg = JSON.parse(trimmed) as Record<string, unknown>;
+            if (typeof msg.session_id === "string") sessionId = msg.session_id;
+            if (msg.type === "result" && typeof msg.result === "string") {
+              resultText = msg.result;
+              if (typeof msg.total_cost_usd === "number") cost = msg.total_cost_usd;
+            }
+          } catch {
+            // Ignore non-JSON lines
+          }
         }
-        break;
-      }
-    }
+      });
 
-    if (sessionId) this.sessions.set(context.projectPath, sessionId);
+      proc.stderr.on("data", (chunk: Buffer) => {
+        stderrOutput += chunk.toString();
+      });
 
-    context.log("info", `Claude Code completed. Cost: $${cost.toFixed(4)}`);
+      proc.on("close", (code) => {
+        if (code !== 0 && !resultText) {
+          const errSummary = stderrOutput.slice(0, 200);
+          reject(new Error(`Claude Code exited with code ${code}: ${errSummary}`));
+          return;
+        }
+        context.log("info", `Claude Code completed. Cost: $${cost.toFixed(4)}`);
+        resolve({ text: resultText, sessionId, cost });
+      });
 
-    return { text: resultText, sessionId, cost };
+      proc.on("error", (err) => {
+        reject(new Error(`Failed to spawn claude: ${err.message}`));
+      });
+    });
   }
 }
