@@ -7,7 +7,8 @@ export type RegistryEventType =
   | "agent.heartbeat"
   | "agent.unhealthy"
   | "agent.removed"
-  | "task.update";
+  | "task.update"
+  | "agent.message";
 
 export interface RegistryEvent {
   type: RegistryEventType;

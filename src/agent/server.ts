@@ -19,6 +19,7 @@ import {
 } from "./ag-ui-events.js";
 import { createDefaultRegistry } from "../skills/index.js";
 import type { BaseSkill } from "../skills/framework.js";
+import type { AgentMessage } from "../types/messages.js";
 
 const REGISTRY_URL = "http://localhost:4999";
 const HEARTBEAT_INTERVAL_MS = 30_000;
@@ -49,6 +50,11 @@ export class AgentServer {
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private httpServer: ReturnType<typeof createServer> | null = null;
   private routerCtx: RouterContext | null = null;
+  private registryWs: WebSocket | null = null;
+  private registryWsReconnectTimer: NodeJS.Timeout | null = null;
+  private registryWsReconnectAttempts = 0;
+  private readonly MAX_WS_RECONNECT = 5;
+  private messageHandlers = new Set<(msg: AgentMessage) => void>();
 
   constructor(private readonly options: AgentServerOptions = {}) {
     this.agentId = randomUUID();
@@ -123,9 +129,15 @@ export class AgentServer {
 
     // ── A2A: JSON-RPC endpoint ───────────────────────────────────────────────
     app.post("/", async (req, res) => {
-      const rpcReq = req.body as JsonRpcRequest;
-      const response = await this.router.dispatch(rpcReq, this.routerCtx!);
-      res.json(response);
+      try {
+        const rpcReq = req.body as JsonRpcRequest;
+        const response = await this.router.dispatch(rpcReq, this.routerCtx!);
+        res.json(response);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[Agent] JSON-RPC error: ${msg}`);
+        res.json({ jsonrpc: "2.0", id: (req.body as { id?: unknown })?.id ?? null, error: { code: -32603, message: msg } });
+      }
     });
 
     // ── AG-UI: SSE streaming endpoint ────────────────────────────────────────
@@ -148,9 +160,12 @@ export class AgentServer {
 
       let aborted = false;
       res.on("close", () => { aborted = true; });
+      res.on("error", () => { aborted = true; });
 
       const emit = (event: unknown) => {
-        if (!aborted) res.write(sseLine(event));
+        if (!aborted) {
+          try { res.write(sseLine(event)); } catch { aborted = true; }
+        }
       };
 
       try {
@@ -245,11 +260,26 @@ export class AgentServer {
       });
     });
 
+    // ── Global Express error handler ─────────────────────────────────────────
+    app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[Agent] Unhandled error: ${msg}`);
+      if (!res.headersSent) {
+        res.status(500).json({ error: msg });
+      }
+    });
+
     // ── Create HTTP server + WebSocket ───────────────────────────────────────
     this.httpServer = createServer(app);
+    this.httpServer.on("error", (err) => {
+      console.error(`[Agent] HTTP server error: ${err.message}`);
+    });
 
     const wss = new WebSocketServer({ server: this.httpServer, path: "/ws" });
     wss.on("connection", (ws) => this.handleWsConnection(ws));
+    wss.on("error", (err) => {
+      console.error(`[Agent] WebSocket server error: ${err.message}`);
+    });
 
     await new Promise<void>((resolve) => {
       this.httpServer!.listen(port, "localhost", () => resolve());
@@ -260,6 +290,9 @@ export class AgentServer {
 
     // ── Start heartbeat ──────────────────────────────────────────────────────
     this.heartbeatTimer = setInterval(() => void this.sendHeartbeat(), HEARTBEAT_INTERVAL_MS);
+
+    // ── Connect WS to registry for message relay ──────────────────────────
+    this.connectToRegistry(registryUrl);
 
     return {
       agentId: this.agentId,
@@ -272,11 +305,163 @@ export class AgentServer {
 
   async stop(): Promise<void> {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    if (this.registryWsReconnectTimer) clearTimeout(this.registryWsReconnectTimer);
+    if (this.registryWs) {
+      this.registryWs.close();
+      this.registryWs = null;
+    }
     await this.sendHeartbeat("shutting-down");
     await this.deregisterFromRegistry();
     await new Promise<void>((resolve, reject) => {
       this.httpServer?.close((err) => (err ? reject(err) : resolve()));
     });
+  }
+
+  /** Subscribe to incoming messages from other agents via registry relay */
+  onMessage(handler: (msg: AgentMessage) => void): void {
+    this.messageHandlers.add(handler);
+  }
+
+  /** Send a message to another agent via registry WS relay */
+  sendMessageViaRegistry(message: AgentMessage): boolean {
+    if (this.registryWs && this.registryWs.readyState === WebSocket.OPEN) {
+      this.registryWs.send(JSON.stringify({
+        type: "agent.message",
+        timestamp: new Date().toISOString(),
+        data: message,
+      }));
+      return true;
+    }
+    return false;
+  }
+
+  // ── Registry WebSocket connection ─────────────────────────────────────────
+  private connectToRegistry(registryUrl: string): void {
+    const wsUrl = registryUrl.replace(/^http/, "ws") + "/ws";
+    try {
+      const ws = new WebSocket(wsUrl);
+
+      ws.on("open", () => {
+        console.error(`[Agent] WebSocket connected to registry at ${wsUrl}`);
+        this.registryWsReconnectAttempts = 0;
+        // Identify this agent to the registry
+        ws.send(JSON.stringify({ type: "identify", agentId: this.agentId }));
+        this.registryWs = ws;
+      });
+
+      ws.on("message", (raw) => {
+        try {
+          const msg = JSON.parse(raw.toString());
+          if (msg.type === "agent.message" && msg.data) {
+            const agentMsg = msg.data as AgentMessage;
+            // Log incoming message in terminal
+            const fromId = agentMsg.fromAgentId?.slice(0, 8) ?? "unknown";
+            const msgType = agentMsg.type;
+            const preview = typeof agentMsg.payload === "string"
+              ? agentMsg.payload.slice(0, 80)
+              : JSON.stringify(agentMsg.payload).slice(0, 80);
+            console.error(`[← INCOMING] ${fromId} → ${msgType}: ${preview}`);
+
+            // If it's a task.request, process it and send response back
+            if (agentMsg.type === "task.request" && this.routerCtx) {
+              void this.handleIncomingTask(agentMsg);
+            }
+
+            // Notify handlers
+            for (const handler of this.messageHandlers) {
+              try { handler(agentMsg); } catch { /* ignore handler errors */ }
+            }
+          }
+        } catch {
+          // Ignore non-JSON or unrecognized messages
+        }
+      });
+
+      ws.on("close", () => {
+        console.error("[Agent] Registry WS disconnected — reconnecting in 5s");
+        this.registryWs = null;
+        this.scheduleReconnect(registryUrl);
+      });
+
+      ws.on("error", () => {
+        // Error will trigger close, which handles reconnection
+        this.registryWs = null;
+      });
+    } catch {
+      this.scheduleReconnect(registryUrl);
+    }
+  }
+
+  private scheduleReconnect(registryUrl: string): void {
+    if (this.registryWsReconnectTimer) return;
+    if (this.registryWsReconnectAttempts >= this.MAX_WS_RECONNECT) {
+      console.error(`[Agent] WS reconnect limit reached (${this.MAX_WS_RECONNECT}). WS relay disabled.`);
+      return;
+    }
+    this.registryWsReconnectAttempts++;
+    this.registryWsReconnectTimer = setTimeout(() => {
+      this.registryWsReconnectTimer = null;
+      this.connectToRegistry(registryUrl);
+    }, 5_000);
+  }
+
+  private async handleIncomingTask(agentMsg: AgentMessage): Promise<void> {
+    const ctx = this.routerCtx!;
+    const startTime = Date.now();
+    try {
+      const payload = agentMsg.payload as { message?: string; skillId?: string; input?: Record<string, unknown> };
+      const messageText = payload?.message ?? "";
+      const fakeParams = {
+        message: { role: "user" as const, parts: [{ type: "text" as const, text: messageText }] },
+        metadata: {
+          ...(payload?.skillId ? { skillId: payload.skillId } : {}),
+          ...(payload?.input ? { input: payload.input } : {}),
+        },
+      };
+
+      const skillId = payload?.skillId ?? inferSkillFromMessage(fakeParams);
+      console.error(`[← TASK] Processing skill: ${skillId ?? "auto"} from ${agentMsg.fromAgentId.slice(0, 8)}`);
+
+      const task = ctx.taskStore.create(fakeParams);
+      const rpcReq = {
+        jsonrpc: "2.0" as const,
+        id: task.id,
+        method: "tasks/send",
+        params: {
+          id: task.id,
+          ...fakeParams,
+        },
+      };
+
+      const response = await this.router.dispatch(rpcReq, ctx);
+      const elapsed = Date.now() - startTime;
+      console.error(`[→ COMPLETED] Task ${task.id.slice(0, 8)} (${elapsed}ms)`);
+
+      // Send response back via WS
+      const responseMsg: AgentMessage = {
+        fromAgentId: this.agentId,
+        toAgentId: agentMsg.fromAgentId,
+        taskId: agentMsg.taskId,
+        type: "task.response",
+        payload: response,
+        timestamp: Date.now(),
+      };
+      this.sendMessageViaRegistry(responseMsg);
+    } catch (err) {
+      const elapsed = Date.now() - startTime;
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[✗ ERROR] Task failed (${elapsed}ms): ${errMsg}`);
+
+      const errorResponse: AgentMessage = {
+        fromAgentId: this.agentId,
+        toAgentId: agentMsg.fromAgentId,
+        taskId: agentMsg.taskId,
+        type: "task.response",
+        payload: { error: errMsg },
+        timestamp: Date.now(),
+      };
+      this.sendMessageViaRegistry(errorResponse);
+    }
   }
 
   // ── WebSocket handler ──────────────────────────────────────────────────────

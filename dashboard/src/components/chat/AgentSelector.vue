@@ -7,14 +7,24 @@
       @change="onSelect"
     >
       <option value="">— select an agent —</option>
-      <option
-        v-for="agent in agentList"
-        :key="agent.agentId"
-        :value="agent.agentId"
-        :disabled="!agent.healthy"
-      >
-        {{ agent.projectName }} (:{{ agent.port }}){{ agent.healthy ? "" : " [offline]" }}
-      </option>
+      <optgroup v-if="skillAgents.length > 0" label="Skill Agents">
+        <option
+          v-for="agent in skillAgents"
+          :key="agent.agentId"
+          :value="agent.agentId"
+        >
+          {{ agent.projectName }} (:{{ agent.port }})
+        </option>
+      </optgroup>
+      <optgroup v-if="clientAgents.length > 0" label="AI Clients (read-only)">
+        <option
+          v-for="agent in clientAgents"
+          :key="agent.agentId"
+          disabled
+        >
+          {{ agent.clientInfo?.clientName ?? agent.name }} — connected
+        </option>
+      </optgroup>
     </select>
     <span style="position:absolute;right:7px;pointer-events:none;font-size:9px;color:var(--text-dim);">▾</span>
   </div>
@@ -28,7 +38,9 @@ import { useChatStore } from "@/stores/chat";
 const registryStore = useRegistryStore();
 const chatStore = useChatStore();
 
-const agentList = computed(() => registryStore.agentList.filter((a) => a.entryType !== "client"));
+const healthyAgents = computed(() => registryStore.agentList.filter((a) => a.healthy));
+const skillAgents = computed(() => healthyAgents.value.filter((a) => a.entryType !== "client"));
+const clientAgents = computed(() => healthyAgents.value.filter((a) => a.entryType === "client"));
 const selectedId = computed(() => chatStore.selectedAgent?.agentId ?? "");
 
 function onSelect(e: Event) {

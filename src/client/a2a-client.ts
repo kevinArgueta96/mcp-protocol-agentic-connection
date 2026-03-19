@@ -102,6 +102,48 @@ export class A2AClient {
     }
   }
 
+  /**
+   * Send a task to an agent via the registry relay (POST /agents/:id/message).
+   * Returns the relay result. Caller should check `delivered` to know if WS relay worked.
+   */
+  async sendTaskViaRegistry(
+    registryUrl: string,
+    targetAgentId: string,
+    params: {
+      fromAgentId: string;
+      message: string;
+      skillId?: string;
+      input?: Record<string, unknown>;
+      taskId?: string;
+    }
+  ): Promise<{ ok: boolean; delivered: boolean; via: string }> {
+    const { randomUUID } = await import("node:crypto");
+    const agentMessage = {
+      fromAgentId: params.fromAgentId,
+      toAgentId: targetAgentId,
+      taskId: params.taskId ?? randomUUID(),
+      type: "task.request" as const,
+      payload: {
+        message: params.message,
+        skillId: params.skillId,
+        input: params.input,
+      },
+      timestamp: Date.now(),
+    };
+
+    const res = await fetch(`${registryUrl}/agents/${targetAgentId}/message`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(agentMessage),
+    });
+
+    if (!res.ok) {
+      throw new Error(`Registry relay failed: ${res.status}`);
+    }
+
+    return res.json() as Promise<{ ok: boolean; delivered: boolean; via: string }>;
+  }
+
   async health(): Promise<{ ok: boolean; status?: string; agentId: string; projectName?: string; port?: number }> {
     const res = await fetch(`${this.baseUrl}/health`);
     const data = await res.json() as { ok: boolean; status?: string; agentId: string; projectName?: string; port?: number };

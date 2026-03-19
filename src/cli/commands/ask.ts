@@ -11,9 +11,11 @@ export function registerAskCommand(program: Command): void {
     .option("--skill <id>", "Specific skill to invoke")
     .option("--json", "Output as JSON")
     .option("--stream", "Stream the response")
+    .option("--relay", "Send via registry WS relay instead of direct HTTP")
     .option("--registry-url <url>", "Registry URL", "http://localhost:4999")
     .action(async (agentId: string, message: string, options) => {
       const registry = new RegistryClient(options.registryUrl);
+      const startTime = Date.now();
 
       try {
         const entry = await registry.getAgent(agentId).catch(async () => {
@@ -31,6 +33,43 @@ export function registerAskCommand(program: Command): void {
           process.exit(1);
         }
 
+        console.error(
+          chalk.cyan(`[→ SENDING] `) +
+          chalk.white(`${entry.name} (${entry.agentId.slice(0, 8)})`) +
+          (options.skill ? chalk.gray(` skill: ${options.skill}`) : "") +
+          chalk.gray(` — "${message.slice(0, 60)}${message.length > 60 ? "..." : ""}"`)
+        );
+
+        // Try registry relay if --relay flag is set
+        if (options.relay) {
+          try {
+            const client = new A2AClient(entry.url);
+            const relayResult = await client.sendTaskViaRegistry(
+              options.registryUrl,
+              entry.agentId,
+              {
+                fromAgentId: "cli-" + Date.now(),
+                message,
+                skillId: options.skill,
+              }
+            );
+            const elapsed = Date.now() - startTime;
+            if (relayResult.delivered) {
+              console.error(
+                chalk.green(`[✓ RELAYED] `) +
+                chalk.gray(`via ${relayResult.via} (${elapsed}ms)`)
+              );
+              console.error(
+                chalk.yellow(`Note: WS relay delivers async. Use direct HTTP for sync response.`)
+              );
+              return;
+            }
+            console.error(chalk.yellow(`[!] WS relay not available, falling back to HTTP`));
+          } catch {
+            console.error(chalk.yellow(`[!] Relay failed, falling back to direct HTTP`));
+          }
+        }
+
         const client = new A2AClient(entry.url);
         const task = await client.sendTask({
           message: {
@@ -39,6 +78,14 @@ export function registerAskCommand(program: Command): void {
           },
           metadata: options.skill ? { skillId: options.skill } : undefined,
         });
+
+        const elapsed = Date.now() - startTime;
+        console.error(
+          chalk.green(`[← RESPONSE] `) +
+          chalk.white(`${entry.name}`) +
+          chalk.gray(` (${elapsed}ms)`) +
+          chalk.gray(` task: ${task.id.slice(0, 8)} state: ${task.status.state}`)
+        );
 
         if (options.json) {
           console.log(JSON.stringify(task, null, 2));
@@ -55,7 +102,12 @@ export function registerAskCommand(program: Command): void {
           console.log(chalk.yellow(`Task ${task.id} — state: ${task.status.state}`));
         }
       } catch (err) {
-        console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
+        const elapsed = Date.now() - startTime;
+        console.error(
+          chalk.red(`[✗ ERROR] `) +
+          chalk.gray(`(${elapsed}ms) `) +
+          chalk.red(`${err instanceof Error ? err.message : String(err)}`)
+        );
         process.exit(1);
       }
     });

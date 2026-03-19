@@ -6,7 +6,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { AgentStore } from "./store.js";
 import { RegistryEventBus } from "./events.js";
 import type { RegistryEvent } from "./events.js";
-import type { AgentRegistration, AgentListFilter } from "../types/messages.js";
+import type { AgentRegistration, AgentListFilter, AgentMessage } from "../types/messages.js";
 
 const REGISTRY_PORT = 4999;
 const HEALTH_CHECK_INTERVAL_MS = 60_000;
@@ -20,6 +20,7 @@ export class RegistryServer {
   private httpServer: ReturnType<typeof createServer> | null = null;
   private healthCheckTimer: NodeJS.Timeout | null = null;
   private wsClients = new Set<WebSocket>();
+  private agentWsMap = new Map<string, WebSocket>();
 
   constructor(private readonly port = REGISTRY_PORT) {
     this.setupRoutes();
@@ -100,6 +101,8 @@ export class RegistryServer {
       res.json({
         status: "ok",
         agents: this.store.count(),
+        wsConnections: this.agentWsMap.size,
+        wsDashboardClients: this.wsClients.size,
         timestamp: new Date().toISOString(),
       });
     });
@@ -171,6 +174,47 @@ export class RegistryServer {
       this.eventBus.broadcast(event);
       res.json({ ok: true });
     });
+
+    // Send message to a specific agent via registry relay
+    this.app.post("/agents/:id/message", (req, res) => {
+      const targetId = req.params.id;
+      const message = req.body as AgentMessage;
+
+      // Try to find agent by ID or name
+      const entry = this.store.get(targetId) ??
+        this.store.list().find((a) => a.name.toLowerCase() === targetId.toLowerCase());
+
+      if (!entry) {
+        res.status(404).json({ error: "Agent not found" });
+        return;
+      }
+
+      const resolvedId = entry.agentId;
+      const targetWs = this.agentWsMap.get(resolvedId);
+
+      if (targetWs && targetWs.readyState === WebSocket.OPEN) {
+        targetWs.send(JSON.stringify({
+          type: "agent.message",
+          timestamp: new Date().toISOString(),
+          data: message,
+        }));
+        // Broadcast to dashboard subscribers too
+        this.eventBus.broadcast({
+          type: "agent.message",
+          timestamp: new Date().toISOString(),
+          data: message,
+        });
+        res.json({ ok: true, delivered: true, via: "websocket" });
+      } else {
+        // No WS — broadcast event, caller should fallback to HTTP direct
+        this.eventBus.broadcast({
+          type: "agent.message",
+          timestamp: new Date().toISOString(),
+          data: message,
+        });
+        res.json({ ok: true, delivered: false, via: "event-only" });
+      }
+    });
   }
 
   async start(): Promise<void> {
@@ -181,6 +225,7 @@ export class RegistryServer {
 
     wss.on("connection", (ws) => {
       this.wsClients.add(ws);
+      let identifiedAgentId: string | null = null;
 
       // Send snapshot of current agents
       ws.send(
@@ -195,15 +240,54 @@ export class RegistryServer {
       };
       this.eventBus.on("event", onEvent);
 
+      // Handle incoming messages from agents
+      ws.on("message", (raw) => {
+        try {
+          const msg = JSON.parse(raw.toString());
+
+          // Agent identification — agent sends { type: "identify", agentId: "..." }
+          if (msg.type === "identify" && msg.agentId) {
+            identifiedAgentId = msg.agentId;
+            this.agentWsMap.set(msg.agentId, ws);
+            console.error(`[Registry WS] Agent identified: ${msg.agentId}`);
+            ws.send(JSON.stringify({ type: "identified", agentId: msg.agentId }));
+            return;
+          }
+
+          // Agent-to-agent message relay
+          if (msg.type === "agent.message" && msg.data?.toAgentId) {
+            const targetWs = this.agentWsMap.get(msg.data.toAgentId);
+            if (targetWs && targetWs.readyState === WebSocket.OPEN) {
+              targetWs.send(JSON.stringify(msg));
+            }
+            // Broadcast to dashboard too
+            this.eventBus.broadcast({
+              type: "agent.message",
+              timestamp: new Date().toISOString(),
+              data: msg.data,
+            });
+          }
+        } catch {
+          // Ignore parse errors from non-JSON messages
+        }
+      });
+
       ws.on("close", () => {
         this.wsClients.delete(ws);
         this.eventBus.off("event", onEvent);
+        if (identifiedAgentId) {
+          this.agentWsMap.delete(identifiedAgentId);
+          console.error(`[Registry WS] Agent disconnected: ${identifiedAgentId}`);
+        }
       });
 
       ws.on("error", (err) => {
         console.error(`[Registry WS] Error: ${err.message}`);
         this.wsClients.delete(ws);
         this.eventBus.off("event", onEvent);
+        if (identifiedAgentId) {
+          this.agentWsMap.delete(identifiedAgentId);
+        }
       });
     });
 

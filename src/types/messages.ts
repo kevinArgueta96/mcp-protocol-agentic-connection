@@ -34,4 +34,14 @@ export interface AgentListFilter {
   skill?: string;
   project?: string;
   healthy?: boolean;
+  entryType?: "agent" | "client";
+}
+
+export interface AgentMessage {
+  fromAgentId: string;
+  toAgentId: string;
+  taskId?: string;
+  type: "task.request" | "task.response" | "notification";
+  payload: unknown;
+  timestamp: number;
 }

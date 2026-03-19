@@ -74,6 +74,9 @@ export class AgentStore {
           e.projectName.toLowerCase().includes(project)
       );
     }
+    if (filter?.entryType) {
+      entries = entries.filter((e) => e.entryType === filter.entryType);
+    }
 
     return entries;
   }

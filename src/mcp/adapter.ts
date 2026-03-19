@@ -13,12 +13,14 @@
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { randomUUID } from "node:crypto";
+import { basename } from "node:path";
 import { z } from "zod";
 import { RegistryClient } from "../client/registry-client.js";
 import { A2AClient } from "../client/a2a-client.js";
 import { RegistryServer } from "../registry/server.js";
 import { AgentServer } from "../agent/server.js";
-import type { RegistryEntry } from "../types/messages.js";
+import type { RegistryEntry, AgentMessage } from "../types/messages.js";
+import { WebSocket } from "ws";
 
 export interface McpAdapterOptions {
   registryUrl?: string;
@@ -45,7 +47,7 @@ function formatAgentsSummary(agents: RegistryEntry[]): string {
       return [
         `Agent: ${a.name}  [${a.agentId.slice(0, 8)}]`,
         `  Project: ${a.projectPath}`,
-        `  Type:    ${a.projectType}`,
+        `  Type:    ${a.projectType}${a.entryType === "client" ? " (client — no skills)" : ""}`,
         `  Status:  ${a.healthy ? "healthy" : "unhealthy"}`,
         `  Skills:\n${skills}`,
       ].join("\n");
@@ -59,6 +61,17 @@ export class McpAgentBridge {
   private options: Required<McpAdapterOptions>;
   private clientAgentId: string | null = null;
   private clientHeartbeatTimer: NodeJS.Timeout | null = null;
+  private embeddedAgent: AgentServer | null = null;
+  private embeddedRegistry: RegistryServer | null = null;
+  private registryWs: WebSocket | null = null;
+  private registryWsReconnectTimer: NodeJS.Timeout | null = null;
+  private registryWsReconnectAttempts = 0;
+  private readonly MAX_WS_RECONNECT_ATTEMPTS = 5;
+  private pendingResponses = new Map<string, {
+    resolve: (value: unknown) => void;
+    reject: (reason: Error) => void;
+    timer: NodeJS.Timeout;
+  }>();
 
   constructor(options: McpAdapterOptions = {}) {
     this.options = {
@@ -75,6 +88,9 @@ export class McpAgentBridge {
   async start(transport: "stdio" | "http" = "stdio", httpPort = 6000): Promise<void> {
     // ── 1. Ensure registry + at least one agent is running ─────────────────
     const agents = await this.ensureInfrastructure();
+
+    // ── 1b. Connect WS to registry for message relay ──────────────────────
+    this.connectRegistryWs();
 
     // ── 2. Register all tools, resources, prompts ──────────────────────────
     this.registerMetaTools();
@@ -100,6 +116,112 @@ export class McpAgentBridge {
     }
   }
 
+  // ── Registry WebSocket connection ──────────────────────────────────────────
+
+  private connectRegistryWs(): void {
+    const wsUrl = this.options.registryUrl.replace(/^http/, "ws") + "/ws";
+    try {
+      const ws = new WebSocket(wsUrl);
+
+      ws.on("open", () => {
+        console.error(`[MCP] WebSocket connected to registry`);
+        this.registryWs = ws;
+        this.registryWsReconnectAttempts = 0;
+        // Identify as the MCP adapter's client agent
+        if (this.clientAgentId) {
+          ws.send(JSON.stringify({ type: "identify", agentId: this.clientAgentId }));
+        }
+      });
+
+      ws.on("message", (raw) => {
+        try {
+          const msg = JSON.parse(raw.toString());
+          if (msg.type === "agent.message" && msg.data) {
+            const agentMsg = msg.data as AgentMessage;
+            // Check if this is a response to a pending request
+            if (agentMsg.type === "task.response" && agentMsg.taskId) {
+              const pending = this.pendingResponses.get(agentMsg.taskId);
+              if (pending) {
+                clearTimeout(pending.timer);
+                this.pendingResponses.delete(agentMsg.taskId);
+                pending.resolve(agentMsg.payload);
+              }
+            }
+          }
+        } catch {
+          // Ignore
+        }
+      });
+
+      ws.on("close", () => {
+        this.registryWs = null;
+        this.scheduleWsReconnect();
+      });
+
+      ws.on("error", () => {
+        this.registryWs = null;
+      });
+    } catch {
+      this.scheduleWsReconnect();
+    }
+  }
+
+  private scheduleWsReconnect(): void {
+    if (this.registryWsReconnectTimer) return;
+    if (this.registryWsReconnectAttempts >= this.MAX_WS_RECONNECT_ATTEMPTS) {
+      console.error(`[MCP] WS reconnect limit reached (${this.MAX_WS_RECONNECT_ATTEMPTS}). WS relay disabled — HTTP fallback active.`);
+      return;
+    }
+    this.registryWsReconnectAttempts++;
+    this.registryWsReconnectTimer = setTimeout(() => {
+      this.registryWsReconnectTimer = null;
+      this.connectRegistryWs();
+    }, 5_000);
+  }
+
+  /** Send a message via WS relay and wait for response */
+  private sendMessageViaWs(targetAgentId: string, message: string, options?: {
+    skillId?: string;
+    input?: Record<string, unknown>;
+    timeoutMs?: number;
+  }): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      if (!this.registryWs || this.registryWs.readyState !== WebSocket.OPEN) {
+        reject(new Error("No WebSocket connection to registry"));
+        return;
+      }
+
+      const taskId = randomUUID();
+      const timeoutMs = options?.timeoutMs ?? 60_000;
+
+      const timer = setTimeout(() => {
+        this.pendingResponses.delete(taskId);
+        reject(new Error(`WS message timeout after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      this.pendingResponses.set(taskId, { resolve, reject, timer });
+
+      const agentMessage: AgentMessage = {
+        fromAgentId: this.clientAgentId ?? "mcp-adapter",
+        toAgentId: targetAgentId,
+        taskId,
+        type: "task.request",
+        payload: {
+          message,
+          skillId: options?.skillId,
+          input: options?.input,
+        },
+        timestamp: Date.now(),
+      };
+
+      this.registryWs.send(JSON.stringify({
+        type: "agent.message",
+        timestamp: new Date().toISOString(),
+        data: agentMessage,
+      }));
+    });
+  }
+
   // ── Infrastructure bootstrap ───────────────────────────────────────────────
 
   private async ensureInfrastructure(): Promise<RegistryEntry[]> {
@@ -113,8 +235,8 @@ export class McpAgentBridge {
 
       // Auto-start embedded registry
       console.error("[MCP] No registry found — starting embedded registry on :4999");
-      const registryServer = new RegistryServer();
-      await registryServer.start();
+      this.embeddedRegistry = new RegistryServer();
+      await this.embeddedRegistry.start();
     }
 
     // Check if any agents are registered
@@ -123,11 +245,11 @@ export class McpAgentBridge {
     if (agents.length === 0 && this.options.auto) {
       // Auto-start a local agent for the current project
       console.error(`[MCP] No agents found — starting agent for: ${this.options.projectPath}`);
-      const agentServer = new AgentServer({
+      this.embeddedAgent = new AgentServer({
         projectPath: this.options.projectPath,
         registryUrl: this.options.registryUrl,
       });
-      await agentServer.start();
+      await this.embeddedAgent.start();
 
       // Give it a moment to register
       await new Promise((r) => setTimeout(r, 300));
@@ -152,20 +274,26 @@ export class McpAgentBridge {
 
         const clientName: string = clientVersion.name;
         const version: string = clientVersion.version ?? "unknown";
+        const projectFolderName = basename(this.options.projectPath);
         this.clientAgentId = `client-${clientName}-${Date.now()}`;
+
+        // Identify on existing WS connection
+        if (this.registryWs?.readyState === WebSocket.OPEN) {
+          this.registryWs.send(JSON.stringify({ type: "identify", agentId: this.clientAgentId }));
+        }
 
         const registration = {
           agentId: this.clientAgentId,
-          name: clientName,
+          name: projectFolderName,
           url: "",
           wsUrl: "",
           port: 0,
           projectPath: this.options.projectPath,
-          projectName: clientName,
+          projectName: projectFolderName,
           projectType: "unknown",
           card: {
-            name: clientName,
-            description: `AI client: ${clientName} v${version}`,
+            name: projectFolderName,
+            description: `AI client: ${clientName} v${version} — ${projectFolderName}`,
             url: "",
             version,
             capabilities: { streaming: false, pushNotifications: false, stateTransitionHistory: false },
@@ -183,7 +311,7 @@ export class McpAgentBridge {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(registration),
         });
-        console.error(`[MCP] Registered client: ${clientName} v${version}`);
+        console.error(`[MCP] Registered client: ${projectFolderName} (${clientName} v${version})`);
 
         this.clientHeartbeatTimer = setInterval(async () => {
           if (!this.clientAgentId) return;
@@ -203,6 +331,15 @@ export class McpAgentBridge {
               await fetch(`${this.options.registryUrl}/agents/${this.clientAgentId}`, { method: "DELETE" });
             } catch { /* ignore */ }
             this.clientAgentId = null;
+          }
+          // Stop embedded agent so it deregisters from registry
+          if (this.embeddedAgent) {
+            try { await this.embeddedAgent.stop(); } catch { /* ignore */ }
+            this.embeddedAgent = null;
+          }
+          if (this.embeddedRegistry) {
+            try { await this.embeddedRegistry.stop(); } catch { /* ignore */ }
+            this.embeddedRegistry = null;
           }
         };
 
@@ -224,20 +361,25 @@ export class McpAgentBridge {
       {
         description:
           "List all agents connected to agent-bridge. Shows each agent's project path, type, " +
-          "health status, and available skills. Use this first to discover what you can work with.",
+          "health status, and available skills. Use this first to discover what you can work with. " +
+          "By default, only shows agents with skills (excludes passive client entries).",
         inputSchema: {
           skill: z.string().optional().describe("Filter agents with this skill (e.g. 'endpoint-find')"),
           project: z.string().optional().describe("Filter by project name or path substring"),
           healthyOnly: z.boolean().optional().describe("Only show healthy agents (default: true)"),
+          includeClients: z.boolean().optional().describe("Include passive client entries without skills (default: false)"),
         },
       },
-      async ({ skill, project, healthyOnly = true }) => {
+      async ({ skill, project, healthyOnly = true, includeClients = false }) => {
         try {
-          const agents = await this.registry.listAgents({
+          let agents = await this.registry.listAgents({
             skill,
             project,
             healthy: healthyOnly ? true : undefined,
           });
+          if (!includeClients) {
+            agents = agents.filter((a) => a.entryType !== "client" || a.card.skills.length > 0);
+          }
           return { content: [{ type: "text" as const, text: formatAgentsSummary(agents) }] };
         } catch {
           return {
@@ -304,9 +446,128 @@ export class McpAgentBridge {
       async ({ agentId, message, skillId, input }) => {
         try {
           const entry = await this.resolveAgent(agentId);
-          const client = new A2AClient(entry.url);
           const taskId = randomUUID();
           await this.emitTraceEvent({ agentId: entry.agentId, agentName: entry.name, taskId, state: "submitted", skillId });
+
+          // Try WS relay first for real-time terminal-to-terminal communication
+          if (this.registryWs?.readyState === WebSocket.OPEN) {
+            try {
+              const result = await this.sendMessageViaWs(entry.agentId, message, { skillId, input });
+              await this.emitTraceEvent({ agentId: entry.agentId, agentName: entry.name, taskId, state: "completed", skillId });
+              const rpcResult = result as { result?: unknown; error?: { message: string } };
+              if (rpcResult?.error) {
+                return { content: [{ type: "text" as const, text: `Agent error: ${rpcResult.error.message}` }], isError: true };
+              }
+              const task = rpcResult?.result ?? result;
+              const taskObj = task as { artifacts?: Array<{ parts: Array<{ type: string; data?: unknown; text?: string }> }> };
+              const artifact = taskObj?.artifacts?.[0];
+              if (artifact?.parts[0]?.type === "data") {
+                return { content: [{ type: "text" as const, text: JSON.stringify(artifact.parts[0].data, null, 2) }] };
+              }
+              return { content: [{ type: "text" as const, text: JSON.stringify(task, null, 2) }] };
+            } catch {
+              console.error("[MCP] WS relay failed for ask_agent, falling back to HTTP");
+            }
+          }
+
+          // Guard: no URL means client entry with no HTTP server
+          if (!entry.url) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `Agent "${entry.name}" has no HTTP endpoint (it's a client entry). ` +
+                      `Use send_message with WS relay or target an agent with skills.`,
+              }],
+              isError: true,
+            };
+          }
+
+          // Fallback: HTTP direct
+          const client = new A2AClient(entry.url);
+          const task = await client.sendTask({
+            message: { role: "user", parts: [{ type: "text", text: message }] },
+            metadata: {
+              ...(skillId ? { skillId } : {}),
+              ...(input ? { input } : {}),
+            },
+          });
+          await this.emitTraceEvent({ agentId: entry.agentId, agentName: entry.name, taskId, state: "completed", skillId });
+          const artifact = task.artifacts[0];
+          if (artifact?.parts[0]?.type === "data") {
+            return { content: [{ type: "text" as const, text: JSON.stringify(artifact.parts[0].data, null, 2) }] };
+          }
+          return { content: [{ type: "text" as const, text: JSON.stringify(task, null, 2) }] };
+        } catch (err) {
+          return {
+            content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+            isError: true,
+          };
+        }
+      }
+    );
+
+    this.server.registerTool(
+      "send_message",
+      {
+        description:
+          "Send a message to an agent via WebSocket relay and wait for the response in real-time. " +
+          "Uses the registry as a message broker. Both terminals will show trace output. " +
+          "Prefer this over ask_agent for real-time bidirectional communication.",
+        inputSchema: {
+          agentId: z.string().describe("Target agent ID or name (from list_agents)"),
+          message: z.string().describe("The message to send"),
+          skillId: z.string().optional().describe("Skill to invoke: file-search | endpoint-find | code-query | prompt-execute"),
+          input: z.preprocess(
+            (v) => (typeof v === "string" ? JSON.parse(v) : v),
+            z.record(z.unknown()).optional()
+          ).describe("Direct skill input as JSON"),
+          waitForResponse: z.boolean().optional().describe("Wait for response via WS (default: true)"),
+        },
+      },
+      async ({ agentId, message, skillId, input, waitForResponse = true }) => {
+        try {
+          const entry = await this.resolveAgent(agentId);
+          const taskId = randomUUID();
+          await this.emitTraceEvent({ agentId: entry.agentId, agentName: entry.name, taskId, state: "submitted", skillId });
+
+          // Try WS relay first
+          if (waitForResponse && this.registryWs?.readyState === WebSocket.OPEN) {
+            try {
+              const result = await this.sendMessageViaWs(entry.agentId, message, { skillId, input });
+              await this.emitTraceEvent({ agentId: entry.agentId, agentName: entry.name, taskId, state: "completed", skillId });
+
+              // Extract result from RPC response
+              const rpcResult = result as { result?: unknown; error?: { message: string } };
+              if (rpcResult?.error) {
+                return { content: [{ type: "text" as const, text: `Agent error: ${rpcResult.error.message}` }], isError: true };
+              }
+              const task = rpcResult?.result ?? result;
+              const taskObj = task as { artifacts?: Array<{ parts: Array<{ type: string; data?: unknown; text?: string }> }> };
+              const artifact = taskObj?.artifacts?.[0];
+              if (artifact?.parts[0]?.type === "data") {
+                return { content: [{ type: "text" as const, text: JSON.stringify(artifact.parts[0].data, null, 2) }] };
+              }
+              return { content: [{ type: "text" as const, text: JSON.stringify(task, null, 2) }] };
+            } catch {
+              // WS failed — fallback to HTTP
+              console.error("[MCP] WS relay failed, falling back to HTTP");
+            }
+          }
+
+          // Guard: no URL means client entry with no HTTP server
+          if (!entry.url) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `Agent "${entry.name}" has no HTTP endpoint (it's a client entry). ` +
+                      `WS relay unavailable or timed out. Target an agent with skills instead.`,
+              }],
+              isError: true,
+            };
+          }
+
+          // Fallback: HTTP direct
+          const client = new A2AClient(entry.url);
           const task = await client.sendTask({
             message: { role: "user", parts: [{ type: "text", text: message }] },
             metadata: {
@@ -596,17 +857,27 @@ export class McpAgentBridge {
 
   private async resolveAgent(agentId: string): Promise<RegistryEntry> {
     try {
-      return await this.registry.getAgent(agentId);
+      const entry = await this.registry.getAgent(agentId);
+      // If it has a URL (real HTTP server), use it directly
+      if (entry.url) return entry;
+      // No URL — try to find another entry for same project that has a URL
+      const all = await this.registry.listAgents();
+      const withUrl = all.find((a) => a.url && a.projectPath === entry.projectPath);
+      if (withUrl) return withUrl;
+      return entry;
     } catch {
       const all = await this.registry.listAgents();
-      const match = all.find(
-        (a) =>
-          a.name.toLowerCase() === agentId.toLowerCase() ||
-          a.agentId.startsWith(agentId) ||
-          a.projectPath.toLowerCase().includes(agentId.toLowerCase())
-      );
-      if (!match) throw new Error(`Agent "${agentId}" not found. Use list_agents to see available agents.`);
-      return match;
+      const isMatch = (a: RegistryEntry) =>
+        a.name.toLowerCase() === agentId.toLowerCase() ||
+        a.agentId.startsWith(agentId) ||
+        a.projectPath.toLowerCase().includes(agentId.toLowerCase());
+      // Prefer entries with a URL (real agents with HTTP servers)
+      const matchWithUrl = all.find((a) => a.url && isMatch(a));
+      if (matchWithUrl) return matchWithUrl;
+      // Fall back to any match (including client entries)
+      const anyMatch = all.find(isMatch);
+      if (!anyMatch) throw new Error(`Agent "${agentId}" not found. Use list_agents to see available agents.`);
+      return anyMatch;
     }
   }
 
