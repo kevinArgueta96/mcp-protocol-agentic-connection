@@ -89,7 +89,21 @@ export class McpAgentBridge {
     // ── 1. Ensure registry + at least one agent is running ─────────────────
     const agents = await this.ensureInfrastructure();
 
-    // ── 1b. Connect WS to registry for message relay ──────────────────────
+    // ── 1b. Register shutdown cleanup for embedded processes ───────────────
+    const shutdownEmbedded = async () => {
+      if (this.embeddedAgent) {
+        try { await this.embeddedAgent.stop(); } catch { /* ignore */ }
+        this.embeddedAgent = null;
+      }
+      if (this.embeddedRegistry) {
+        try { await this.embeddedRegistry.stop(); } catch { /* ignore */ }
+        this.embeddedRegistry = null;
+      }
+    };
+    process.once("SIGINT", () => void shutdownEmbedded().then(() => process.exit(0)));
+    process.once("SIGTERM", () => void shutdownEmbedded().then(() => process.exit(0)));
+
+    // ── 1c. Connect WS to registry for message relay ──────────────────────
     this.connectRegistryWs();
 
     // ── 2. Register all tools, resources, prompts ──────────────────────────

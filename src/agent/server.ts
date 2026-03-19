@@ -539,6 +539,7 @@ export class AgentServer {
           projectType,
           card: this.card,
           registeredAt: Date.now(),
+          entryType: "agent",
         }),
       });
       if (!res.ok) console.error(`[Agent] Registry registration failed: ${res.status}`);
