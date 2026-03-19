@@ -13,6 +13,7 @@ export function registerStartCommand(program: Command): void {
     .option("--registry", "Start the registry server instead of an agent")
     .option("--mcp", "Start MCP adapter for Claude Code / Codex integration")
     .option("--registry-url <url>", "Registry URL", "http://localhost:4999")
+    .option("--claude", "Enable Claude Code AI backend for intelligent agent skills")
     .action(async (projectPath: string | undefined, options) => {
       if (options.registry) {
         const registry = new RegistryServer();
@@ -35,6 +36,7 @@ export function registerStartCommand(program: Command): void {
         port: options.port,
         projectPath: projectPath ?? process.cwd(),
         registryUrl: options.registryUrl,
+        useClaudeCode: options.claude ?? false,
       });
 
       const result = await agent.start();
