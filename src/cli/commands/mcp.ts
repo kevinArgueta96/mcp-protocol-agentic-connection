@@ -19,12 +19,14 @@ export function registerMcpCommand(program: Command): void {
     .option("--project <path>", "Project path for the auto-started agent (default: cwd)")
     .option("--no-auto", "Disable auto-start of registry/agent (require manual setup)")
     .option("--no-skill-tools", "Only register meta-tools, not per-agent skill tools")
+    .option("--claude", "Enable Claude Code AI backend for the auto-started agent")
     .action(async (options) => {
       const bridge = new McpAgentBridge({
         registryUrl: options.registryUrl,
         auto: options.auto !== false,
         projectPath: options.project ?? process.env["AGENT_BRIDGE_PROJECT"] ?? process.cwd(),
         registerSkillTools: options.skillTools !== false,
+        useClaudeCode: options.claude ?? false,
       });
       await bridge.start("stdio");
     });

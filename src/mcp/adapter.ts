@@ -10,7 +10,7 @@
  *   Run registry + agents separately, then `mcp start` discovers them.
  */
 
-import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, ResourceTemplate, type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
@@ -30,6 +30,8 @@ export interface McpAdapterOptions {
   projectPath?: string;
   /** Register per-agent skill tools in addition to meta-tools (default: true) */
   registerSkillTools?: boolean;
+  /** Enable Claude Code AI backend for the auto-started embedded agent (default: false) */
+  useClaudeCode?: boolean;
 }
 
 function toolPrefix(name: string): string {
@@ -72,6 +74,7 @@ export class McpAgentBridge {
     reject: (reason: Error) => void;
     timer: NodeJS.Timeout;
   }>();
+  private agentToolMap = new Map<string, RegisteredTool[]>();
 
   constructor(options: McpAdapterOptions = {}) {
     this.options = {
@@ -79,6 +82,7 @@ export class McpAgentBridge {
       auto: true,
       projectPath: process.cwd(),
       registerSkillTools: true,
+      useClaudeCode: false,
       ...options,
     };
     this.registry = new RegistryClient(this.options.registryUrl);
@@ -150,6 +154,47 @@ export class McpAgentBridge {
       ws.on("message", (raw) => {
         try {
           const msg = JSON.parse(raw.toString());
+
+          // ── Dynamic agent discovery ──────────────────────────────────────
+          if (msg.type === "snapshot" && Array.isArray(msg.agents)) {
+            const snapshotAgents = msg.agents as RegistryEntry[];
+            const snapshotIds = new Set(snapshotAgents.map(a => a.agentId));
+            // Remove tools for agents no longer present (e.g. after registry restart)
+            for (const trackedId of this.agentToolMap.keys()) {
+              if (!snapshotIds.has(trackedId)) this.removeAgentTools(trackedId);
+            }
+            // Add tools for new agents
+            for (const agent of snapshotAgents) {
+              if (agent.entryType !== "client" && agent.card?.skills?.length > 0) {
+                this.addAgentTools(agent); // idempotent via agentToolMap.has()
+              }
+            }
+          }
+
+          if (msg.type === "agent.registered" && msg.data) {
+            const entry = msg.data as RegistryEntry;
+            if (entry.entryType !== "client" && entry.card?.skills?.length > 0) {
+              this.addAgentTools(entry);
+              console.error(`[MCP] New agent discovered: ${entry.name} (${entry.card.skills.length} skills)`);
+            }
+          }
+
+          if (msg.type === "agent.deregistered" || msg.type === "agent.removed") {
+            const agentId = (msg.data as { agentId: string })?.agentId;
+            if (agentId) this.removeAgentTools(agentId);
+          }
+
+          if (msg.type === "agent.unhealthy") {
+            const agentId = (msg.data as { agentId: string })?.agentId;
+            if (agentId) this.setAgentToolsEnabled(agentId, false);
+          }
+
+          if (msg.type === "agent.heartbeat") {
+            const agentId = (msg.data as { agentId: string })?.agentId;
+            if (agentId) this.setAgentToolsEnabled(agentId, true);
+          }
+
+          // ── Pending response relay ────────────────────────────────────────
           if (msg.type === "agent.message" && msg.data) {
             const agentMsg = msg.data as AgentMessage;
             // Check if this is a response to a pending request
@@ -262,12 +307,16 @@ export class McpAgentBridge {
       this.embeddedAgent = new AgentServer({
         projectPath: this.options.projectPath,
         registryUrl: this.options.registryUrl,
+        useClaudeCode: this.options.useClaudeCode,
       });
       await this.embeddedAgent.start();
 
-      // Give it a moment to register
-      await new Promise((r) => setTimeout(r, 300));
-      agents = await this.registry.listAgents({ healthy: true });
+      // Poll until an agent with skills registers (max 5s)
+      for (let attempt = 0; attempt < 10; attempt++) {
+        await new Promise((r) => setTimeout(r, 500));
+        agents = await this.registry.listAgents({ healthy: true });
+        if (agents.some(a => a.entryType !== "client")) break;
+      }
     }
 
     return agents;
@@ -677,42 +726,95 @@ export class McpAgentBridge {
 
   private registerAgentSkillTools(agents: RegistryEntry[]): void {
     for (const agent of agents) {
-      const prefix = toolPrefix(agent.name);
-      for (const skill of agent.card.skills) {
-        const toolName = `${prefix}__${skill.id.replace(/-/g, "_")}`;
-        this.server.registerTool(
-          toolName,
-          {
-            description:
-              `[${agent.name}] ${skill.description}\n` +
-              `Project: ${agent.projectPath} (${agent.projectType})`,
-            inputSchema: this.getSkillInputSchema(skill.id),
-          },
-          async (input) => {
-            try {
-              const client = new A2AClient(agent.url);
-              const taskId = randomUUID();
-              await this.emitTraceEvent({ agentId: agent.agentId, agentName: agent.name, taskId, state: "submitted", skillId: skill.id });
-              const task = await client.sendTask({
-                message: { role: "user", parts: [{ type: "text", text: JSON.stringify(input) }] },
-                metadata: { skillId: skill.id, input },
-              });
-              await this.emitTraceEvent({ agentId: agent.agentId, agentName: agent.name, taskId, state: "completed", skillId: skill.id });
-              const artifact = task.artifacts[0];
-              const data = artifact?.parts[0];
-              if (data?.type === "data") {
-                return { content: [{ type: "text" as const, text: JSON.stringify(data.data, null, 2) }] };
+      if (this.agentToolMap.has(agent.agentId)) continue;
+      this.addAgentTools(agent);
+    }
+  }
+
+  private addAgentTools(agent: RegistryEntry): void {
+    if (this.agentToolMap.has(agent.agentId)) return;
+    if (agent.entryType === "client" || agent.card.skills.length === 0) return;
+
+    // Use agentId suffix to avoid name collisions between agents with same name
+    const prefix = `${toolPrefix(agent.name)}_${agent.agentId.slice(0, 4)}`;
+    const tools: RegisteredTool[] = [];
+
+    for (const skill of agent.card.skills) {
+      const toolName = `${prefix}__${skill.id.replace(/-/g, "_")}`;
+      const registeredTool = this.server.registerTool(
+        toolName,
+        {
+          description:
+            `[${agent.name}] ${skill.description}\n` +
+            `Project: ${agent.projectPath} (${agent.projectType})`,
+          inputSchema: this.getSkillInputSchema(skill.id),
+        },
+        async (input) => {
+          try {
+            // Try WS relay first for real-time communication
+            if (this.registryWs?.readyState === WebSocket.OPEN) {
+              try {
+                const result = await this.sendMessageViaWs(agent.agentId, JSON.stringify(input), { skillId: skill.id, input: input as Record<string, unknown> });
+                const rpcResult = result as { result?: unknown; error?: { message: string } };
+                if (rpcResult?.error) {
+                  return { content: [{ type: "text" as const, text: `Agent error: ${rpcResult.error.message}` }], isError: true };
+                }
+                const task = rpcResult?.result ?? result;
+                const taskObj = task as { artifacts?: Array<{ parts: Array<{ type: string; data?: unknown }> }> };
+                const artifact = taskObj?.artifacts?.[0];
+                if (artifact?.parts[0]?.type === "data") {
+                  return { content: [{ type: "text" as const, text: JSON.stringify(artifact.parts[0].data, null, 2) }] };
+                }
+                return { content: [{ type: "text" as const, text: JSON.stringify(task, null, 2) }] };
+              } catch {
+                // WS failed — fallback to HTTP
               }
-              return { content: [{ type: "text" as const, text: JSON.stringify(task.status) }] };
-            } catch (err) {
-              return {
-                content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
-                isError: true,
-              };
             }
+            // HTTP fallback
+            const client = new A2AClient(agent.url);
+            const taskId = randomUUID();
+            await this.emitTraceEvent({ agentId: agent.agentId, agentName: agent.name, taskId, state: "submitted", skillId: skill.id });
+            const task = await client.sendTask({
+              message: { role: "user", parts: [{ type: "text", text: JSON.stringify(input) }] },
+              metadata: { skillId: skill.id, input },
+            });
+            await this.emitTraceEvent({ agentId: agent.agentId, agentName: agent.name, taskId, state: "completed", skillId: skill.id });
+            const artifact = task.artifacts[0];
+            const data = artifact?.parts[0];
+            if (data?.type === "data") {
+              return { content: [{ type: "text" as const, text: JSON.stringify(data.data, null, 2) }] };
+            }
+            return { content: [{ type: "text" as const, text: JSON.stringify(task.status) }] };
+          } catch (err) {
+            return {
+              content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+              isError: true,
+            };
           }
-        );
-      }
+        }
+      );
+      tools.push(registeredTool);
+    }
+
+    this.agentToolMap.set(agent.agentId, tools);
+    console.error(`[MCP] Added tools for agent: ${agent.name} (${tools.length} tools)`);
+  }
+
+  private removeAgentTools(agentId: string): void {
+    const tools = this.agentToolMap.get(agentId);
+    if (!tools) return;
+    for (const tool of tools) {
+      try { tool.remove(); } catch { /* ignore if already removed */ }
+    }
+    this.agentToolMap.delete(agentId);
+    console.error(`[MCP] Removed tools for agent: ${agentId}`);
+  }
+
+  private setAgentToolsEnabled(agentId: string, enabled: boolean): void {
+    const tools = this.agentToolMap.get(agentId);
+    if (!tools) return;
+    for (const tool of tools) {
+      try { enabled ? tool.enable() : tool.disable(); } catch { /* ignore */ }
     }
   }
 
@@ -755,7 +857,7 @@ export class McpAgentBridge {
 
   // ── Resources ──────────────────────────────────────────────────────────────
 
-  private registerResources(agents: RegistryEntry[]): void {
+  private registerResources(_agents: RegistryEntry[]): void {
     this.server.registerResource(
       "connected-agents",
       "agents://connected",
@@ -763,42 +865,44 @@ export class McpAgentBridge {
         description: "All agents connected to agent-bridge with their capabilities",
         mimeType: "application/json",
       },
-      async () => ({
-        contents: [{
-          uri: "agents://connected",
-          mimeType: "application/json",
-          text: JSON.stringify(
-            agents.map((a) => ({
-              agentId: a.agentId,
-              name: a.name,
-              projectPath: a.projectPath,
-              projectType: a.projectType,
-              port: a.port,
-              healthy: a.healthy,
-              skills: a.card.skills.map((s) => ({ id: s.id, description: s.description })),
-            })),
-            null,
-            2
-          ),
-        }],
-      })
+      async () => {
+        const liveAgents = await this.registry.listAgents({ healthy: true });
+        return {
+          contents: [{
+            uri: "agents://connected",
+            mimeType: "application/json",
+            text: JSON.stringify(
+              liveAgents.map((a) => ({
+                agentId: a.agentId,
+                name: a.name,
+                projectPath: a.projectPath,
+                projectType: a.projectType,
+                port: a.port,
+                healthy: a.healthy,
+                skills: a.card.skills.map((s) => ({ id: s.id, description: s.description })),
+              })),
+              null,
+              2
+            ),
+          }],
+        };
+      }
     );
 
-    if (agents.length > 0) {
-      const template = new ResourceTemplate("agents://{agentId}/card", { list: undefined });
-      this.server.registerResource(
-        "agent-card",
-        template,
-        { description: "A2A Agent Card for a connected agent", mimeType: "application/json" },
-        async (uri, { agentId }) => {
-          const agent = agents.find((a) => a.agentId === agentId || a.name === agentId);
-          if (!agent) throw new Error(`Agent "${agentId}" not found`);
-          return {
-            contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(agent.card, null, 2) }],
-          };
-        }
-      );
-    }
+    const template = new ResourceTemplate("agents://{agentId}/card", { list: undefined });
+    this.server.registerResource(
+      "agent-card",
+      template,
+      { description: "A2A Agent Card for a connected agent", mimeType: "application/json" },
+      async (uri, { agentId }) => {
+        const all = await this.registry.listAgents();
+        const agent = all.find((a) => a.agentId === agentId || a.name === agentId);
+        if (!agent) throw new Error(`Agent "${agentId}" not found`);
+        return {
+          contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(agent.card, null, 2) }],
+        };
+      }
+    );
   }
 
   // ── Prompts ────────────────────────────────────────────────────────────────
@@ -826,7 +930,7 @@ export class McpAgentBridge {
               "- **project_files** — List files in a remote project",
               agents.length > 0
                 ? `\n## Per-Agent Tools\n${agents.flatMap((a) =>
-                    a.card.skills.map((s) => `- **${toolPrefix(a.name)}__${s.id.replace(/-/g, "_")}** — ${s.description}`)
+                    a.card.skills.map((s) => `- **${toolPrefix(a.name)}_${a.agentId.slice(0, 4)}__${s.id.replace(/-/g, "_")}** — ${s.description}`)
                   ).join("\n")}`
                 : "",
             ].filter(Boolean).join("\n"),

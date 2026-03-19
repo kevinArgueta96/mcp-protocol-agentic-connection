@@ -5,7 +5,8 @@
       "args": [
         "/home/kevin-osigu/Documents/PROYECTOS_OSIGU/10. PERSONAL/mcp-protocol-agentic-connection/dist/cli/index.js",
         "mcp",
-        "start"
+        "start",
+        "--claude"
       ],
       "env": {
         "AGENT_BRIDGE_PROJECT": "/home/kevin-osigu/Documents/PROYECTOS_OSIGU/10. PERSONAL/mcp-protocol-agentic-connection"
