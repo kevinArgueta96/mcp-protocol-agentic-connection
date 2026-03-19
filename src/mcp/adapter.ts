@@ -495,11 +495,11 @@ export class McpAgentBridge {
         description:
           "Send a message or task to any connected agent. " +
           "Optionally specify a skillId to invoke a specific capability. " +
-          "Skills: file-search, endpoint-find, code-query, prompt-execute.",
+          "Use list_agents to see available skills per agent.",
         inputSchema: {
           agentId: z.string().describe("Target agent ID or name (from list_agents)"),
           message: z.string().describe("The message, question, or task to send"),
-          skillId: z.string().optional().describe("Skill to invoke: file-search | endpoint-find | code-query | prompt-execute"),
+          skillId: z.string().optional().describe("Skill to invoke (e.g. 'claude-execute', 'code-query', 'file-search', 'code-review')"),
           input: z.preprocess(
             (v) => (typeof v === "string" ? JSON.parse(v) : v),
             z.record(z.unknown()).optional()
@@ -579,7 +579,7 @@ export class McpAgentBridge {
         inputSchema: {
           agentId: z.string().describe("Target agent ID or name (from list_agents)"),
           message: z.string().describe("The message to send"),
-          skillId: z.string().optional().describe("Skill to invoke: file-search | endpoint-find | code-query | prompt-execute"),
+          skillId: z.string().optional().describe("Skill to invoke (e.g. 'claude-execute', 'code-query', 'file-search', 'code-review')"),
           input: z.preprocess(
             (v) => (typeof v === "string" ? JSON.parse(v) : v),
             z.record(z.unknown()).optional()
@@ -847,6 +847,19 @@ export class McpAgentBridge {
             z.record(z.string()).optional()
           ).describe("Variables to inject"),
           instruction: z.string().optional().describe("What to do with this prompt"),
+        };
+      case "claude-execute":
+        return {
+          prompt: z.string().describe("The task or question for Claude Code"),
+          allowedTools: z.array(z.string()).optional()
+            .describe("Allowed Claude Code tools (default: Read, Glob, Grep, Bash)"),
+        };
+      case "code-review":
+      case "run-tests":
+      case "run-script":
+      case "docker-build":
+        return {
+          query: z.string().describe("What to do or ask"),
         };
       default:
         return {
