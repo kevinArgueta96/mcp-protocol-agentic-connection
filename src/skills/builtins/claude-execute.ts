@@ -61,6 +61,7 @@ export class ClaudeExecuteSkill extends BaseSkill<Input, Output> {
     const args = [
       "-p", input.prompt,
       "--output-format", "stream-json",
+      "--verbose",
       "--allowedTools", tools.join(","),
     ];
 
