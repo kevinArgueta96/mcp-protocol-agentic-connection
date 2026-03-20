@@ -4,11 +4,8 @@
       "command": "sh",
       "args": [
         "-c",
-        "cd '/home/kevin-osigu/Documents/PROYECTOS_OSIGU/10. PERSONAL/mcp-protocol-agentic-connection' && [ ! -f dist/cli/index.js ] && pnpm build; node dist/cli/index.js mcp start --claude"
-      ],
-      "env": {
-        "AGENT_BRIDGE_PROJECT": "/home/kevin-osigu/Documents/PROYECTOS_OSIGU/10. PERSONAL/mcp-protocol-agentic-connection"
-      }
+        "cd '/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection' && pnpm install --frozen-lockfile && pnpm build && node dist/cli/index.js mcp start --claude"
+      ]
     },
     "chrome-devtools": {
       "command": "pnpm",
