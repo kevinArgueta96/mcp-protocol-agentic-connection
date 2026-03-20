@@ -5,7 +5,10 @@ import type { JsonRpcRequest, JsonRpcResponse, JsonRpcSuccessResponse } from "..
 import { isJsonRpcError } from "../types/jsonrpc.js";
 
 export class A2AClient {
-  constructor(private readonly baseUrl: string) {}
+  constructor(
+    private readonly baseUrl: string,
+    private readonly timeoutMs = 330_000, // 5.5 min — slightly above claude-execute's 5 min
+  ) {}
 
   async getCard(): Promise<AgentCard> {
     const res = await fetch(`${this.baseUrl}/.well-known/agent.json`);
@@ -44,11 +47,19 @@ export class A2AClient {
       params,
     };
 
-    const res = await fetch(this.baseUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(request),
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    let res: Response;
+    try {
+      res = await fetch(this.baseUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
 
     const response = (await res.json()) as JsonRpcResponse;
 

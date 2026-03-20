@@ -20,6 +20,7 @@ import {
 import { createDefaultRegistry, createClaudeRegistry } from "../skills/index.js";
 import type { BaseSkill } from "../skills/framework.js";
 import type { AgentMessage } from "../types/messages.js";
+import { ClaudeProcess } from "../skills/builtins/claude-process.js";
 
 const REGISTRY_URL = "http://localhost:4999";
 const HEARTBEAT_INTERVAL_MS = 30_000;
@@ -67,6 +68,10 @@ export class AgentServer {
     const skillRegistry = this.options.useClaudeCode
       ? createClaudeRegistry(projectPath)
       : createDefaultRegistry();
+
+    if (this.options.useClaudeCode) {
+      ClaudeProcess.getInstance().start(projectPath);
+    }
 
     for (const skill of this.options.extraSkills ?? []) {
       skillRegistry.register(skill);
@@ -313,6 +318,7 @@ export class AgentServer {
       this.registryWs.close();
       this.registryWs = null;
     }
+    ClaudeProcess.getInstance().stop();
     await this.sendHeartbeat("shutting-down");
     await this.deregisterFromRegistry();
     await new Promise<void>((resolve, reject) => {

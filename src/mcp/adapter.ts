@@ -599,9 +599,10 @@ export class McpAgentBridge {
           await this.emitTraceEvent({ agentId: entry.agentId, agentName: entry.name, taskId, state: "submitted", skillId });
 
           // Try WS relay first
+          const wsTimeoutMs = skillId === "claude-execute" ? 300_000 : 60_000;
           if (waitForResponse && this.registryWs?.readyState === WebSocket.OPEN) {
             try {
-              const result = await this.sendMessageViaWs(entry.agentId, message, { skillId, input });
+              const result = await this.sendMessageViaWs(entry.agentId, message, { skillId, input, timeoutMs: wsTimeoutMs });
               await this.emitTraceEvent({ agentId: entry.agentId, agentName: entry.name, taskId, state: "completed", skillId });
 
               // Extract result from RPC response
@@ -757,9 +758,10 @@ export class McpAgentBridge {
         async (input) => {
           try {
             // Try WS relay first for real-time communication
+            const skillWsTimeoutMs = skill.id === "claude-execute" ? 300_000 : 60_000;
             if (this.registryWs?.readyState === WebSocket.OPEN) {
               try {
-                const result = await this.sendMessageViaWs(agent.agentId, JSON.stringify(input), { skillId: skill.id, input: input as Record<string, unknown> });
+                const result = await this.sendMessageViaWs(agent.agentId, JSON.stringify(input), { skillId: skill.id, input: input as Record<string, unknown>, timeoutMs: skillWsTimeoutMs });
                 const rpcResult = result as { result?: unknown; error?: { message: string } };
                 if (rpcResult?.error) {
                   return { content: [{ type: "text" as const, text: `Agent error: ${rpcResult.error.message}` }], isError: true };
