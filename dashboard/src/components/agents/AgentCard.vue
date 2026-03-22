@@ -6,8 +6,16 @@
   >
     <!-- Row 1: name + type badge -->
     <div style="display:flex;align-items:center;gap:8px;">
-      <span style="font-size:11px;font-weight:600;color:var(--text);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;">{{ displayName }}</span>
-      <span class="chip" :class="isClient ? 'chip-violet' : typeChipClass" style="flex-shrink:0;">
+      <span
+        :title="agent.projectPath"
+        style="font-size:11px;font-weight:600;color:var(--text);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;"
+      >{{ displayName }}</span>
+      <span
+        class="chip"
+        :class="isClient ? 'chip-violet' : typeChipClass"
+        :title="isClient ? chipTooltip : undefined"
+        style="flex-shrink:0;cursor:default;"
+      >
         {{ isClient ? clientLabel : typeBadge }}
       </span>
     </div>
@@ -71,6 +79,12 @@ const props = defineProps<{ agent: RegistryAgent }>();
 const expanded = ref(false);
 const isClient = computed(() => props.agent.entryType === "client");
 const clientLabel = computed(() => CLIENT_LABELS[props.agent.clientInfo?.clientName ?? ""] ?? props.agent.clientInfo?.clientName ?? "AI Client");
+const chipTooltip = computed(() => {
+  const info = props.agent.clientInfo;
+  if (!info) return undefined;
+  const label = CLIENT_LABELS[info.clientName] ?? info.clientName;
+  return `${label} v${info.clientVersion}`;
+});
 const displayName = computed(() => props.agent.projectName || (isClient.value ? clientLabel.value : props.agent.name));
 const relativeTime = useTimeAgo(computed(() => new Date(props.agent.lastHeartbeat)));
 const typeBadge = computed(() => projectTypeBadge(props.agent.projectType));
