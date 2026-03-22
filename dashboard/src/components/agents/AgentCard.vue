@@ -71,7 +71,7 @@ const props = defineProps<{ agent: RegistryAgent }>();
 const expanded = ref(false);
 const isClient = computed(() => props.agent.entryType === "client");
 const clientLabel = computed(() => CLIENT_LABELS[props.agent.clientInfo?.clientName ?? ""] ?? props.agent.clientInfo?.clientName ?? "AI Client");
-const displayName = computed(() => isClient.value ? clientLabel.value : props.agent.projectName);
+const displayName = computed(() => props.agent.projectName || (isClient.value ? clientLabel.value : props.agent.name));
 const relativeTime = useTimeAgo(computed(() => new Date(props.agent.lastHeartbeat)));
 const typeBadge = computed(() => projectTypeBadge(props.agent.projectType));
 const typeChipClass = computed(() => TYPE_CHIP[props.agent.projectType] ?? "type-unknown");

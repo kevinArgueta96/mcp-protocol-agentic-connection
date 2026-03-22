@@ -342,8 +342,26 @@ export class McpAgentBridge {
 
         const clientName: string = clientVersion.name;
         const version: string = clientVersion.version ?? "unknown";
-        const projectFolderName = basename(this.options.projectPath);
         this.clientAgentId = `client-${clientName}-${Date.now()}`;
+
+        // Resolve real project path from client's workspace roots (MCP roots protocol)
+        let realProjectPath = this.options.projectPath;
+        let realProjectName = basename(this.options.projectPath);
+        const capabilities = innerServer.getClientCapabilities?.();
+        if (capabilities?.roots) {
+          try {
+            const rootsResult = await innerServer.listRoots();
+            if (rootsResult.roots?.length > 0) {
+              const firstRoot = rootsResult.roots[0];
+              if (firstRoot.uri.startsWith("file://")) {
+                realProjectPath = decodeURIComponent(new URL(firstRoot.uri).pathname);
+                realProjectName = firstRoot.name || basename(realProjectPath);
+              }
+            }
+          } catch {
+            // fall back to configured projectPath
+          }
+        }
 
         // Identify on existing WS connection
         if (this.registryWs?.readyState === WebSocket.OPEN) {
@@ -352,16 +370,16 @@ export class McpAgentBridge {
 
         const registration = {
           agentId: this.clientAgentId,
-          name: projectFolderName,
+          name: realProjectName,
           url: "",
           wsUrl: "",
           port: 0,
-          projectPath: this.options.projectPath,
-          projectName: projectFolderName,
+          projectPath: realProjectPath,
+          projectName: realProjectName,
           projectType: "unknown",
           card: {
-            name: projectFolderName,
-            description: `AI client: ${clientName} v${version} — ${projectFolderName}`,
+            name: realProjectName,
+            description: `AI client: ${clientName} v${version} — ${realProjectName}`,
             url: "",
             version,
             capabilities: { streaming: false, pushNotifications: false, stateTransitionHistory: false },
@@ -379,7 +397,7 @@ export class McpAgentBridge {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(registration),
         });
-        console.error(`[MCP] Registered client: ${projectFolderName} (${clientName} v${version})`);
+        console.error(`[MCP] Registered client: ${realProjectName} (${clientName} v${version})`);
 
         this.clientHeartbeatTimer = setInterval(async () => {
           if (!this.clientAgentId) return;
