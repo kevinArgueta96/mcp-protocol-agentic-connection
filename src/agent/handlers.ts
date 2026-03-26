@@ -339,15 +339,15 @@ export function inferSkillFromMessage(params: TaskSendParams): string | undefine
 
   // endpoint-find: strong keywords only (all are domain-specific)
   const endpointKeywords = [
-    { pattern: /\bendpoint\b/, weight: 3 },
-    { pattern: /\broute\b/, weight: 2 },
+    { pattern: /\bendpoints?\b/, weight: 3 },
+    { pattern: /\broutes?\b/, weight: 2 },
     { pattern: /\bapi\b/, weight: 2 },
-    { pattern: /\bcontroller\b/, weight: 3 },
-    { pattern: /\brest\b/, weight: 2 },
+    { pattern: /\bcontrollers?\b/, weight: 3 },
+    { pattern: /\brestful\b|\brest\s+api\b|\brest\s+endpoint\b/, weight: 3 },
     { pattern: /\bgraphql\b/, weight: 3 },
     { pattern: /\bwebhook\b/, weight: 3 },
     { pattern: /\bhttp method\b|\bhttp endpoint\b/, weight: 3 },
-    { pattern: /\bhandler\b/, weight: 1 },
+    { pattern: /\bhandlers?\b/, weight: 1 },
   ];
 
   // file-search: specific file-finding intent
@@ -356,7 +356,8 @@ export function inferSkillFromMessage(params: TaskSendParams): string | undefine
     { pattern: /\bshow files?\b/, weight: 3 },
     { pattern: /\bwhat files?\b/, weight: 3 },
     { pattern: /\bfind files?\b|\bfind.*\.ts\b|\bfind.*\.\w{2,4}\b/, weight: 3 },
-    { pattern: /\bdirectory\b|\bfolder\b|\bstructure\b/, weight: 2 },
+    { pattern: /\bdirectory\b|\bfolder\b/, weight: 3 },
+    { pattern: /\bstructure\b/, weight: 3 },
     { pattern: /\bglob\b/, weight: 3 },
     { pattern: /\btree\b/, weight: 1 },
   ];
@@ -372,8 +373,6 @@ export function inferSkillFromMessage(params: TaskSendParams): string | undefine
   ];
   const codeQueryWeakKeywords = [
     { pattern: /\bfind\b/, weight: 1 },
-    { pattern: /\bsearch\b/, weight: 1 },
-    { pattern: /\bwhere\b/, weight: 1 },
     { pattern: /\bfunction\b/, weight: 1 },
     { pattern: /\bclass\b/, weight: 1 },
     { pattern: /\bvariable\b/, weight: 1 },
