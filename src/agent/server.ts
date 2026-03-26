@@ -216,7 +216,7 @@ export class AgentServer {
         // Build skill input: if inferred skill matches, parse from message; otherwise use full text as query
         const rawInput = (resolvedSkillId !== skillId)
           ? { query: userText }
-          : parseInputFromMessage(fakeParams);
+          : parseInputFromMessage(fakeParams, resolvedSkillId);
 
         const parsed = skill.inputSchema.safeParse(rawInput);
 
