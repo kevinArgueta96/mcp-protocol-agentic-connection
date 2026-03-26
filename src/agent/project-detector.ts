@@ -12,7 +12,7 @@ export interface ProjectInfo {
   rootDir: string;
   configFile?: string;
   version?: string;
-  category?: "frontend" | "backend" | "fullstack" | "library";
+  category?: "frontend" | "backend" | "fullstack";
   framework?: string;
 }
 
@@ -99,7 +99,7 @@ function detectPythonFramework(content: string): { framework?: string; category?
     const line = rawLine.trim();
     if (!line || line.startsWith("#")) continue;
     // Extract package name: take everything before ==, >=, ~=, !=, [, or space
-    const pkgName = line.split(/[=><~!\[\s]/)[0].toLowerCase().trim();
+    const pkgName = line.split(/[=><~!\[\s]/)[0].replace(/^['"]/, '').toLowerCase().trim();
     if (pkgName in PYTHON_FRAMEWORKS) {
       return { framework: PYTHON_FRAMEWORKS[pkgName], category: "backend" };
     }

@@ -223,6 +223,7 @@ export class EndpointFindSkill extends BaseSkill<Input, Output> {
           }
 
           endpoints.push(endpoint);
+          break; // prevent multiple patterns from matching the same line
         }
       }
     }

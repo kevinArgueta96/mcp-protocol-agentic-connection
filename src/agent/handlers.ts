@@ -240,6 +240,8 @@ export class RequestRouter {
       projectName: ctx.projectName,
       projectPath: ctx.projectPath,
       projectType: ctx.projectType,
+      projectCategory: ctx.projectInfo?.category,
+      projectFramework: ctx.projectInfo?.framework,
       skills: ctx.skillRegistry.list().map((s) => ({
         id: s.id,
         name: s.name,
@@ -357,7 +359,7 @@ export function inferSkillFromMessage(params: TaskSendParams): string | undefine
     { pattern: /\bwhat files?\b/, weight: 3 },
     { pattern: /\bfind files?\b|\bfind.*\.ts\b|\bfind.*\.\w{2,4}\b/, weight: 3 },
     { pattern: /\bdirectory\b|\bfolder\b/, weight: 3 },
-    { pattern: /\bstructure\b/, weight: 3 },
+    { pattern: /\bstructure\b/, weight: 2 },
     { pattern: /\bglob\b/, weight: 3 },
     { pattern: /\btree\b/, weight: 1 },
   ];
