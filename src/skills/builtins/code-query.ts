@@ -19,7 +19,6 @@ const inputSchema = z.object({
   fileGlob: z
     .string()
     .optional()
-    .default("**/*")
     .describe("Limit search to files matching this glob"),
   rootDir: z.string().optional().describe("Root directory to search"),
   maxResults: z.number().optional().default(50).describe("Maximum number of results"),
@@ -63,15 +62,14 @@ export class CodeQuerySkill extends BaseSkill<Input, Output> {
   async execute(input: Input, context: SkillContext): Promise<Output> {
     const root = input.rootDir ?? context.projectPath;
     const maxResults = input.maxResults ?? 50;
-    const fileGlob = input.fileGlob;
     const flags = input.caseSensitive ? "" : "i";
 
-    // Narrow the glob based on detected project type when the caller hasn't
-    // specified a custom glob.
-    const projectType = context.projectInfo?.type;
-    const effectiveGlob = (fileGlob === "**/*" && projectType)
-      ? (PROJECT_TYPE_GLOBS[projectType] ?? fileGlob)
-      : fileGlob;
+    // fileGlob is undefined when caller didn't specify → apply project-type narrowing
+    // fileGlob is a string when caller specified → respect caller's choice
+    const callerGlob = input.fileGlob;
+    const effectiveGlob = (callerGlob == null && context.projectInfo?.type)
+      ? (PROJECT_TYPE_GLOBS[context.projectInfo.type] ?? "**/*")
+      : (callerGlob ?? "**/*");
 
     context.log("info", `Searching code for "${input.query}" in ${root}`);
 

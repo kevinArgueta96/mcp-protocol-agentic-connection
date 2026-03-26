@@ -91,13 +91,19 @@ const FRONTEND_PATTERNS: PatternDef[] = [
   },
   // generic api client: api.get('/path'), api.post('/path'), client.get('/path')
   {
-    regex: /(?:api|client|http|service)\.(get|post|put|patch|delete)\s*\(\s*['"`]([^'"`]+)['"`]/i,
+    regex: /(?:api|client|http)\.(get|post|put|patch|delete)\s*\(\s*['"`]([^'"`]+)['"`]/i,
     framework: "api-client",
     extract: (m) => ({ method: m[1].toUpperCase(), path: m[2] }),
   },
-  // fetch: fetch('/path'), fetch("https://...")
+  // fetch with explicit method: fetch('/path', { method: 'POST' })
   {
-    regex: /\bfetch\s*\(\s*['"`]([^'"`]+)['"`]/i,
+    regex: /\bfetch\s*\(\s*['"`]([^'"`]+)['"`]\s*,\s*\{[^}]*method\s*:\s*['"`](GET|POST|PUT|PATCH|DELETE)['"`]/i,
+    framework: "fetch",
+    extract: (m) => ({ method: m[2].toUpperCase(), path: m[1] }),
+  },
+  // fetch with no options (defaults to GET)
+  {
+    regex: /\bfetch\s*\(\s*['"`]([^'"`]+)['"`]\s*[,)]/i,
     framework: "fetch",
     extract: (m) => ({ method: "GET", path: m[1] }),
   },
@@ -132,7 +138,7 @@ const PROJECT_TYPE_TO_GLOBS: Record<string, string[]> = {
   python: ["**/*.py"],
   java: ["**/*.java", "**/*.kt"],
   go: ["**/*.go"],
-  rust: ["**/*.rs"],
+  // Note: rust omitted — no Rust route patterns defined
 };
 
 export class EndpointFindSkill extends BaseSkill<Input, Output> {
@@ -151,8 +157,16 @@ export class EndpointFindSkill extends BaseSkill<Input, Output> {
     const isFrontend = context.projectInfo?.category === "frontend" ||
                        context.projectInfo?.category === "fullstack";
 
-    // Use frontend patterns if project is frontend AND framework is auto
-    const patterns = (isFrontend && framework === "auto") ? FRONTEND_PATTERNS : PATTERNS;
+    let patterns: PatternDef[];
+    if (framework !== "auto") {
+      patterns = PATTERNS; // explicit framework always uses backend patterns
+    } else if (context.projectInfo?.category === "fullstack") {
+      patterns = [...PATTERNS, ...FRONTEND_PATTERNS]; // fullstack: scan both
+    } else if (isFrontend) {
+      patterns = FRONTEND_PATTERNS; // pure frontend: only consumption patterns
+    } else {
+      patterns = PATTERNS; // backend or unknown
+    }
     let globs: string[];
     if (isFrontend && framework === "auto") {
       globs = FRONTEND_GLOBS;
