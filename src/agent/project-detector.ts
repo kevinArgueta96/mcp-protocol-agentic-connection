@@ -23,13 +23,10 @@ interface PackageJson {
   devDependencies?: Record<string, string>;
 }
 
-// FRONTEND frameworks
+// FRONTEND frameworks (vue, react, angular only)
 const FRONTEND_FRAMEWORKS: Record<string, string> = {
   "vue": "vue",
-  "@nuxtjs/nuxt": "nuxt",
-  "nuxt": "nuxt",
   "react": "react",
-  "next": "next",
   "@angular/core": "angular",
 };
 
@@ -37,10 +34,15 @@ const FRONTEND_FRAMEWORKS: Record<string, string> = {
 const BACKEND_FRAMEWORKS: Record<string, string> = {
   "express": "express",
   "fastify": "fastify",
-  "nestjs": "nestjs",
   "@nestjs/core": "nestjs",
   "hono": "hono",
   "koa": "koa",
+};
+
+// FULLSTACK frameworks
+const FULLSTACK_FRAMEWORKS: Record<string, string> = {
+  "next": "next",
+  "nuxt": "nuxt",
 };
 
 function detectNodeFramework(pkg: PackageJson): { category?: ProjectInfo["category"]; framework?: string } {
@@ -51,6 +53,12 @@ function detectNodeFramework(pkg: PackageJson): { category?: ProjectInfo["catego
 
   let detectedFrontend: string | undefined;
   let detectedBackend: string | undefined;
+
+  for (const [dep, framework] of Object.entries(FULLSTACK_FRAMEWORKS)) {
+    if (dep in allDeps) {
+      return { category: "fullstack", framework };
+    }
+  }
 
   for (const [dep, framework] of Object.entries(FRONTEND_FRAMEWORKS)) {
     if (dep in allDeps) {
@@ -79,16 +87,22 @@ function detectNodeFramework(pkg: PackageJson): { category?: ProjectInfo["catego
   return {};
 }
 
-function detectPythonFramework(content: string): { category?: ProjectInfo["category"]; framework?: string } {
-  const lower = content.toLowerCase();
-  if (lower.includes("fastapi")) {
-    return { category: "backend", framework: "fastapi" };
-  }
-  if (lower.includes("django")) {
-    return { category: "backend", framework: "django" };
-  }
-  if (lower.includes("flask")) {
-    return { category: "backend", framework: "flask" };
+function detectPythonFramework(content: string): { framework?: string; category?: "backend" } {
+  const PYTHON_FRAMEWORKS: Record<string, string> = {
+    "fastapi": "fastapi",
+    "django": "django",
+    "flask": "flask",
+  };
+
+  const lines = content.split("\n");
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    // Extract package name: take everything before ==, >=, ~=, !=, [, or space
+    const pkgName = line.split(/[=><~!\[\s]/)[0].toLowerCase().trim();
+    if (pkgName in PYTHON_FRAMEWORKS) {
+      return { framework: PYTHON_FRAMEWORKS[pkgName], category: "backend" };
+    }
   }
   return {};
 }
@@ -182,7 +196,7 @@ export async function detectProjectType(dir: string): Promise<ProjectInfo> {
       };
 
       // For Python projects, if no framework detected yet, try requirements.txt as fallback
-      if (result.type === "python" && !result.framework) {
+      if (result.type === "python" && !result.framework && detector.file !== "requirements.txt") {
         try {
           const reqContent = await readFile(join(dir, "requirements.txt"), "utf-8");
           const pyExtra = detectPythonFramework(reqContent);
