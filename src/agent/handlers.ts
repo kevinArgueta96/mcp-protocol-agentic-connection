@@ -173,7 +173,7 @@ export class RequestRouter {
             return ctx.taskStore.fail(task.id, `Skill "${skillId}" not found. Available: ${ctx.skillRegistry.list().map((s) => s.id).join(", ")}`);
           }
           // Parse and validate input from message text or metadata
-          const rawInput = (p.metadata?.input as Record<string, unknown>) ?? parseInputFromMessage(p);
+          const rawInput = (p.metadata?.input as Record<string, unknown>) ?? parseInputFromMessage(p, skillId);
           const parsed = skill.inputSchema.safeParse(rawInput);
           if (!parsed.success) {
             return ctx.taskStore.fail(task.id, `Invalid input for skill "${skillId}": ${parsed.error.message}`);
@@ -413,8 +413,20 @@ export function inferSkillFromMessage(params: TaskSendParams): string | undefine
   return best?.[0];
 }
 
-/** Parse skill input from message text — tries JSON first, then plain string as query */
-export function parseInputFromMessage(params: TaskSendParams): Record<string, unknown> {
+// Map skill IDs to their primary input field name
+const SKILL_INPUT_FIELDS: Record<string, string> = {
+  "file-search": "pattern",
+  "code-query": "query",
+  "endpoint-find": "query",
+  "prompt-execute": "template",
+  "claude-execute": "prompt",
+};
+
+/** Parse skill input from message text — tries JSON first, then plain string mapped to the skill's primary field */
+export function parseInputFromMessage(
+  params: TaskSendParams,
+  skillId?: string
+): Record<string, unknown> {
   const textParts = params.message.parts
     .filter((p) => p.type === "text")
     .map((p) => (p as { text: string }).text);
@@ -428,10 +440,11 @@ export function parseInputFromMessage(params: TaskSendParams): Record<string, un
     const parsed = JSON.parse(text) as Record<string, unknown>;
     if (typeof parsed === "object") return parsed;
   } catch {
-    // Not JSON — treat as query string
+    // Not JSON — treat as plain string mapped to the skill's primary field
   }
 
-  return { query: text, pattern: text };
+  const fieldName = skillId ? (SKILL_INPUT_FIELDS[skillId] ?? "message") : "message";
+  return { [fieldName]: text };
 }
 
 /** List directory contents up to a given depth */
