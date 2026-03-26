@@ -173,13 +173,26 @@ export async function detectProjectType(dir: string): Promise<ProjectInfo> {
       const content = await readFile(filePath, "utf-8");
       const name = detector.parseName?.(content) ?? dir.split("/").pop() ?? "unknown";
       const extra = detector.parseExtra?.(content) ?? {};
-      return {
+      const result: ProjectInfo = {
         type: detector.type,
         name,
         rootDir: dir,
         configFile: detector.file,
         ...extra,
       };
+
+      // For Python projects, if no framework detected yet, try requirements.txt as fallback
+      if (result.type === "python" && !result.framework) {
+        try {
+          const reqContent = await readFile(join(dir, "requirements.txt"), "utf-8");
+          const pyExtra = detectPythonFramework(reqContent);
+          Object.assign(result, pyExtra);
+        } catch {
+          // requirements.txt not found, that's fine
+        }
+      }
+
+      return result;
     } catch {
       // File not found, try next
     }
