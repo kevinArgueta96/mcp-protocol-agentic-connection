@@ -92,8 +92,6 @@ const CODE_GLOBS: Record<string, string[]> = {
   fastify: ["**/*.ts", "**/*.js"],
 };
 
-const IGNORE = DEFAULT_IGNORE;
-
 export class EndpointFindSkill extends BaseSkill<Input, Output> {
   readonly id = "endpoint-find";
   readonly name = "Endpoint Finder";
@@ -112,7 +110,7 @@ export class EndpointFindSkill extends BaseSkill<Input, Output> {
     const globs = CODE_GLOBS[framework] ?? CODE_GLOBS.auto;
     const allFiles: string[] = [];
     for (const pattern of globs) {
-      const found = await glob(pattern, { cwd: root, ignore: IGNORE, nodir: true });
+      const found = await glob(pattern, { cwd: root, ignore: [...DEFAULT_IGNORE], nodir: true });
       allFiles.push(...found);
     }
 

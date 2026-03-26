@@ -13,4 +13,4 @@ export const DEFAULT_IGNORE = [
   "**/target/**",
   "**/*.min.js",
   "**/*.min.css",
-];
+] as const;

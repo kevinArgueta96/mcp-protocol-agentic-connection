@@ -11,7 +11,7 @@ const inputSchema = z.object({
   ignore: z
     .array(z.string())
     .optional()
-    .default(DEFAULT_IGNORE)
+    .default([...DEFAULT_IGNORE])
     .describe("Patterns to ignore"),
   limit: z.number().optional().default(100).describe("Max number of results"),
 });
@@ -35,7 +35,7 @@ export class FileSearchSkill extends BaseSkill<Input, Output> {
 
   async execute(input: Input, context: SkillContext): Promise<Output> {
     const root = input.rootDir ?? context.projectPath;
-    const ignore = input.ignore ?? DEFAULT_IGNORE;
+    const ignore = input.ignore;
     const limit = input.limit ?? 100;
 
     context.log("info", `Searching for "${input.pattern}" in ${root}`);
