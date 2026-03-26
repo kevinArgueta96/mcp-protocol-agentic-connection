@@ -131,6 +131,11 @@ export interface RouterContext {
   projectPath: string;
   projectName: string;
   projectType: string;
+  projectInfo?: {
+    type: string;
+    category?: string;
+    framework?: string;
+  };
   taskStore: TaskStore;
   skillRegistry: SkillRegistry;
   registryUrl?: string;
@@ -160,7 +165,7 @@ export class RequestRouter {
       try {
         // Determine which skill to run
         const skillId = (p.metadata?.skillId as string | undefined) ?? inferSkillFromMessage(p);
-        const skillContext = makeSkillContext(ctx.agentId, task.id, ctx.projectPath);
+        const skillContext = makeSkillContext(ctx.agentId, task.id, ctx.projectPath, ctx.projectInfo);
 
         if (skillId) {
           const skill = ctx.skillRegistry.get(skillId);
@@ -260,7 +265,7 @@ export class RequestRouter {
       const skill = ctx.skillRegistry.get("code-query");
       if (!skill) return { matches: [], query };
 
-      const skillContext = makeSkillContext(ctx.agentId, randomUUID(), ctx.projectPath);
+      const skillContext = makeSkillContext(ctx.agentId, randomUUID(), ctx.projectPath, ctx.projectInfo);
       const result = await skill.execute({ query, fileGlob }, skillContext);
       return result;
     });
@@ -301,12 +306,18 @@ export class RequestRouter {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-export function makeSkillContext(agentId: string, taskId: string, projectPath: string): SkillContext {
+export function makeSkillContext(
+  agentId: string,
+  taskId: string,
+  projectPath: string,
+  projectInfo?: { type: string; category?: string; framework?: string }
+): SkillContext {
   return {
     agentId,
     taskId,
     projectPath,
     log: (level, message) => console.error(`[${level.toUpperCase()}] [${agentId.slice(0, 8)}] ${message}`),
+    projectInfo,
   };
 }
 

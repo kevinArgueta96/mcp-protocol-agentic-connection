@@ -114,6 +114,11 @@ export class AgentServer {
       projectPath,
       projectName: projectInfo.name,
       projectType: projectInfo.type,
+      projectInfo: {
+        type: projectInfo.type,
+        category: projectInfo.category,
+        framework: projectInfo.framework,
+      },
       taskStore: this.taskStore,
       skillRegistry,
       registryUrl,
@@ -206,7 +211,7 @@ export class AgentServer {
         }
 
         const taskId = uuid();
-        const skillCtx = makeSkillContext(ctx.agentId, taskId, ctx.projectPath);
+        const skillCtx = makeSkillContext(ctx.agentId, taskId, ctx.projectPath, ctx.projectInfo);
 
         // Build skill input: if inferred skill matches, parse from message; otherwise use full text as query
         const rawInput = (resolvedSkillId !== skillId)
