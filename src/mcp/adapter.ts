@@ -757,36 +757,39 @@ export class McpAgentBridge {
       case "file-search":
         return {
           pattern: z.string().describe("Glob pattern (e.g. '**/*.ts', 'src/**/*.json')"),
-          limit: z.coerce.number().optional().describe("Max results (default: 100)"),
+          rootDir: z.string().optional().describe("Root directory (defaults to project root)"),
+          ignore: z.array(z.string()).optional().describe("Patterns to ignore"),
+          limit: z.number().optional().describe("Max number of results (default: 100)"),
         };
       case "endpoint-find":
         return {
-          query: z.string().optional().describe("Filter by keyword (e.g. 'payment', 'auth', 'user')"),
+          rootDir: z.string().optional().describe("Root directory to scan"),
           framework: z
-            .enum(["auto", "express", "nestjs", "fastapi", "spring", "hono"])
+            .enum(["auto", "express", "nestjs", "fastapi", "spring", "hono", "fastify"])
             .optional()
             .describe("Framework hint (default: auto)"),
+          query: z.string().optional().describe("Filter endpoints by path/method keyword"),
         };
       case "code-query":
         return {
-          query: z.string().describe("Text or regex to search in code files"),
-          fileGlob: z.string().optional().describe("Limit to files matching this glob"),
-          maxResults: z.coerce.number().optional().describe("Max matches (default: 50)"),
+          query: z.string().describe("Text or regex pattern to search"),
+          fileGlob: z.string().optional().describe("Limit search to files matching this glob"),
+          rootDir: z.string().optional().describe("Root directory to search"),
+          maxResults: z.number().optional().describe("Maximum number of results (default: 50)"),
+          caseSensitive: z.boolean().optional().describe("Case-sensitive search (default: false)"),
         };
       case "prompt-execute":
         return {
           template: z.string().describe("Prompt template with {{variable}} placeholders"),
-          variables: z.preprocess(
-            (v) => (typeof v === "string" ? JSON.parse(v) : v),
-            z.record(z.string()).optional()
-          ).describe("Variables to inject"),
-          instruction: z.string().optional().describe("What to do with this prompt"),
+          variables: z.record(z.string()).optional().describe("Variables to inject"),
+          context: z.string().optional().describe("Additional context to prepend"),
+          instruction: z.string().optional().describe("What the agent receiving this prompt should do with it"),
         };
       case "claude-execute":
         return {
-          prompt: z.string().describe("The task or question for Claude Code"),
+          prompt: z.string().describe("The task or question for Claude"),
           allowedTools: z.array(z.string()).optional()
-            .describe("Allowed Claude Code tools (default: Read, Glob, Grep, Bash)"),
+            .describe("Allowed tools: Read, Glob, Grep (default: all three)"),
         };
       case "code-review":
       case "run-tests":
