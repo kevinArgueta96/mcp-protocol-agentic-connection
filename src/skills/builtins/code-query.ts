@@ -6,6 +6,14 @@ import { BaseSkill } from "../framework.js";
 import type { SkillContext } from "../../types/skills.js";
 import { DEFAULT_IGNORE } from "./shared-constants.js";
 
+const PROJECT_TYPE_GLOBS: Record<string, string> = {
+  node: "**/*.{ts,js,mjs,cjs,json,vue,tsx,jsx}",
+  python: "**/*.{py,pyi,toml,cfg,ini}",
+  java: "**/*.{java,kt,xml,properties,yaml,yml}",
+  go: "**/*.{go,mod,sum}",
+  rust: "**/*.{rs,toml}",
+};
+
 const inputSchema = z.object({
   query: z.string().describe("Text or regex pattern to search"),
   fileGlob: z
@@ -58,6 +66,13 @@ export class CodeQuerySkill extends BaseSkill<Input, Output> {
     const fileGlob = input.fileGlob ?? "**/*";
     const flags = input.caseSensitive ? "" : "i";
 
+    // Narrow the glob based on detected project type when the caller hasn't
+    // specified a custom glob.
+    const projectType = (context as SkillContext & { projectInfo?: { type?: string } }).projectInfo?.type;
+    const effectiveGlob = (fileGlob === "**/*" && projectType)
+      ? (PROJECT_TYPE_GLOBS[projectType] ?? fileGlob)
+      : fileGlob;
+
     context.log("info", `Searching code for "${input.query}" in ${root}`);
 
     let regex: RegExp;
@@ -69,7 +84,7 @@ export class CodeQuerySkill extends BaseSkill<Input, Output> {
       regex = new RegExp(escaped, flags);
     }
 
-    const files = await glob(fileGlob, { cwd: root, ignore: IGNORE, nodir: true });
+    const files = await glob(effectiveGlob, { cwd: root, ignore: IGNORE, nodir: true });
     const matches: Output["matches"] = [];
     let truncated = false;
 
