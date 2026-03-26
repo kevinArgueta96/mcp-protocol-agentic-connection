@@ -63,12 +63,12 @@ export class CodeQuerySkill extends BaseSkill<Input, Output> {
   async execute(input: Input, context: SkillContext): Promise<Output> {
     const root = input.rootDir ?? context.projectPath;
     const maxResults = input.maxResults ?? 50;
-    const fileGlob = input.fileGlob ?? "**/*";
+    const fileGlob = input.fileGlob;
     const flags = input.caseSensitive ? "" : "i";
 
     // Narrow the glob based on detected project type when the caller hasn't
     // specified a custom glob.
-    const projectType = (context as SkillContext & { projectInfo?: { type?: string } }).projectInfo?.type;
+    const projectType = context.projectInfo?.type;
     const effectiveGlob = (fileGlob === "**/*" && projectType)
       ? (PROJECT_TYPE_GLOBS[projectType] ?? fileGlob)
       : fileGlob;

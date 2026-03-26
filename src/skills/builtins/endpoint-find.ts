@@ -127,6 +127,14 @@ const CODE_GLOBS: Record<string, string[]> = {
   fastify: ["**/*.ts", "**/*.js"],
 };
 
+const PROJECT_TYPE_TO_GLOBS: Record<string, string[]> = {
+  node: ["**/*.ts", "**/*.js", "**/*.mjs", "**/*.cjs"],
+  python: ["**/*.py"],
+  java: ["**/*.java", "**/*.kt"],
+  go: ["**/*.go"],
+  rust: ["**/*.rs"],
+};
+
 export class EndpointFindSkill extends BaseSkill<Input, Output> {
   readonly id = "endpoint-find";
   readonly name = "Endpoint Finder";
@@ -145,9 +153,15 @@ export class EndpointFindSkill extends BaseSkill<Input, Output> {
 
     // Use frontend patterns if project is frontend AND framework is auto
     const patterns = (isFrontend && framework === "auto") ? FRONTEND_PATTERNS : PATTERNS;
-    const globs = (isFrontend && framework === "auto")
-      ? FRONTEND_GLOBS
-      : (CODE_GLOBS[framework] ?? CODE_GLOBS.auto);
+    let globs: string[];
+    if (isFrontend && framework === "auto") {
+      globs = FRONTEND_GLOBS;
+    } else if (framework === "auto" && context.projectInfo?.type) {
+      // Narrow by project type to avoid scanning irrelevant file types
+      globs = PROJECT_TYPE_TO_GLOBS[context.projectInfo.type] ?? CODE_GLOBS.auto;
+    } else {
+      globs = CODE_GLOBS[framework] ?? CODE_GLOBS.auto;
+    }
 
     context.log("info", `Finding ${framework} endpoints in ${root}${isFrontend ? " (frontend mode)" : ""}`);
 
