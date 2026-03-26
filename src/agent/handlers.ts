@@ -329,15 +329,89 @@ export function inferSkillFromMessage(params: TaskSendParams): string | undefine
     .join(" ")
     .toLowerCase();
 
-  // Endpoint / route discovery
-  if (/endpoint|route|api|path|url|controller|handler|http|rest|graphql|webhook/.test(text)) return "endpoint-find";
-  // File listing / navigation
-  if (/list files?|show files?|what files?|directory|folder|structure|tree|glob/.test(text)) return "file-search";
-  // Code search / analysis
-  if (/find|search|where|locate|grep|look for|contains?|usage|references?|import|function|class|variable|constant|interface|type/.test(text)) return "code-query";
-  // Prompt templates
-  if (/prompt|template|generate|fill|placeholder/.test(text)) return "prompt-execute";
-  return undefined;
+  // Score each skill based on keyword matches
+  const scores: Record<string, number> = {
+    "endpoint-find": 0,
+    "file-search": 0,
+    "code-query": 0,
+    "prompt-execute": 0,
+  };
+
+  // endpoint-find: strong keywords only (all are domain-specific)
+  const endpointKeywords = [
+    { pattern: /\bendpoint\b/, weight: 3 },
+    { pattern: /\broute\b/, weight: 2 },
+    { pattern: /\bapi\b/, weight: 2 },
+    { pattern: /\bcontroller\b/, weight: 3 },
+    { pattern: /\brest\b/, weight: 2 },
+    { pattern: /\bgraphql\b/, weight: 3 },
+    { pattern: /\bwebhook\b/, weight: 3 },
+    { pattern: /\bhttp method\b|\bhttp endpoint\b/, weight: 3 },
+    { pattern: /\bhandler\b/, weight: 1 },
+  ];
+
+  // file-search: specific file-finding intent
+  const fileKeywords = [
+    { pattern: /\blist files?\b/, weight: 3 },
+    { pattern: /\bshow files?\b/, weight: 3 },
+    { pattern: /\bwhat files?\b/, weight: 3 },
+    { pattern: /\bfind files?\b|\bfind.*\.ts\b|\bfind.*\.\w{2,4}\b/, weight: 3 },
+    { pattern: /\bdirectory\b|\bfolder\b|\bstructure\b/, weight: 2 },
+    { pattern: /\bglob\b/, weight: 3 },
+    { pattern: /\btree\b/, weight: 1 },
+  ];
+
+  // code-query: requires EITHER a strong keyword OR 2+ weak keywords
+  const codeQueryStrongKeywords = [
+    { pattern: /\bgrep\b/, weight: 4 },
+    { pattern: /\bsearch.*code\b|\bcode.*search\b/, weight: 4 },
+    { pattern: /\bfind.*in.*code\b|\bwhere.*defined\b/, weight: 4 },
+    { pattern: /\bwhere is\b/, weight: 3 },
+    { pattern: /\busage of\b|\breferences to\b/, weight: 3 },
+    { pattern: /\bimports? of\b|\bimported by\b/, weight: 3 },
+  ];
+  const codeQueryWeakKeywords = [
+    { pattern: /\bfind\b/, weight: 1 },
+    { pattern: /\bsearch\b/, weight: 1 },
+    { pattern: /\bwhere\b/, weight: 1 },
+    { pattern: /\bfunction\b/, weight: 1 },
+    { pattern: /\bclass\b/, weight: 1 },
+    { pattern: /\bvariable\b/, weight: 1 },
+    { pattern: /\binterface\b/, weight: 1 },
+  ];
+
+  // prompt-execute
+  const promptKeywords = [
+    { pattern: /\bprompt\b/, weight: 3 },
+    { pattern: /\btemplate\b/, weight: 2 },
+    { pattern: /\bplaceholder\b/, weight: 3 },
+    { pattern: /\bfill.*template\b/, weight: 3 },
+  ];
+
+  // Apply scoring
+  for (const kw of endpointKeywords) {
+    if (kw.pattern.test(text)) scores["endpoint-find"] += kw.weight;
+  }
+  for (const kw of fileKeywords) {
+    if (kw.pattern.test(text)) scores["file-search"] += kw.weight;
+  }
+  for (const kw of codeQueryStrongKeywords) {
+    if (kw.pattern.test(text)) scores["code-query"] += kw.weight;
+  }
+  for (const kw of codeQueryWeakKeywords) {
+    if (kw.pattern.test(text)) scores["code-query"] += kw.weight;
+  }
+  for (const kw of promptKeywords) {
+    if (kw.pattern.test(text)) scores["prompt-execute"] += kw.weight;
+  }
+
+  // Only route if a skill has a meaningful score
+  const MIN_SCORE = 3;
+  const best = Object.entries(scores)
+    .filter(([, score]) => score >= MIN_SCORE)
+    .sort(([, a], [, b]) => b - a)[0];
+
+  return best?.[0];
 }
 
 /** Parse skill input from message text — tries JSON first, then plain string as query */
