@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { glob } from "glob";
 import { BaseSkill } from "../framework.js";
 import type { SkillContext } from "../../types/skills.js";
+import { DEFAULT_IGNORE } from "./shared-constants.js";
 
 const inputSchema = z.object({
   rootDir: z.string().optional().describe("Root directory to scan"),
@@ -91,7 +92,7 @@ const CODE_GLOBS: Record<string, string[]> = {
   fastify: ["**/*.ts", "**/*.js"],
 };
 
-const IGNORE = ["**/node_modules/**", "**/.git/**", "**/dist/**", "**/.next/**"];
+const IGNORE = DEFAULT_IGNORE;
 
 export class EndpointFindSkill extends BaseSkill<Input, Output> {
   readonly id = "endpoint-find";

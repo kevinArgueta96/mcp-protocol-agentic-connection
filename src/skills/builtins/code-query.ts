@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { glob } from "glob";
 import { BaseSkill } from "../framework.js";
 import type { SkillContext } from "../../types/skills.js";
+import { DEFAULT_IGNORE } from "./shared-constants.js";
 
 const inputSchema = z.object({
   query: z.string().describe("Text or regex pattern to search"),
@@ -33,7 +34,7 @@ const outputSchema = z.object({
 type Input = z.infer<typeof inputSchema>;
 type Output = z.infer<typeof outputSchema>;
 
-const IGNORE = ["**/node_modules/**", "**/.git/**", "**/dist/**", "**/.next/**", "**/*.lock"];
+const IGNORE = [...DEFAULT_IGNORE, "**/*.lock"];
 const BINARY_EXTENSIONS = new Set([
   ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".woff", ".woff2",
   ".ttf", ".eot", ".pdf", ".zip", ".tar", ".gz", ".bin", ".exe",

@@ -1,0 +1,16 @@
+export const DEFAULT_IGNORE = [
+  "**/node_modules/**",
+  "**/.git/**",
+  "**/dist/**",
+  "**/.next/**",
+  "**/coverage/**",
+  "**/build/**",
+  "**/out/**",
+  "**/.nuxt/**",
+  "**/.output/**",
+  "**/__pycache__/**",
+  "**/.venv/**",
+  "**/target/**",
+  "**/*.min.js",
+  "**/*.min.css",
+];
