@@ -1,0 +1,16 @@
+ "agent-bridge": {
+      "command": "node",
+      "args": [
+        "/home/kevin-osigu/Documents/PROYECTOS_OSIGU/10. PERSONAL/mcp-protocol-agentic-connection/dist/cli/index.js",
+        "mcp",
+        "start",
+        "--claude"
+      ]
+    },
+    "agent-bridge": {
+          "command": "sh",
+          "args": [
+            "-c",
+            "cd '/home/kevin-osigu/Documents/PROYECTOS_OSIGU/10. PERSONAL/mcp-protocol-agentic-connection' && pnpm install --frozen-lockfile && pnpm build && node dist/cli/index.js mcp start --claude"
+          ]
+        },

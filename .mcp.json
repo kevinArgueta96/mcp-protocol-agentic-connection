@@ -1,10 +1,15 @@
 {
   "mcpServers": {
     "agent-bridge": {
-      "command": "sh",
+      "command": "node",
       "args": [
-        "-c",
-        "cd '/home/link-programmer/Documents/DEV_PROJECTS/mcp-protocol-agentic-connection' && pnpm install --frozen-lockfile && pnpm build && node dist/cli/index.js mcp start --claude"
+        "/home/kevin-osigu/Documents/PROYECTOS_OSIGU/10. PERSONAL/mcp-protocol-agentic-connection/dist/cli/index.js",
+        "mcp",
+        "start",
+        "--claude",
+        "--project",
+        "/home/kevin-osigu/Documents/PROYECTOS_OSIGU/10. PERSONAL/mcp-protocol-agentic-connection"
+
       ]
     },
     "chrome-devtools": {

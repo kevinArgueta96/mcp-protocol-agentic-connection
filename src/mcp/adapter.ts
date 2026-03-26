@@ -20,6 +20,7 @@ import { A2AClient } from "../client/a2a-client.js";
 import { RegistryServer } from "../registry/server.js";
 import { AgentServer } from "../agent/server.js";
 import type { RegistryEntry, AgentMessage } from "../types/messages.js";
+import type { Task, Part, Message } from "../types/a2a.js";
 import { WebSocket } from "ws";
 
 export interface McpAdapterOptions {
@@ -28,7 +29,7 @@ export interface McpAdapterOptions {
   auto?: boolean;
   /** Project path for the auto-started agent (default: cwd) */
   projectPath?: string;
-  /** Register per-agent skill tools in addition to meta-tools (default: true) */
+  /** Register per-agent skill tools in addition to meta-tools (default: false) */
   registerSkillTools?: boolean;
   /** Enable Claude Code AI backend for the auto-started embedded agent (default: false) */
   useClaudeCode?: boolean;
@@ -36,6 +37,38 @@ export interface McpAdapterOptions {
 
 function toolPrefix(name: string): string {
   return name.replace(/[^a-z0-9]/gi, "_").replace(/_+/g, "_").toLowerCase();
+}
+
+/** Extract a human-readable response from an A2A Task object.
+ *  Handles text, data, and file parts across all artifacts.
+ *  Falls back to status.message parts, then raw JSON. */
+function extractTaskResponse(task: unknown): string {
+  const taskObj = task as Partial<Task>;
+
+  // 1. Artifacts (primary response channel)
+  const artifactParts: Part[] = taskObj?.artifacts?.flatMap((a) => a.parts) ?? [];
+  if (artifactParts.length > 0) {
+    return artifactParts.map((p) => {
+      if (p.type === "text") return p.text;
+      if (p.type === "data") return JSON.stringify(p.data, null, 2);
+      if (p.type === "file") return `[File: ${p.file.name ?? p.file.uri ?? "binary"}]`;
+      return JSON.stringify(p);
+    }).join("\n");
+  }
+
+  // 2. Status message parts (simple skill responses)
+  const statusMsg = taskObj?.status?.message as Message | undefined;
+  const statusParts: Part[] = statusMsg?.parts ?? [];
+  if (statusParts.length > 0) {
+    return statusParts.map((p) => {
+      if (p.type === "text") return p.text;
+      if (p.type === "data") return JSON.stringify(p.data, null, 2);
+      return JSON.stringify(p);
+    }).join("\n");
+  }
+
+  // 3. Fallback: raw JSON
+  return JSON.stringify(task, null, 2);
 }
 
 function formatAgentsSummary(agents: RegistryEntry[]): string {
@@ -81,12 +114,23 @@ export class McpAgentBridge {
       registryUrl: "http://localhost:4999",
       auto: true,
       projectPath: process.cwd(),
-      registerSkillTools: true,
+      registerSkillTools: false,
       useClaudeCode: false,
       ...options,
     };
     this.registry = new RegistryClient(this.options.registryUrl);
-    this.server = new McpServer({ name: "agent-bridge", version: "0.1.0" });
+    this.server = new McpServer(
+      { name: "agent-bridge", version: "0.1.0" },
+      {
+        capabilities: { experimental: { "claude/channel": {} } },
+        instructions:
+          "You are connected to agent-bridge, a multi-agent communication hub. " +
+          "Connected agents appear as <channel source=\"agent-bridge\" from_agent=\"<name>\" agent_id=\"<id>\"> events when they send you a message. " +
+          "Use list_agents to discover available agents, agent_health to check if they are alive, " +
+          "and ask_agent to send tasks or reply to incoming messages. " +
+          "Always use ask_agent (with the originating agent_id) to respond to channel events.",
+      },
+    );
   }
 
   async start(transport: "stdio" | "http" = "stdio", httpPort = 6000): Promise<void> {
@@ -163,17 +207,19 @@ export class McpAgentBridge {
             for (const trackedId of this.agentToolMap.keys()) {
               if (!snapshotIds.has(trackedId)) this.removeAgentTools(trackedId);
             }
-            // Add tools for new agents
-            for (const agent of snapshotAgents) {
-              if (agent.entryType !== "client" && agent.card?.skills?.length > 0) {
-                this.addAgentTools(agent); // idempotent via agentToolMap.has()
+            // Add tools for new agents only if skill tools are enabled
+            if (this.options.registerSkillTools) {
+              for (const agent of snapshotAgents) {
+                if (agent.entryType !== "client" && agent.card?.skills?.length > 0) {
+                  this.addAgentTools(agent); // idempotent via agentToolMap.has()
+                }
               }
             }
           }
 
           if (msg.type === "agent.registered" && msg.data) {
             const entry = msg.data as RegistryEntry;
-            if (entry.entryType !== "client" && entry.card?.skills?.length > 0) {
+            if (this.options.registerSkillTools && entry.entryType !== "client" && entry.card?.skills?.length > 0) {
               this.addAgentTools(entry);
               console.error(`[MCP] New agent discovered: ${entry.name} (${entry.card.skills.length} skills)`);
             }
@@ -197,7 +243,25 @@ export class McpAgentBridge {
           // ── Pending response relay ────────────────────────────────────────
           if (msg.type === "agent.message" && msg.data) {
             const agentMsg = msg.data as AgentMessage;
-            // Check if this is a response to a pending request
+
+            // Incoming request from another agent → push as channel event
+            if (agentMsg.type === "task.request") {
+              const payload = agentMsg.payload as { message?: string; skillId?: string } | null;
+              const content = payload?.message ?? JSON.stringify(payload);
+              void this.server.server.notification({
+                method: "notifications/claude/channel",
+                params: {
+                  content,
+                  meta: {
+                    from_agent: agentMsg.fromAgentId,
+                    task_id: agentMsg.taskId ?? "",
+                    ...(payload?.skillId ? { skill_id: payload.skillId } : {}),
+                  },
+                },
+              });
+            }
+
+            // Response to a pending request → resolve the promise
             if (agentMsg.type === "task.response" && agentMsg.taskId) {
               const pending = this.pendingResponses.get(agentMsg.taskId);
               if (pending) {
@@ -517,127 +581,43 @@ export class McpAgentBridge {
       {
         description:
           "Send a message or task to any connected agent. " +
+          "Tries WebSocket relay first for real-time communication, falls back to HTTP. " +
           "Optionally specify a skillId to invoke a specific capability. " +
-          "Use list_agents to see available skills per agent.",
+          "Use list_agents to see available agents.",
         inputSchema: {
           agentId: z.string().describe("Target agent ID or name (from list_agents)"),
           message: z.string().describe("The message, question, or task to send"),
-          skillId: z.string().optional().describe("Skill to invoke (e.g. 'claude-execute', 'code-query', 'file-search', 'code-review')"),
+          skillId: z.string().optional().describe("Skill to invoke on the target agent (e.g. 'claude-execute')"),
           input: z.preprocess(
             (v) => (typeof v === "string" ? JSON.parse(v) : v),
             z.record(z.unknown()).optional()
           ).describe("Direct skill input as JSON (overrides message parsing)"),
-        },
-      },
-      async ({ agentId, message, skillId, input }) => {
-        try {
-          const entry = await this.resolveAgent(agentId);
-          const taskId = randomUUID();
-          await this.emitTraceEvent({ agentId: entry.agentId, agentName: entry.name, taskId, state: "submitted", skillId });
-
-          // Try WS relay first for real-time terminal-to-terminal communication
-          if (this.registryWs?.readyState === WebSocket.OPEN) {
-            try {
-              const result = await this.sendMessageViaWs(entry.agentId, message, { skillId, input });
-              await this.emitTraceEvent({ agentId: entry.agentId, agentName: entry.name, taskId, state: "completed", skillId });
-              const rpcResult = result as { result?: unknown; error?: { message: string } };
-              if (rpcResult?.error) {
-                return { content: [{ type: "text" as const, text: `Agent error: ${rpcResult.error.message}` }], isError: true };
-              }
-              const task = rpcResult?.result ?? result;
-              const taskObj = task as { artifacts?: Array<{ parts: Array<{ type: string; data?: unknown; text?: string }> }> };
-              const artifact = taskObj?.artifacts?.[0];
-              if (artifact?.parts[0]?.type === "data") {
-                return { content: [{ type: "text" as const, text: JSON.stringify(artifact.parts[0].data, null, 2) }] };
-              }
-              return { content: [{ type: "text" as const, text: JSON.stringify(task, null, 2) }] };
-            } catch {
-              console.error("[MCP] WS relay failed for ask_agent, falling back to HTTP");
-            }
-          }
-
-          // Guard: no URL means client entry with no HTTP server
-          if (!entry.url) {
-            return {
-              content: [{
-                type: "text" as const,
-                text: `Agent "${entry.name}" has no HTTP endpoint (it's a client entry). ` +
-                      `Use send_message with WS relay or target an agent with skills.`,
-              }],
-              isError: true,
-            };
-          }
-
-          // Fallback: HTTP direct
-          const client = new A2AClient(entry.url);
-          const task = await client.sendTask({
-            message: { role: "user", parts: [{ type: "text", text: message }] },
-            metadata: {
-              ...(skillId ? { skillId } : {}),
-              ...(input ? { input } : {}),
-            },
-          });
-          await this.emitTraceEvent({ agentId: entry.agentId, agentName: entry.name, taskId, state: "completed", skillId });
-          const artifact = task.artifacts[0];
-          if (artifact?.parts[0]?.type === "data") {
-            return { content: [{ type: "text" as const, text: JSON.stringify(artifact.parts[0].data, null, 2) }] };
-          }
-          return { content: [{ type: "text" as const, text: JSON.stringify(task, null, 2) }] };
-        } catch (err) {
-          return {
-            content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
-            isError: true,
-          };
-        }
-      }
-    );
-
-    this.server.registerTool(
-      "send_message",
-      {
-        description:
-          "Send a message to an agent via WebSocket relay and wait for the response in real-time. " +
-          "Uses the registry as a message broker. Both terminals will show trace output. " +
-          "Prefer this over ask_agent for real-time bidirectional communication.",
-        inputSchema: {
-          agentId: z.string().describe("Target agent ID or name (from list_agents)"),
-          message: z.string().describe("The message to send"),
-          skillId: z.string().optional().describe("Skill to invoke (e.g. 'claude-execute', 'code-query', 'file-search', 'code-review')"),
-          input: z.preprocess(
-            (v) => (typeof v === "string" ? JSON.parse(v) : v),
-            z.record(z.unknown()).optional()
-          ).describe("Direct skill input as JSON"),
+          timeout: z.coerce.number().optional().describe("Timeout in ms (default: 60000, max: 300000)"),
           waitForResponse: z.boolean().optional().describe("Wait for response via WS (default: true)"),
         },
       },
-      async ({ agentId, message, skillId, input, waitForResponse = true }) => {
+      async ({ agentId, message, skillId, input, timeout, waitForResponse = true }) => {
         try {
           const entry = await this.resolveAgent(agentId);
           const taskId = randomUUID();
           await this.emitTraceEvent({ agentId: entry.agentId, agentName: entry.name, taskId, state: "submitted", skillId });
 
-          // Try WS relay first
-          const wsTimeoutMs = skillId === "claude-execute" ? 300_000 : 60_000;
+          // Resolve timeout: explicit > skill-based default > standard default
+          const wsTimeoutMs = timeout ?? (skillId === "claude-execute" ? 300_000 : 60_000);
+
+          // Try WS relay first for real-time terminal-to-terminal communication
           if (waitForResponse && this.registryWs?.readyState === WebSocket.OPEN) {
             try {
               const result = await this.sendMessageViaWs(entry.agentId, message, { skillId, input, timeoutMs: wsTimeoutMs });
               await this.emitTraceEvent({ agentId: entry.agentId, agentName: entry.name, taskId, state: "completed", skillId });
-
-              // Extract result from RPC response
               const rpcResult = result as { result?: unknown; error?: { message: string } };
               if (rpcResult?.error) {
                 return { content: [{ type: "text" as const, text: `Agent error: ${rpcResult.error.message}` }], isError: true };
               }
               const task = rpcResult?.result ?? result;
-              const taskObj = task as { artifacts?: Array<{ parts: Array<{ type: string; data?: unknown; text?: string }> }> };
-              const artifact = taskObj?.artifacts?.[0];
-              if (artifact?.parts[0]?.type === "data") {
-                return { content: [{ type: "text" as const, text: JSON.stringify(artifact.parts[0].data, null, 2) }] };
-              }
-              return { content: [{ type: "text" as const, text: JSON.stringify(task, null, 2) }] };
+              return { content: [{ type: "text" as const, text: extractTaskResponse(task) }] };
             } catch {
-              // WS failed — fallback to HTTP
-              console.error("[MCP] WS relay failed, falling back to HTTP");
+              console.error("[MCP] WS relay failed for ask_agent, falling back to HTTP");
             }
           }
 
@@ -663,11 +643,7 @@ export class McpAgentBridge {
             },
           });
           await this.emitTraceEvent({ agentId: entry.agentId, agentName: entry.name, taskId, state: "completed", skillId });
-          const artifact = task.artifacts[0];
-          if (artifact?.parts[0]?.type === "data") {
-            return { content: [{ type: "text" as const, text: JSON.stringify(artifact.parts[0].data, null, 2) }] };
-          }
-          return { content: [{ type: "text" as const, text: JSON.stringify(task, null, 2) }] };
+          return { content: [{ type: "text" as const, text: extractTaskResponse(task) }] };
         } catch (err) {
           return {
             content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
@@ -677,73 +653,6 @@ export class McpAgentBridge {
       }
     );
 
-    this.server.registerTool(
-      "project_info",
-      {
-        description: "Get detailed project info from an agent: name, path, type, and all skills.",
-        inputSchema: {
-          agentId: z.string().describe("Agent ID or name"),
-        },
-      },
-      async ({ agentId }) => {
-        try {
-          const entry = await this.resolveAgent(agentId);
-          return {
-            content: [{
-              type: "text" as const,
-              text: JSON.stringify({
-                name: entry.name,
-                path: entry.projectPath,
-                type: entry.projectType,
-                port: entry.port,
-                skills: entry.card.skills.map((s) => ({ id: s.id, description: s.description, tags: s.tags })),
-              }, null, 2),
-            }],
-          };
-        } catch (err) {
-          return {
-            content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
-            isError: true,
-          };
-        }
-      }
-    );
-
-    this.server.registerTool(
-      "project_files",
-      {
-        description: "List files in a remote agent's project using glob pattern. Useful to explore project structure.",
-        inputSchema: {
-          agentId: z.string().describe("Agent ID or name"),
-          pattern: z.string().optional().describe("Glob pattern (default: **/* — all files)"),
-          limit: z.coerce.number().optional().describe("Max results (default: 100)"),
-        },
-      },
-      async ({ agentId, pattern = "**/*", limit = 100 }) => {
-        try {
-          const entry = await this.resolveAgent(agentId);
-          const client = new A2AClient(entry.url);
-          const task = await client.sendTask({
-            message: { role: "user", parts: [{ type: "text", text: "list files" }] },
-            metadata: { skillId: "file-search", input: { pattern, limit } },
-          });
-          const artifact = task.artifacts[0];
-          const data = artifact?.parts[0]?.type === "data" ? artifact.parts[0].data : null;
-          const files = (data as { files?: string[] })?.files ?? [];
-          return {
-            content: [{
-              type: "text" as const,
-              text: `Project: ${entry.name}\nPath: ${entry.projectPath}\n\nFiles (${files.length}):\n${files.map((f) => `  ${f}`).join("\n")}`,
-            }],
-          };
-        } catch (err) {
-          return {
-            content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
-            isError: true,
-          };
-        }
-      }
-    );
   }
 
   // ── Per-agent skill tools ──────────────────────────────────────────────────

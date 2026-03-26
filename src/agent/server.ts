@@ -57,6 +57,7 @@ export class AgentServer {
   private registryWsReconnectAttempts = 0;
   private readonly MAX_WS_RECONNECT = 5;
   private messageHandlers = new Set<(msg: AgentMessage) => void>();
+  private processedTaskIds = new Set<string>();
 
   constructor(private readonly options: AgentServerOptions = {}) {
     this.agentId = randomUUID();
@@ -373,6 +374,16 @@ export class AgentServer {
 
             // If it's a task.request, process it and send response back
             if (agentMsg.type === "task.request" && this.routerCtx) {
+              // Only handle messages destined for this agent (registry broadcasts to all WS clients)
+              if (agentMsg.toAgentId && agentMsg.toAgentId !== this.agentId) {
+                return; // Message is for a different agent — ignore
+              }
+              // Deduplicate: registry may deliver twice (direct + broadcast)
+              if (agentMsg.taskId) {
+                if (this.processedTaskIds.has(agentMsg.taskId)) return;
+                this.processedTaskIds.add(agentMsg.taskId);
+                setTimeout(() => this.processedTaskIds.delete(agentMsg.taskId!), 300_000);
+              }
               void this.handleIncomingTask(agentMsg);
             }
 

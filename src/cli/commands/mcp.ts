@@ -18,14 +18,14 @@ export function registerMcpCommand(program: Command): void {
     .option("--registry-url <url>", "Registry URL", "http://localhost:4999")
     .option("--project <path>", "Project path for the auto-started agent (default: cwd)")
     .option("--no-auto", "Disable auto-start of registry/agent (require manual setup)")
-    .option("--no-skill-tools", "Only register meta-tools, not per-agent skill tools")
+    .option("--skill-tools", "Also register per-agent skill tools (disabled by default)")
     .option("--claude", "Enable Claude Code AI backend for the auto-started agent")
     .action(async (options) => {
       const bridge = new McpAgentBridge({
         registryUrl: options.registryUrl,
         auto: options.auto !== false,
         projectPath: options.project ?? process.env["AGENT_BRIDGE_PROJECT"] ?? process.cwd(),
-        registerSkillTools: options.skillTools !== false,
+        registerSkillTools: options.skillTools === true,
         useClaudeCode: options.claude ?? false,
       });
       await bridge.start("stdio");
@@ -40,7 +40,7 @@ export function registerMcpCommand(program: Command): void {
     .action(async (options) => {
       const bridge = new McpAgentBridge({
         registryUrl: options.registryUrl,
-        registerSkillTools: true,
+        registerSkillTools: false,
       });
       console.error(chalk.cyan("[MCP Server] Starting HTTP/SSE MCP server..."));
       await bridge.start("http", parseInt(options.port));
@@ -113,8 +113,8 @@ export function registerMcpCommand(program: Command): void {
         console.log(chalk.bold(`\n${agents.length} agent(s) connected — MCP tools that would be registered:\n`));
 
         // Meta-tools
-        const metaTools = ["list_agents", "agent_health", "ask_agent", "project_info", "project_files"];
-        console.log(chalk.cyan("  Meta-tools:"));
+        const metaTools = ["list_agents", "agent_health", "ask_agent"];
+        console.log(chalk.cyan("  Meta-tools (communication):"));
         for (const t of metaTools) console.log(`    • ${t}`);
         console.log();
 
