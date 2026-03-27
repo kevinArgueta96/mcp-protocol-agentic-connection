@@ -4,13 +4,21 @@ import { readFile } from "node:fs/promises";
 import { glob } from "glob";
 import { BaseSkill } from "../framework.js";
 import type { SkillContext } from "../../types/skills.js";
+import { DEFAULT_IGNORE } from "./shared-constants.js";
+
+const PROJECT_TYPE_GLOBS: Record<string, string> = {
+  node: "**/*.{ts,js,mjs,cjs,json,vue,tsx,jsx}",
+  python: "**/*.{py,pyi,toml,cfg,ini}",
+  java: "**/*.{java,kt,xml,properties,yaml,yml}",
+  go: "**/*.{go,mod,sum}",
+  rust: "**/*.{rs,toml}",
+};
 
 const inputSchema = z.object({
   query: z.string().describe("Text or regex pattern to search"),
   fileGlob: z
     .string()
     .optional()
-    .default("**/*")
     .describe("Limit search to files matching this glob"),
   rootDir: z.string().optional().describe("Root directory to search"),
   maxResults: z.number().optional().default(50).describe("Maximum number of results"),
@@ -33,7 +41,7 @@ const outputSchema = z.object({
 type Input = z.infer<typeof inputSchema>;
 type Output = z.infer<typeof outputSchema>;
 
-const IGNORE = ["**/node_modules/**", "**/.git/**", "**/dist/**", "**/.next/**", "**/*.lock"];
+const IGNORE = [...DEFAULT_IGNORE, "**/*.lock"];
 const BINARY_EXTENSIONS = new Set([
   ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".woff", ".woff2",
   ".ttf", ".eot", ".pdf", ".zip", ".tar", ".gz", ".bin", ".exe",
@@ -54,8 +62,14 @@ export class CodeQuerySkill extends BaseSkill<Input, Output> {
   async execute(input: Input, context: SkillContext): Promise<Output> {
     const root = input.rootDir ?? context.projectPath;
     const maxResults = input.maxResults ?? 50;
-    const fileGlob = input.fileGlob ?? "**/*";
     const flags = input.caseSensitive ? "" : "i";
+
+    // fileGlob is undefined when caller didn't specify → apply project-type narrowing
+    // fileGlob is a string when caller specified → respect caller's choice
+    const callerGlob = input.fileGlob;
+    const effectiveGlob = (callerGlob == null && context.projectInfo?.type)
+      ? (PROJECT_TYPE_GLOBS[context.projectInfo.type] ?? "**/*")
+      : (callerGlob ?? "**/*");
 
     context.log("info", `Searching code for "${input.query}" in ${root}`);
 
@@ -68,7 +82,7 @@ export class CodeQuerySkill extends BaseSkill<Input, Output> {
       regex = new RegExp(escaped, flags);
     }
 
-    const files = await glob(fileGlob, { cwd: root, ignore: IGNORE, nodir: true });
+    const files = await glob(effectiveGlob, { cwd: root, ignore: IGNORE, nodir: true });
     const matches: Output["matches"] = [];
     let truncated = false;
 

@@ -16,6 +16,11 @@ export interface SkillContext {
   taskId: string;
   projectPath: string;
   log: (level: "info" | "warn" | "error", message: string) => void;
+  projectInfo?: {
+    type: string;
+    category?: string;
+    framework?: string;
+  };
 }
 
 export type SkillHandler<TInput, TOutput> = (

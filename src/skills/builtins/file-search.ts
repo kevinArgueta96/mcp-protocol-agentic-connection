@@ -3,6 +3,7 @@ import { z } from "zod";
 import { glob } from "glob";
 import { BaseSkill } from "../framework.js";
 import type { SkillContext } from "../../types/skills.js";
+import { DEFAULT_IGNORE } from "./shared-constants.js";
 
 const inputSchema = z.object({
   pattern: z.string().describe("Glob pattern (e.g. '**/*.ts', 'src/**/*.json')"),
@@ -10,7 +11,7 @@ const inputSchema = z.object({
   ignore: z
     .array(z.string())
     .optional()
-    .default(["**/node_modules/**", "**/.git/**", "**/dist/**", "**/.next/**"])
+    .default([...DEFAULT_IGNORE])
     .describe("Patterns to ignore"),
   limit: z.number().optional().default(100).describe("Max number of results"),
 });
@@ -34,7 +35,7 @@ export class FileSearchSkill extends BaseSkill<Input, Output> {
 
   async execute(input: Input, context: SkillContext): Promise<Output> {
     const root = input.rootDir ?? context.projectPath;
-    const ignore = input.ignore ?? ["**/node_modules/**", "**/.git/**", "**/dist/**"];
+    const ignore = input.ignore;
     const limit = input.limit ?? 100;
 
     context.log("info", `Searching for "${input.pattern}" in ${root}`);

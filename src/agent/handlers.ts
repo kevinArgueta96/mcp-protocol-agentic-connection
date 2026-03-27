@@ -131,6 +131,11 @@ export interface RouterContext {
   projectPath: string;
   projectName: string;
   projectType: string;
+  projectInfo?: {
+    type: string;
+    category?: string;
+    framework?: string;
+  };
   taskStore: TaskStore;
   skillRegistry: SkillRegistry;
   registryUrl?: string;
@@ -160,7 +165,7 @@ export class RequestRouter {
       try {
         // Determine which skill to run
         const skillId = (p.metadata?.skillId as string | undefined) ?? inferSkillFromMessage(p);
-        const skillContext = makeSkillContext(ctx.agentId, task.id, ctx.projectPath);
+        const skillContext = makeSkillContext(ctx.agentId, task.id, ctx.projectPath, ctx.projectInfo);
 
         if (skillId) {
           const skill = ctx.skillRegistry.get(skillId);
@@ -168,7 +173,7 @@ export class RequestRouter {
             return ctx.taskStore.fail(task.id, `Skill "${skillId}" not found. Available: ${ctx.skillRegistry.list().map((s) => s.id).join(", ")}`);
           }
           // Parse and validate input from message text or metadata
-          const rawInput = (p.metadata?.input as Record<string, unknown>) ?? parseInputFromMessage(p);
+          const rawInput = (p.metadata?.input as Record<string, unknown>) ?? parseInputFromMessage(p, skillId);
           const parsed = skill.inputSchema.safeParse(rawInput);
           if (!parsed.success) {
             return ctx.taskStore.fail(task.id, `Invalid input for skill "${skillId}": ${parsed.error.message}`);
@@ -235,6 +240,8 @@ export class RequestRouter {
       projectName: ctx.projectName,
       projectPath: ctx.projectPath,
       projectType: ctx.projectType,
+      projectCategory: ctx.projectInfo?.category,
+      projectFramework: ctx.projectInfo?.framework,
       skills: ctx.skillRegistry.list().map((s) => ({
         id: s.id,
         name: s.name,
@@ -260,7 +267,7 @@ export class RequestRouter {
       const skill = ctx.skillRegistry.get("code-query");
       if (!skill) return { matches: [], query };
 
-      const skillContext = makeSkillContext(ctx.agentId, randomUUID(), ctx.projectPath);
+      const skillContext = makeSkillContext(ctx.agentId, randomUUID(), ctx.projectPath, ctx.projectInfo);
       const result = await skill.execute({ query, fileGlob }, skillContext);
       return result;
     });
@@ -301,12 +308,18 @@ export class RequestRouter {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-export function makeSkillContext(agentId: string, taskId: string, projectPath: string): SkillContext {
+export function makeSkillContext(
+  agentId: string,
+  taskId: string,
+  projectPath: string,
+  projectInfo?: { type: string; category?: string; framework?: string }
+): SkillContext {
   return {
     agentId,
     taskId,
     projectPath,
     log: (level, message) => console.error(`[${level.toUpperCase()}] [${agentId.slice(0, 8)}] ${message}`),
+    projectInfo,
   };
 }
 
@@ -318,19 +331,104 @@ export function inferSkillFromMessage(params: TaskSendParams): string | undefine
     .join(" ")
     .toLowerCase();
 
-  // Endpoint / route discovery
-  if (/endpoint|route|api|path|url|controller|handler|http|rest|graphql|webhook/.test(text)) return "endpoint-find";
-  // File listing / navigation
-  if (/list files?|show files?|what files?|directory|folder|structure|tree|glob/.test(text)) return "file-search";
-  // Code search / analysis
-  if (/find|search|where|locate|grep|look for|contains?|usage|references?|import|function|class|variable|constant|interface|type/.test(text)) return "code-query";
-  // Prompt templates
-  if (/prompt|template|generate|fill|placeholder/.test(text)) return "prompt-execute";
-  return undefined;
+  // Score each skill based on keyword matches
+  const scores: Record<string, number> = {
+    "endpoint-find": 0,
+    "file-search": 0,
+    "code-query": 0,
+    "prompt-execute": 0,
+  };
+
+  // endpoint-find: strong keywords only (all are domain-specific)
+  const endpointKeywords = [
+    { pattern: /\bendpoints?\b/, weight: 3 },
+    { pattern: /\broutes?\b/, weight: 2 },
+    { pattern: /\bapi\b/, weight: 2 },
+    { pattern: /\bcontrollers?\b/, weight: 3 },
+    { pattern: /\brestful\b|\brest\s+api\b|\brest\s+endpoint\b/, weight: 3 },
+    { pattern: /\bgraphql\b/, weight: 3 },
+    { pattern: /\bwebhook\b/, weight: 3 },
+    { pattern: /\bhttp method\b|\bhttp endpoint\b/, weight: 3 },
+    { pattern: /\bhandlers?\b/, weight: 1 },
+  ];
+
+  // file-search: specific file-finding intent
+  const fileKeywords = [
+    { pattern: /\blist files?\b/, weight: 3 },
+    { pattern: /\bshow files?\b/, weight: 3 },
+    { pattern: /\bwhat files?\b/, weight: 3 },
+    { pattern: /\bfind files?\b|\bfind.*\.ts\b|\bfind.*\.\w{2,4}\b/, weight: 3 },
+    { pattern: /\bdirectory\b|\bfolder\b/, weight: 3 },
+    { pattern: /\bstructure\b/, weight: 2 },
+    { pattern: /\bglob\b/, weight: 3 },
+    { pattern: /\btree\b/, weight: 1 },
+  ];
+
+  // code-query: requires EITHER a strong keyword OR 2+ weak keywords
+  const codeQueryStrongKeywords = [
+    { pattern: /\bgrep\b/, weight: 4 },
+    { pattern: /\bsearch.*code\b|\bcode.*search\b/, weight: 4 },
+    { pattern: /\bfind.*in.*code\b|\bwhere.*defined\b/, weight: 4 },
+    { pattern: /\bwhere is\b/, weight: 3 },
+    { pattern: /\busage of\b|\breferences to\b/, weight: 3 },
+    { pattern: /\bimports? of\b|\bimported by\b/, weight: 3 },
+  ];
+  const codeQueryWeakKeywords = [
+    { pattern: /\bfind\b/, weight: 1 },
+    { pattern: /\bfunction\b/, weight: 1 },
+    { pattern: /\bclass\b/, weight: 1 },
+    { pattern: /\bvariable\b/, weight: 1 },
+    { pattern: /\binterface\b/, weight: 1 },
+  ];
+
+  // prompt-execute
+  const promptKeywords = [
+    { pattern: /\bprompt\b/, weight: 3 },
+    { pattern: /\btemplate\b/, weight: 2 },
+    { pattern: /\bplaceholder\b/, weight: 3 },
+    { pattern: /\bfill.*template\b/, weight: 3 },
+  ];
+
+  // Apply scoring
+  for (const kw of endpointKeywords) {
+    if (kw.pattern.test(text)) scores["endpoint-find"] += kw.weight;
+  }
+  for (const kw of fileKeywords) {
+    if (kw.pattern.test(text)) scores["file-search"] += kw.weight;
+  }
+  for (const kw of codeQueryStrongKeywords) {
+    if (kw.pattern.test(text)) scores["code-query"] += kw.weight;
+  }
+  for (const kw of codeQueryWeakKeywords) {
+    if (kw.pattern.test(text)) scores["code-query"] += kw.weight;
+  }
+  for (const kw of promptKeywords) {
+    if (kw.pattern.test(text)) scores["prompt-execute"] += kw.weight;
+  }
+
+  // Only route if a skill has a meaningful score
+  const MIN_SCORE = 3;
+  const best = Object.entries(scores)
+    .filter(([, score]) => score >= MIN_SCORE)
+    .sort(([, a], [, b]) => b - a)[0];
+
+  return best?.[0];
 }
 
-/** Parse skill input from message text — tries JSON first, then plain string as query */
-export function parseInputFromMessage(params: TaskSendParams): Record<string, unknown> {
+// Map skill IDs to their primary input field name
+const SKILL_INPUT_FIELDS: Record<string, string> = {
+  "file-search": "pattern",
+  "code-query": "query",
+  "endpoint-find": "query",
+  "prompt-execute": "template",
+  "claude-execute": "prompt",
+};
+
+/** Parse skill input from message text — tries JSON first, then plain string mapped to the skill's primary field */
+export function parseInputFromMessage(
+  params: TaskSendParams,
+  skillId?: string
+): Record<string, unknown> {
   const textParts = params.message.parts
     .filter((p) => p.type === "text")
     .map((p) => (p as { text: string }).text);
@@ -344,10 +442,11 @@ export function parseInputFromMessage(params: TaskSendParams): Record<string, un
     const parsed = JSON.parse(text) as Record<string, unknown>;
     if (typeof parsed === "object") return parsed;
   } catch {
-    // Not JSON — treat as query string
+    // Not JSON — treat as plain string mapped to the skill's primary field
   }
 
-  return { query: text, pattern: text };
+  const fieldName = skillId ? (SKILL_INPUT_FIELDS[skillId] ?? "message") : "message";
+  return { [fieldName]: text };
 }
 
 /** List directory contents up to a given depth */

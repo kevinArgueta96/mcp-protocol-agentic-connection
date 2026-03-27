@@ -5,6 +5,8 @@ export { EndpointFindSkill } from "./builtins/endpoint-find.js";
 export { CodeQuerySkill } from "./builtins/code-query.js";
 export { PromptExecuteSkill } from "./builtins/prompt-execute.js";
 export { ClaudeExecuteSkill } from "./builtins/claude-execute.js";
+export { NotifyClaudeSkill } from "./builtins/notify-claude.js";
+export { ShellExecuteSkill } from "./builtins/shell-execute.js";
 export { RunTestsSkill, CodeReviewSkill, RunScriptSkill, DockerBuildSkill, detectDynamicSkills } from "./builtins/dynamic-project-skills.js";
 
 import { SkillRegistry } from "./framework.js";
@@ -13,6 +15,8 @@ import { EndpointFindSkill } from "./builtins/endpoint-find.js";
 import { CodeQuerySkill } from "./builtins/code-query.js";
 import { PromptExecuteSkill } from "./builtins/prompt-execute.js";
 import { ClaudeExecuteSkill } from "./builtins/claude-execute.js";
+import { NotifyClaudeSkill } from "./builtins/notify-claude.js";
+import { ShellExecuteSkill } from "./builtins/shell-execute.js";
 import { detectDynamicSkills } from "./builtins/dynamic-project-skills.js";
 
 export function createDefaultRegistry(): SkillRegistry {
@@ -21,6 +25,8 @@ export function createDefaultRegistry(): SkillRegistry {
   registry.register(new EndpointFindSkill());
   registry.register(new CodeQuerySkill());
   registry.register(new PromptExecuteSkill());
+  registry.register(new NotifyClaudeSkill());
+  registry.register(new ShellExecuteSkill());
   return registry;
 }
 

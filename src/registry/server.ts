@@ -175,6 +175,29 @@ export class RegistryServer {
       res.json({ ok: true });
     });
 
+    // Push a notification to the Claude terminal via claude/channel
+    this.app.post("/notify-claude", (req, res) => {
+      const { agentId, agentName, content, meta } = req.body as {
+        agentId?: string;
+        agentName?: string;
+        content: string;
+        meta?: Record<string, unknown>;
+      };
+
+      if (!content) {
+        res.status(400).json({ error: "content is required" });
+        return;
+      }
+
+      this.eventBus.broadcast({
+        type: "claude.notify",
+        timestamp: new Date().toISOString(),
+        data: { agentId, agentName, content, meta },
+      });
+
+      res.json({ ok: true });
+    });
+
     // Send message to a specific agent via registry relay
     this.app.post("/agents/:id/message", (req, res) => {
       const targetId = req.params.id;

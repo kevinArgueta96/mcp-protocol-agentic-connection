@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { glob } from "glob";
 import { BaseSkill } from "../framework.js";
 import type { SkillContext } from "../../types/skills.js";
+import { DEFAULT_IGNORE } from "./shared-constants.js";
 
 const inputSchema = z.object({
   rootDir: z.string().optional().describe("Root directory to scan"),
@@ -81,6 +82,47 @@ const PATTERNS: PatternDef[] = [
   },
 ];
 
+const FRONTEND_PATTERNS: PatternDef[] = [
+  // axios: axios.get('/path'), axios.post('/path')
+  {
+    regex: /axios\.(get|post|put|patch|delete|head)\s*\(\s*['"`]([^'"`]+)['"`]/i,
+    framework: "axios",
+    extract: (m) => ({ method: m[1].toUpperCase(), path: m[2] }),
+  },
+  // generic api client: api.get('/path'), api.post('/path'), client.get('/path')
+  {
+    regex: /(?:api|client|http)\.(get|post|put|patch|delete)\s*\(\s*['"`]([^'"`]+)['"`]/i,
+    framework: "api-client",
+    extract: (m) => ({ method: m[1].toUpperCase(), path: m[2] }),
+  },
+  // fetch with explicit method: fetch('/path', { method: 'POST' })
+  {
+    regex: /\bfetch\s*\(\s*['"`]([^'"`]+)['"`]\s*,\s*\{[^}]*method\s*:\s*['"`](GET|POST|PUT|PATCH|DELETE)['"`]/i,
+    framework: "fetch",
+    extract: (m) => ({ method: m[2].toUpperCase(), path: m[1] }),
+  },
+  // fetch with no options (defaults to GET)
+  {
+    regex: /\bfetch\s*\(\s*['"`]([^'"`]+)['"`]\s*[,)]/i,
+    framework: "fetch",
+    extract: (m) => ({ method: "GET", path: m[1] }),
+  },
+  // Vue $http: this.$http.get('/path')
+  {
+    regex: /\$http\.(get|post|put|patch|delete)\s*\(\s*['"`]([^'"`]+)['"`]/i,
+    framework: "vue-http",
+    extract: (m) => ({ method: m[1].toUpperCase(), path: m[2] }),
+  },
+  // useFetch, useAsyncData (Nuxt): useFetch('/path')
+  {
+    regex: /use(?:Fetch|AsyncData|LazyFetch)\s*\(\s*['"`]([^'"`]+)['"`]/i,
+    framework: "nuxt-fetch",
+    extract: (m) => ({ method: "GET", path: m[1] }),
+  },
+];
+
+const FRONTEND_GLOBS = ["**/*.ts", "**/*.js", "**/*.vue", "**/*.tsx", "**/*.jsx"];
+
 const CODE_GLOBS: Record<string, string[]> = {
   auto: ["**/*.ts", "**/*.js", "**/*.py", "**/*.java", "**/*.go", "**/*.rs"],
   express: ["**/*.ts", "**/*.js", "**/*.mjs"],
@@ -91,13 +133,19 @@ const CODE_GLOBS: Record<string, string[]> = {
   fastify: ["**/*.ts", "**/*.js"],
 };
 
-const IGNORE = ["**/node_modules/**", "**/.git/**", "**/dist/**", "**/.next/**"];
+const PROJECT_TYPE_TO_GLOBS: Record<string, string[]> = {
+  node: ["**/*.ts", "**/*.js", "**/*.mjs", "**/*.cjs"],
+  python: ["**/*.py"],
+  java: ["**/*.java", "**/*.kt"],
+  go: ["**/*.go"],
+  // Note: rust omitted — no Rust route patterns defined
+};
 
 export class EndpointFindSkill extends BaseSkill<Input, Output> {
   readonly id = "endpoint-find";
   readonly name = "Endpoint Finder";
   readonly description =
-    "Find API endpoints (routes/controllers) defined in the project. Supports Express, NestJS, FastAPI, Spring, Gin.";
+    "Find API endpoints defined in the project (backends: Express, NestJS, FastAPI, Spring, Gin) or API calls consumed by frontend projects (axios, fetch, api client patterns).";
   readonly tags = ["search", "endpoints", "api", "routes", "controllers"];
   readonly inputSchema = inputSchema;
 
@@ -106,12 +154,34 @@ export class EndpointFindSkill extends BaseSkill<Input, Output> {
     const framework = input.framework ?? "auto";
     const queryLower = input.query?.toLowerCase();
 
-    context.log("info", `Finding ${framework} endpoints in ${root}`);
+    const isFrontend = context.projectInfo?.category === "frontend" ||
+                       context.projectInfo?.category === "fullstack";
 
-    const globs = CODE_GLOBS[framework] ?? CODE_GLOBS.auto;
+    let patterns: PatternDef[];
+    if (framework !== "auto") {
+      patterns = PATTERNS; // explicit framework always uses backend patterns
+    } else if (context.projectInfo?.category === "fullstack") {
+      patterns = [...PATTERNS, ...FRONTEND_PATTERNS]; // fullstack: scan both
+    } else if (isFrontend) {
+      patterns = FRONTEND_PATTERNS; // pure frontend: only consumption patterns
+    } else {
+      patterns = PATTERNS; // backend or unknown
+    }
+    let globs: string[];
+    if (isFrontend && framework === "auto") {
+      globs = FRONTEND_GLOBS;
+    } else if (framework === "auto" && context.projectInfo?.type) {
+      // Narrow by project type to avoid scanning irrelevant file types
+      globs = PROJECT_TYPE_TO_GLOBS[context.projectInfo.type] ?? CODE_GLOBS.auto;
+    } else {
+      globs = CODE_GLOBS[framework] ?? CODE_GLOBS.auto;
+    }
+
+    context.log("info", `Finding ${framework} endpoints in ${root}${isFrontend ? " (frontend mode)" : ""}`);
+
     const allFiles: string[] = [];
     for (const pattern of globs) {
-      const found = await glob(pattern, { cwd: root, ignore: IGNORE, nodir: true });
+      const found = await glob(pattern, { cwd: root, ignore: [...DEFAULT_IGNORE], nodir: true });
       allFiles.push(...found);
     }
 
@@ -130,7 +200,7 @@ export class EndpointFindSkill extends BaseSkill<Input, Output> {
       const lines = content.split("\n");
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
-        for (const pattern of PATTERNS) {
+        for (const pattern of patterns) {
           const match = line.match(pattern.regex);
           if (!match) continue;
 
@@ -153,6 +223,7 @@ export class EndpointFindSkill extends BaseSkill<Input, Output> {
           }
 
           endpoints.push(endpoint);
+          break; // prevent multiple patterns from matching the same line
         }
       }
     }
