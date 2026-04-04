@@ -29,6 +29,26 @@ export class RegistryClient {
     return agents.find((a) => a.projectPath === projectPath) ?? agents[0];
   }
 
+  async findClaudeClient(params: { clientId?: string; project?: string }): Promise<RegistryEntry | undefined> {
+    const agents = await this.listAgents();
+    const clients = agents.filter((entry) => entry.entryType === "client");
+
+    if (params.clientId) {
+      const clientId = params.clientId;
+      return clients.find((entry) => entry.agentId === clientId || entry.agentId.startsWith(clientId));
+    }
+
+    if (params.project) {
+      const project = params.project.toLowerCase();
+      return clients.find((entry) =>
+        entry.projectPath.toLowerCase().includes(project) ||
+        entry.projectName.toLowerCase().includes(project)
+      );
+    }
+
+    return undefined;
+  }
+
   async health(): Promise<{ status: string; agents: number }> {
     const res = await fetch(`${this.registryUrl}/health`);
     return res.json() as Promise<{ status: string; agents: number }>;

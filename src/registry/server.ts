@@ -185,9 +185,10 @@ export class RegistryServer {
 
     // Push a notification to the Claude terminal via claude/channel
     this.app.post("/notify-claude", (req, res) => {
-      const { agentId, agentName, content, meta, conversationId, messageId, replyTo, taskId, requiresAck, expectsResponse, expiresAt } = req.body as {
+      const { agentId, agentName, toAgentId, content, meta, conversationId, messageId, replyTo, taskId, requiresAck, expectsResponse, expiresAt } = req.body as {
         agentId?: string;
         agentName?: string;
+        toAgentId?: string;
         content: string;
         meta?: Record<string, unknown>;
         conversationId?: string;
@@ -211,7 +212,7 @@ export class RegistryServer {
         fromAgentId: agentId ?? "unknown",
         fromAgentName: agentName,
         taskId,
-        toAgentId: "claude",
+        toAgentId: toAgentId ?? "claude",
         kind: "chat",
         content,
         meta,

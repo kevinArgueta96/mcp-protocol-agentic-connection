@@ -331,6 +331,12 @@ export class McpAgentBridge {
             const agentMsg = msg.data as AgentMessage;
 
             if (agentMsg.type === "task.request") {
+              // The registry broadcasts agent.message events to every WS client.
+              // Only surface requests that are explicitly addressed to THIS Claude client.
+              if (!this.clientAgentId || agentMsg.toAgentId !== this.clientAgentId) {
+                return;
+              }
+
               const payload = agentMsg.payload as { message?: string; skillId?: string } | null;
               const rawMessage = payload?.message ?? "";
               const content = rawMessage || JSON.stringify(payload);
@@ -1013,6 +1019,8 @@ export class McpAgentBridge {
       case "notify-claude":
         return {
           content: z.string().describe("Message content to push to the Claude terminal"),
+          targetClientId: z.string().optional().describe("Target Claude client agentId"),
+          targetProject: z.string().optional().describe("Project path or name used to resolve the target Claude client"),
           conversationId: z.string().optional().describe("Conversation ID to continue"),
           replyTo: z.string().optional().describe("Message ID this message replies to"),
           requiresAck: z.boolean().optional().describe("Whether to request delivery acknowledgements"),
