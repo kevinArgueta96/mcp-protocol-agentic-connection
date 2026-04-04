@@ -101,4 +101,7 @@ export interface ChannelConversationListEntry {
   pendingReply: boolean;
   expired: boolean;
   lastAckState?: ChannelDeliveryState;
+  pendingCount?: number;
+  pendingMessageIds?: string[];
+  status?: "pending" | "expired" | "answered" | "failed" | "active";
 }

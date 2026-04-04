@@ -11,7 +11,9 @@ export type RegistryEventType =
   | "agent.message"
   | "claude.notify"
   | "channel.message"
-  | "channel.ack";
+  | "channel.ack"
+  | "channel.conversation.suppressed"
+  | "channel.conversation.revived";
 
 export interface RegistryEvent {
   type: RegistryEventType;

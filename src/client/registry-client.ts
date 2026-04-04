@@ -54,6 +54,24 @@ export class RegistryClient {
     return res.json() as Promise<{ status: string; agents: number }>;
   }
 
+  async suppressChannelConversation(conversationId: string): Promise<boolean> {
+    const res = await fetch(`${this.registryUrl}/channel/conversations/${encodeURIComponent(conversationId)}/suppress`, {
+      method: "POST",
+    });
+    if (!res.ok) throw new Error(`Failed to suppress conversation: ${res.status}`);
+    const body = await res.json() as { suppressed: boolean };
+    return body.suppressed;
+  }
+
+  async reviveChannelConversation(conversationId: string): Promise<boolean> {
+    const res = await fetch(`${this.registryUrl}/channel/conversations/${encodeURIComponent(conversationId)}/suppress`, {
+      method: "DELETE",
+    });
+    if (!res.ok) throw new Error(`Failed to revive conversation: ${res.status}`);
+    const body = await res.json() as { revived: boolean };
+    return body.revived;
+  }
+
   async isAvailable(): Promise<boolean> {
     try {
       await this.health();

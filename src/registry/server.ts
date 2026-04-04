@@ -245,6 +245,9 @@ export class RegistryServer {
         return;
       }
 
+      const revived = body.conversationId
+        ? this.channelStore.reviveConversation(body.conversationId)
+        : false;
       const message = this.channelStore.createMessage({
         conversationId: body.conversationId,
         messageId: body.messageId,
@@ -268,6 +271,14 @@ export class RegistryServer {
         timestamp: new Date().toISOString(),
         data: message,
       });
+
+      if (revived) {
+        this.eventBus.broadcast({
+          type: "channel.conversation.revived",
+          timestamp: new Date().toISOString(),
+          data: { conversationId: message.conversationId },
+        });
+      }
 
       res.status(201).json(message);
     });
@@ -305,6 +316,32 @@ export class RegistryServer {
     this.app.get("/channel/conversations", (req, res) => {
       const pendingOnly = req.query.pending === "true";
       res.json(this.channelStore.listConversations({ pendingOnly }));
+    });
+
+    this.app.post("/channel/conversations/:id/suppress", (req, res) => {
+      const suppressed = this.channelStore.suppressConversation(req.params.id);
+      if (!suppressed) {
+        res.status(404).json({ error: "Conversation not found" });
+        return;
+      }
+
+      this.eventBus.broadcast({
+        type: "channel.conversation.suppressed",
+        timestamp: new Date().toISOString(),
+        data: { conversationId: req.params.id },
+      });
+
+      res.json({ suppressed: true });
+    });
+
+    this.app.delete("/channel/conversations/:id/suppress", (req, res) => {
+      const revived = this.channelStore.reviveConversation(req.params.id);
+      this.eventBus.broadcast({
+        type: "channel.conversation.revived",
+        timestamp: new Date().toISOString(),
+        data: { conversationId: req.params.id },
+      });
+      res.json({ revived });
     });
 
     this.app.post("/channel/messages/:conversationId/:messageId/retry", (req, res) => {

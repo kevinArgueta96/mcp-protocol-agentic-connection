@@ -98,7 +98,9 @@ export type WsMessage =
   | { type: "agent.removed"; timestamp: string; data: { agentId: string } }
   | { type: "task.update"; timestamp: string; data: TaskUpdatePayload }
   | { type: "channel.message"; timestamp: string; data: ChannelMessagePayload }
-  | { type: "channel.ack"; timestamp: string; data: ChannelAckPayload };
+  | { type: "channel.ack"; timestamp: string; data: ChannelAckPayload }
+  | { type: "channel.conversation.suppressed"; timestamp: string; data: { conversationId: string } }
+  | { type: "channel.conversation.revived"; timestamp: string; data: { conversationId: string } };
 
 export interface TaskUpdatePayload {
   agentId: string;
@@ -146,6 +148,9 @@ export interface ChannelConversationListEntry {
   pendingReply: boolean;
   expired: boolean;
   lastAckState?: ChannelDeliveryState;
+  pendingCount?: number;
+  pendingMessageIds?: string[];
+  status?: "pending" | "expired" | "answered" | "failed" | "active";
 }
 
 export interface ChannelConversationSnapshot {

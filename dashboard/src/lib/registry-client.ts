@@ -75,6 +75,20 @@ export async function fetchChannelConversation(conversationId: string): Promise<
   return res.json() as Promise<ChannelConversationSnapshot>;
 }
 
+export async function suppressChannelConversation(conversationId: string): Promise<void> {
+  const res = await fetch(`${BASE}/channel/conversations/${encodeURIComponent(conversationId)}/suppress`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(`Conversation suppression failed: ${res.status}`);
+}
+
+export async function reviveChannelConversation(conversationId: string): Promise<void> {
+  const res = await fetch(`${BASE}/channel/conversations/${encodeURIComponent(conversationId)}/suppress`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error(`Conversation revival failed: ${res.status}`);
+}
+
 export async function createChannelMessage(input: {
   conversationId?: string;
   replyTo?: string;

@@ -38,6 +38,11 @@ export class ChannelStore {
       );
       CREATE INDEX IF NOT EXISTS idx_channel_acks_conversation
         ON channel_acks (conversation_id, timestamp);
+
+      CREATE TABLE IF NOT EXISTS channel_suppressed_conversations (
+        conversation_id TEXT PRIMARY KEY,
+        suppressed_at INTEGER NOT NULL
+      );
     `);
   }
 
@@ -83,6 +88,7 @@ export class ChannelStore {
   }
 
   getConversation(conversationId: string): ChannelConversationSnapshot | undefined {
+    if (this.isConversationSuppressed(conversationId)) return undefined;
     const messages = this.loadMessages(conversationId);
     if (messages.length === 0) return undefined;
 
@@ -95,35 +101,27 @@ export class ChannelStore {
 
   listConversations(filter?: { pendingOnly?: boolean }): ChannelConversationListEntry[] {
     const rows = this.db.prepare(`
-      SELECT conversation_id, payload_json
+      SELECT conversation_id
       FROM channel_messages
       ORDER BY created_at DESC
-    `).all() as Array<{ conversation_id: string; payload_json: string }>;
+    `).all() as Array<{ conversation_id: string }>;
 
     const seen = new Set<string>();
-    const now = Date.now();
     const entries: ChannelConversationListEntry[] = [];
 
     for (const row of rows) {
       if (seen.has(row.conversation_id)) continue;
       seen.add(row.conversation_id);
+      if (this.isConversationSuppressed(row.conversation_id)) continue;
 
-      const lastMessage = JSON.parse(row.payload_json) as ChannelMessage;
+      const messages = this.loadMessages(row.conversation_id);
+      if (messages.length === 0) continue;
       const acknowledgements = this.loadAcks(row.conversation_id);
-      const lastAckForMessage = [...acknowledgements].reverse().find((ack) => ack.messageId === lastMessage.messageId);
-      const answered = acknowledgements.some((ack) => ack.messageId === lastMessage.messageId && ack.state === "answered");
-      const expired = typeof lastMessage.expiresAt === "number" && lastMessage.expiresAt <= now;
-      const pendingReply = lastMessage.expectsResponse === true && !answered && !expired;
+      const entry = this.summarizeConversation(row.conversation_id, messages, acknowledgements);
 
-      if (filter?.pendingOnly && !pendingReply) continue;
+      if (filter?.pendingOnly && !entry.pendingReply) continue;
 
-      entries.push({
-        conversationId: row.conversation_id,
-        lastMessage,
-        pendingReply,
-        expired,
-        lastAckState: lastAckForMessage?.state,
-      });
+      entries.push(entry);
     }
 
     return entries;
@@ -154,6 +152,40 @@ export class ChannelStore {
     return retried;
   }
 
+  suppressConversation(conversationId: string): boolean {
+    const exists = this.db.prepare(`
+      SELECT 1
+      FROM channel_messages
+      WHERE conversation_id = ?
+      LIMIT 1
+    `).get(conversationId);
+    if (!exists) return false;
+
+    this.db.prepare(`
+      INSERT OR REPLACE INTO channel_suppressed_conversations (conversation_id, suppressed_at)
+      VALUES (?, ?)
+    `).run(conversationId, Date.now());
+    return true;
+  }
+
+  reviveConversation(conversationId: string): boolean {
+    const result = this.db.prepare(`
+      DELETE FROM channel_suppressed_conversations
+      WHERE conversation_id = ?
+    `).run(conversationId);
+    return Number(result.changes ?? 0) > 0;
+  }
+
+  isConversationSuppressed(conversationId: string): boolean {
+    const row = this.db.prepare(`
+      SELECT 1
+      FROM channel_suppressed_conversations
+      WHERE conversation_id = ?
+      LIMIT 1
+    `).get(conversationId);
+    return Boolean(row);
+  }
+
   private loadMessages(conversationId: string): ChannelMessage[] {
     const rows = this.db.prepare(`
       SELECT payload_json
@@ -174,5 +206,50 @@ export class ChannelStore {
     `).all(conversationId) as Array<{ payload_json: string }>;
 
     return rows.map((row) => JSON.parse(row.payload_json) as ChannelAck);
+  }
+
+  private summarizeConversation(
+    conversationId: string,
+    messages: ChannelMessage[],
+    acknowledgements: ChannelAck[],
+  ): ChannelConversationListEntry {
+    const now = Date.now();
+    const lastMessage = messages[messages.length - 1]!;
+    const latestAckByMessage = new Map<string, ChannelAck>();
+
+    for (const ack of acknowledgements) {
+      latestAckByMessage.set(ack.messageId, ack);
+    }
+
+    const pendingMessages = messages.filter((message) => {
+      if (!message.expectsResponse) return false;
+      const lastAck = latestAckByMessage.get(message.messageId);
+      return lastAck?.state !== "answered" && lastAck?.state !== "failed";
+    });
+
+    const expired = pendingMessages.some(
+      (message) => typeof message.expiresAt === "number" && message.expiresAt <= now,
+    );
+    const pendingReply = pendingMessages.length > 0 && !expired;
+    const lastAckState = acknowledgements.length > 0
+      ? acknowledgements[acknowledgements.length - 1]!.state
+      : undefined;
+
+    let status: ChannelConversationListEntry["status"] = "active";
+    if (expired) status = "expired";
+    else if (pendingMessages.length > 0) status = "pending";
+    else if (lastAckState === "failed") status = "failed";
+    else if (lastAckState === "answered") status = "answered";
+
+    return {
+      conversationId,
+      lastMessage,
+      pendingReply,
+      expired,
+      lastAckState,
+      pendingCount: pendingMessages.length,
+      pendingMessageIds: pendingMessages.map((message) => message.messageId),
+      status,
+    };
   }
 }

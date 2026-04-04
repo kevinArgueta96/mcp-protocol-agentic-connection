@@ -16,22 +16,16 @@ import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import { z } from "zod";
 import { RegistryClient } from "../client/registry-client.js";
+import { ChannelTransport } from "../client/channel-transport.js";
+import { ChannelClientRuntime } from "../client/channel-client-runtime.js";
+import { ConversationService } from "../client/conversation-service.js";
+import { DefaultClientProfileResolver, type ClientBehaviorProfile } from "../client/client-profile-resolver.js";
 import { A2AClient } from "../client/a2a-client.js";
 import { RegistryServer } from "../registry/server.js";
 import { AgentServer } from "../agent/server.js";
 import type { RegistryEntry, AgentMessage, ChannelMessage } from "../types/messages.js";
 import type { Task, Part, Message } from "../types/a2a.js";
 import { WebSocket } from "ws";
-
-/** Convert meta values to strings — claude/channel spec requires Record<string, string> */
-function stringifyMeta(meta?: Record<string, unknown>): Record<string, string> {
-  if (!meta) return {};
-  const result: Record<string, string> = {};
-  for (const [k, v] of Object.entries(meta)) {
-    if (v != null) result[k] = String(v);
-  }
-  return result;
-}
 
 export interface McpAdapterOptions {
   registryUrl?: string;
@@ -116,22 +110,22 @@ function formatAgentsSummary(agents: RegistryEntry[]): string {
 export class McpAgentBridge {
   private server: McpServer;
   private registry: RegistryClient;
+  private channelTransport: ChannelTransport;
+  private channelRuntime: ChannelClientRuntime;
+  private conversationService: ConversationService;
+  private readonly profileResolver = new DefaultClientProfileResolver();
+  private clientProfile: ClientBehaviorProfile;
   private options: Required<McpAdapterOptions>;
   private clientAgentId: string | null = null;
-  private clientHeartbeatTimer: NodeJS.Timeout | null = null;
   private embeddedAgent: AgentServer | null = null;
   private embeddedRegistry: RegistryServer | null = null;
   private registryWs: WebSocket | null = null;
-  private registryWsReconnectTimer: NodeJS.Timeout | null = null;
-  private registryWsReconnectAttempts = 0;
-  private readonly MAX_WS_RECONNECT_ATTEMPTS = 5;
   private pendingResponses = new Map<string, {
     resolve: (value: unknown) => void;
     reject: (reason: Error) => void;
     timer: NodeJS.Timeout;
   }>();
   private agentToolMap = new Map<string, RegisteredTool[]>();
-  private recentChannelMessages = new Map<string, ChannelMessage>();
 
   constructor(options: McpAdapterOptions = {}) {
     this.options = {
@@ -143,6 +137,14 @@ export class McpAgentBridge {
       ...options,
     };
     this.registry = new RegistryClient(this.options.registryUrl);
+    this.channelTransport = new ChannelTransport({ registryUrl: this.options.registryUrl });
+    this.channelRuntime = new ChannelClientRuntime({
+      transport: this.channelTransport,
+      reconnectDelayMs: 5_000,
+      maxReconnectAttempts: 5,
+    });
+    this.conversationService = new ConversationService(this.channelRuntime);
+    this.clientProfile = this.profileResolver.resolve({ clientName: "claude-code" });
     this.server = new McpServer(
       { name: "agent-bridge", version: "0.1.0" },
       {
@@ -155,6 +157,7 @@ export class McpAgentBridge {
           "Use reply to respond to incoming channel events.",
       },
     );
+    this.setupChannelRuntime();
   }
 
   async start(transport: "stdio" | "http" = "stdio", httpPort = 6000): Promise<void> {
@@ -205,211 +208,125 @@ export class McpAgentBridge {
   // ── Registry WebSocket connection ──────────────────────────────────────────
 
   private connectRegistryWs(): void {
-    const wsUrl = this.options.registryUrl.replace(/^http/, "ws") + "/ws";
-    try {
-      const ws = new WebSocket(wsUrl);
-
-      ws.on("open", () => {
-        console.error(`[MCP] WebSocket connected to registry`);
-        this.registryWs = ws;
-        this.registryWsReconnectAttempts = 0;
-        // Identify as the MCP adapter's client agent
-        if (this.clientAgentId) {
-          ws.send(JSON.stringify({ type: "identify", agentId: this.clientAgentId }));
-        }
-      });
-
-      ws.on("message", (raw) => {
-        try {
-          const msg = JSON.parse(raw.toString());
-
-          // ── Dynamic agent discovery ──────────────────────────────────────
-          if (msg.type === "snapshot" && Array.isArray(msg.agents)) {
-            const snapshotAgents = msg.agents as RegistryEntry[];
-            const snapshotIds = new Set(snapshotAgents.map(a => a.agentId));
-            // Remove tools for agents no longer present (e.g. after registry restart)
-            for (const trackedId of this.agentToolMap.keys()) {
-              if (!snapshotIds.has(trackedId)) this.removeAgentTools(trackedId);
-            }
-            // Add tools for new agents only if skill tools are enabled
-            if (this.options.registerSkillTools) {
-              for (const agent of snapshotAgents) {
-                if (agent.entryType !== "client" && agent.card?.skills?.length > 0) {
-                  this.addAgentTools(agent); // idempotent via agentToolMap.has()
-                }
-              }
-            }
-          }
-
-          if (msg.type === "agent.registered" && msg.data) {
-            const entry = msg.data as RegistryEntry;
-            if (this.options.registerSkillTools && entry.entryType !== "client" && entry.card?.skills?.length > 0) {
-              this.addAgentTools(entry);
-              console.error(`[MCP] New agent discovered: ${entry.name} (${entry.card.skills.length} skills)`);
-            }
-          }
-
-          if (msg.type === "agent.deregistered" || msg.type === "agent.removed") {
-            const agentId = (msg.data as { agentId: string })?.agentId;
-            if (agentId) this.removeAgentTools(agentId);
-          }
-
-          if (msg.type === "agent.unhealthy") {
-            const agentId = (msg.data as { agentId: string })?.agentId;
-            if (agentId) this.setAgentToolsEnabled(agentId, false);
-          }
-
-          if (msg.type === "agent.heartbeat") {
-            const agentId = (msg.data as { agentId: string })?.agentId;
-            if (agentId) this.setAgentToolsEnabled(agentId, true);
-          }
-
-          // ── Conversational channel messages ──────────────────────────────
-          if (msg.type === "channel.message" && msg.data) {
-            const channelMessage = msg.data as ChannelMessage;
-            this.recentChannelMessages.set(channelMessage.messageId, channelMessage);
-            setTimeout(() => this.recentChannelMessages.delete(channelMessage.messageId), 3_600_000);
-
-            const isForThisClient =
-              !channelMessage.toAgentId ||
-              channelMessage.toAgentId === "claude" ||
-              (this.clientAgentId != null && channelMessage.toAgentId === this.clientAgentId);
-
-            if (isForThisClient) {
-              void this.postChannelAck({
-                conversationId: channelMessage.conversationId,
-                messageId: channelMessage.messageId,
-                state: "delivered_to_bridge",
-                actorId: this.clientAgentId ?? "mcp-adapter",
-                actorType: "bridge",
-                detail: "Message received by MCP bridge",
-              });
-
-              void this.server.server.notification({
-                method: "notifications/claude/channel",
-                params: {
-                  content: channelMessage.content,
-                  meta: {
-                    from_agent: channelMessage.fromAgentId,
-                    ...(channelMessage.fromAgentName ? { agent_name: channelMessage.fromAgentName } : {}),
-                    conversation_id: channelMessage.conversationId,
-                    message_id: channelMessage.messageId,
-                    ...(channelMessage.replyTo ? { reply_to: channelMessage.replyTo } : {}),
-                    ...(channelMessage.taskId ? { task_id: channelMessage.taskId } : {}),
-                    kind: channelMessage.kind,
-                    ...stringifyMeta(channelMessage.meta),
-                  },
-                },
-              }).then(() => this.postChannelAck({
-                conversationId: channelMessage.conversationId,
-                messageId: channelMessage.messageId,
-                state: "displayed_to_client",
-                actorId: this.clientAgentId ?? "mcp-adapter",
-                actorType: "bridge",
-                detail: "Message forwarded to Claude channel",
-              })).catch(() => {
-                // Ignore notification failures; WS relay remains alive.
-              });
-            }
-          }
-
-          // Backward-compatible path for older notify payloads
-          if (msg.type === "claude.notify" && msg.data) {
-            const notify = msg.data as { agentId?: string; agentName?: string; content: string; meta?: Record<string, unknown>; conversationId?: string; messageId?: string };
-            const messageId = notify.messageId ?? randomUUID();
-            const conversationId = notify.conversationId ?? randomUUID();
-            this.recentChannelMessages.set(messageId, {
-              conversationId,
-              messageId,
-              fromAgentId: notify.agentId ?? "unknown",
-              fromAgentName: notify.agentName,
-              toAgentId: "claude",
-              kind: "chat",
-              content: notify.content,
-              meta: notify.meta,
-              createdAt: Date.now(),
-            });
-            void this.server.server.notification({
-              method: "notifications/claude/channel",
-              params: {
-                content: notify.content,
-                meta: {
-                  ...(notify.agentId ? { from_agent: notify.agentId } : {}),
-                  ...(notify.agentName ? { agent_name: notify.agentName } : {}),
-                  conversation_id: conversationId,
-                  message_id: messageId,
-                  ...stringifyMeta(notify.meta),
-                },
-              },
-            });
-          }
-
-          // ── Pending response relay ────────────────────────────────────────
-          if (msg.type === "agent.message" && msg.data) {
-            const agentMsg = msg.data as AgentMessage;
-
-            if (agentMsg.type === "task.request") {
-              // The registry broadcasts agent.message events to every WS client.
-              // Only surface requests that are explicitly addressed to THIS Claude client.
-              if (!this.clientAgentId || agentMsg.toAgentId !== this.clientAgentId) {
-                return;
-              }
-
-              const payload = agentMsg.payload as { message?: string; skillId?: string } | null;
-              const rawMessage = payload?.message ?? "";
-              const content = rawMessage || JSON.stringify(payload);
-              void this.server.server.notification({
-                method: "notifications/claude/channel",
-                params: {
-                  content,
-                  meta: {
-                    from_agent: agentMsg.fromAgentId ?? "",
-                    task_id: agentMsg.taskId ?? "",
-                    ...(payload?.skillId ? { skill_id: payload.skillId } : {}),
-                  },
-                },
-              });
-            }
-
-            // Response to a pending request → resolve the promise
-            if (agentMsg.type === "task.response" && agentMsg.taskId) {
-              const pending = this.pendingResponses.get(agentMsg.taskId);
-              if (pending) {
-                clearTimeout(pending.timer);
-                this.pendingResponses.delete(agentMsg.taskId);
-                pending.resolve(agentMsg.payload);
-              }
-            }
-          }
-        } catch {
-          // Ignore
-        }
-      });
-
-      ws.on("close", () => {
-        this.registryWs = null;
-        this.scheduleWsReconnect();
-      });
-
-      ws.on("error", () => {
-        this.registryWs = null;
-      });
-    } catch {
-      this.scheduleWsReconnect();
-    }
+    this.channelRuntime.connect();
   }
 
-  private scheduleWsReconnect(): void {
-    if (this.registryWsReconnectTimer) return;
-    if (this.registryWsReconnectAttempts >= this.MAX_WS_RECONNECT_ATTEMPTS) {
-      console.error(`[MCP] WS reconnect limit reached (${this.MAX_WS_RECONNECT_ATTEMPTS}). WS relay disabled — HTTP fallback active.`);
-      return;
-    }
-    this.registryWsReconnectAttempts++;
-    this.registryWsReconnectTimer = setTimeout(() => {
-      this.registryWsReconnectTimer = null;
-      this.connectRegistryWs();
-    }, 5_000);
+  private setupChannelRuntime(): void {
+    this.channelRuntime.on("ws.open", () => {
+      this.registryWs = this.channelRuntime.getWebSocket();
+      console.error("[MCP] WebSocket connected to registry");
+    });
+
+    this.channelRuntime.on("ws.close", () => {
+      this.registryWs = null;
+    });
+
+    this.channelRuntime.on("registry.event", (msg) => {
+      if (!msg || typeof msg !== "object") return;
+      const event = msg as { type?: string; data?: unknown; agents?: unknown };
+
+      if (event.type === "snapshot" && Array.isArray(event.agents)) {
+        const snapshotAgents = event.agents as RegistryEntry[];
+        const snapshotIds = new Set(snapshotAgents.map((a) => a.agentId));
+        for (const trackedId of this.agentToolMap.keys()) {
+          if (!snapshotIds.has(trackedId)) this.removeAgentTools(trackedId);
+        }
+        if (this.options.registerSkillTools) {
+          for (const agent of snapshotAgents) {
+            if (agent.entryType !== "client" && agent.card?.skills?.length > 0) {
+              this.addAgentTools(agent);
+            }
+          }
+        }
+        return;
+      }
+
+      if (event.type === "agent.registered" && event.data) {
+        const entry = event.data as RegistryEntry;
+        if (this.options.registerSkillTools && entry.entryType !== "client" && entry.card?.skills?.length > 0) {
+          this.addAgentTools(entry);
+          console.error(`[MCP] New agent discovered: ${entry.name} (${entry.card.skills.length} skills)`);
+        }
+        return;
+      }
+
+      if (event.type === "agent.deregistered" || event.type === "agent.removed") {
+        const agentId = (event.data as { agentId: string } | undefined)?.agentId;
+        if (agentId) this.removeAgentTools(agentId);
+        return;
+      }
+
+      if (event.type === "agent.unhealthy") {
+        const agentId = (event.data as { agentId: string } | undefined)?.agentId;
+        if (agentId) this.setAgentToolsEnabled(agentId, false);
+        return;
+      }
+
+      if (event.type === "agent.heartbeat") {
+        const agentId = (event.data as { agentId: string } | undefined)?.agentId;
+        if (agentId) this.setAgentToolsEnabled(agentId, true);
+      }
+    });
+
+    this.channelRuntime.on("channel.message", (channelMessage) => {
+      if (!this.clientProfile.acceptsChannelMessage(channelMessage, this.clientAgentId)) return;
+
+      void this.postChannelAck({
+        conversationId: channelMessage.conversationId,
+        messageId: channelMessage.messageId,
+        state: "delivered_to_bridge",
+        actorId: this.clientAgentId ?? "mcp-adapter",
+        actorType: "bridge",
+        detail: "Message received by MCP bridge",
+      });
+
+      const notification = this.clientProfile.mapChannelMessage(channelMessage);
+      void this.server.server.notification({
+        method: "notifications/claude/channel",
+        params: notification,
+      }).then(() => this.postChannelAck({
+        conversationId: channelMessage.conversationId,
+        messageId: channelMessage.messageId,
+        state: "displayed_to_client",
+        actorId: this.clientAgentId ?? "mcp-adapter",
+        actorType: "bridge",
+        detail: "Message forwarded to Claude channel",
+      })).catch(() => {
+        // Ignore notification failures; WS relay remains alive.
+      });
+    });
+
+    this.channelRuntime.on("legacy.notify", (notify) => {
+      const notification = this.clientProfile.mapLegacyNotify(notify);
+      void this.server.server.notification({
+        method: "notifications/claude/channel",
+        params: notification,
+      });
+    });
+
+    this.channelRuntime.on("agent.message", (agentMsg) => {
+      if (agentMsg.type === "task.request") {
+        if (!this.clientAgentId || agentMsg.toAgentId !== this.clientAgentId) {
+          return;
+        }
+
+        const notification = this.clientProfile.mapTaskRequestMessage(agentMsg);
+        if (!notification) return;
+        void this.server.server.notification({
+          method: "notifications/claude/channel",
+          params: notification,
+        });
+      }
+
+      if (agentMsg.type === "task.response" && agentMsg.taskId) {
+        const pending = this.pendingResponses.get(agentMsg.taskId);
+        if (pending) {
+          clearTimeout(pending.timer);
+          this.pendingResponses.delete(agentMsg.taskId);
+          pending.resolve(agentMsg.payload);
+        }
+      }
+    });
   }
 
   private async postChannelAck(ack: {
@@ -421,58 +338,17 @@ export class McpAgentBridge {
     detail?: string;
   }): Promise<void> {
     try {
-      await fetch(`${this.options.registryUrl}/channel/acks`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...ack,
-          timestamp: Date.now(),
-        }),
+      await this.channelRuntime.acknowledgeMessage({
+        conversationId: ack.conversationId,
+        messageId: ack.messageId,
+        state: ack.state,
+        actorId: ack.actorId,
+        actorType: ack.actorType,
+        detail: ack.detail,
       });
     } catch {
       // Ignore ack failures; conversation can continue without them.
     }
-  }
-
-  private async createChannelMessage(message: {
-    conversationId?: string;
-    replyTo?: string;
-    toAgentId?: string;
-    taskId?: string;
-    kind?: "chat" | "task_request" | "task_result" | "ack" | "error" | "presence";
-    content: string;
-    meta?: Record<string, unknown>;
-    expectsResponse?: boolean;
-    requiresAck?: boolean;
-    expiresAt?: number;
-  }): Promise<ChannelMessage> {
-    const fromAgentId = this.clientAgentId ?? "mcp-adapter";
-    const body = {
-      conversationId: message.conversationId,
-      replyTo: message.replyTo,
-      fromAgentId,
-      fromAgentName: this.getClientDisplayName(),
-      toAgentId: message.toAgentId,
-      taskId: message.taskId,
-      kind: message.kind ?? "chat",
-      content: message.content,
-      meta: message.meta,
-      expectsResponse: message.expectsResponse,
-      requiresAck: message.requiresAck,
-      expiresAt: message.expiresAt,
-    };
-
-    const response = await fetch(`${this.options.registryUrl}/channel/messages`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Channel message failed: ${response.status}`);
-    }
-
-    return response.json() as Promise<ChannelMessage>;
   }
 
   /** Send a message via WS relay and wait for response */
@@ -579,6 +455,7 @@ export class McpAgentBridge {
 
         const clientName: string = clientVersion.name;
         const version: string = clientVersion.version ?? "unknown";
+        this.clientProfile = this.profileResolver.resolve({ clientName });
         this.clientAgentId = `client-${clientName}-${Date.now()}`;
 
         // Resolve real project path from client's workspace roots (MCP roots protocol)
@@ -598,11 +475,6 @@ export class McpAgentBridge {
           } catch {
             // fall back to configured projectPath
           }
-        }
-
-        // Identify on existing WS connection
-        if (this.registryWs?.readyState === WebSocket.OPEN) {
-          this.registryWs.send(JSON.stringify({ type: "identify", agentId: this.clientAgentId }));
         }
 
         const registration = {
@@ -629,32 +501,12 @@ export class McpAgentBridge {
           clientInfo: { clientName, clientVersion: version },
         };
 
-        await fetch(`${this.options.registryUrl}/agents`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(registration),
-        });
+        await this.channelRuntime.activateClient(registration);
         console.error(`[MCP] Registered client: ${realProjectName} (${clientName} v${version})`);
 
-        this.clientHeartbeatTimer = setInterval(async () => {
-          if (!this.clientAgentId) return;
-          try {
-            await fetch(`${this.options.registryUrl}/agents/${this.clientAgentId}/heartbeat`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ agentId: this.clientAgentId, timestamp: Date.now(), status: "alive" }),
-            });
-          } catch { /* ignore heartbeat errors */ }
-        }, 30_000);
-
         const cleanup = async () => {
-          if (this.clientHeartbeatTimer) { clearInterval(this.clientHeartbeatTimer); this.clientHeartbeatTimer = null; }
-          if (this.clientAgentId) {
-            try {
-              await fetch(`${this.options.registryUrl}/agents/${this.clientAgentId}`, { method: "DELETE" });
-            } catch { /* ignore */ }
-            this.clientAgentId = null;
-          }
+          await this.channelRuntime.deactivateClient();
+          this.clientAgentId = null;
           // Stop embedded agent so it deregisters from registry
           if (this.embeddedAgent) {
             try { await this.embeddedAgent.stop(); } catch { /* ignore */ }
@@ -837,6 +689,150 @@ export class McpAgentBridge {
     );
 
     this.server.registerTool(
+      "mark_expired_channel_conversations",
+      {
+        description:
+          "Mark locally expired channel conversations as failed. " +
+          "This updates the local conversation layer and emits failed acknowledgements for the expired last messages.",
+        inputSchema: {
+          limit: z.coerce.number().optional().describe("Maximum number of expired conversations to mark (default: 10)"),
+        },
+      },
+      async ({ limit = 10 }) => {
+        try {
+          const updated = await this.conversationService.markExpiredAsFailed(limit);
+          if (updated.length === 0) {
+            return {
+              content: [{ type: "text" as const, text: "No expired channel conversations were marked as failed." }],
+            };
+          }
+
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify(updated.map((snapshot) => ({
+                conversationId: snapshot.conversation.conversationId,
+                status: snapshot.status,
+                lastAckState: snapshot.conversation.lastAckState,
+                lastMessageId: snapshot.conversation.lastMessageId,
+              })), null, 2),
+            }],
+          };
+        } catch (err) {
+          return {
+            content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+            isError: true,
+          };
+        }
+      }
+    );
+
+    this.server.registerTool(
+      "delete_channel_conversation",
+      {
+        description:
+          "Suppress a channel conversation through the registry so every client sees the same result. " +
+          "This also removes it from the local runtime store.",
+        inputSchema: {
+          conversationId: z.string().describe("Conversation ID to suppress"),
+        },
+      },
+      async ({ conversationId }) => {
+        try {
+          const deleted = await this.registry.suppressChannelConversation(conversationId);
+          if (deleted) {
+            this.conversationService.deleteConversation(conversationId);
+          }
+          return {
+            content: [{
+              type: "text" as const,
+              text: deleted
+                ? `Suppressed conversation ${conversationId} in the registry and local runtime`
+                : `Conversation ${conversationId} was not found in the registry.`,
+            }],
+          };
+        } catch (err) {
+          return {
+            content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+            isError: true,
+          };
+        }
+      }
+    );
+
+    this.server.registerTool(
+      "channel_inbox",
+      {
+        description:
+          "Inspect the current client's channel conversations. " +
+          "Useful for debugging the channel MVP and seeing pending or recent conversations tracked locally by the runtime.",
+        inputSchema: {
+          expiredOnly: z.boolean().optional().describe("Show only locally expired conversations awaiting reply"),
+          pendingOnly: z.boolean().optional().describe("Show only conversations awaiting reply (default: true)"),
+          limit: z.coerce.number().optional().describe("Maximum number of conversations to show when pendingOnly=false (default: 10)"),
+          includeMessages: z.boolean().optional().describe("Include message history for each pending conversation"),
+        },
+      },
+      async ({ expiredOnly = false, pendingOnly = true, limit = 10, includeMessages = true }) => {
+        try {
+          const conversations = expiredOnly
+            ? this.conversationService.listExpiredSnapshots(limit)
+            : pendingOnly
+              ? this.conversationService.listPendingSnapshots()
+              : this.conversationService.listRecentSnapshots(limit);
+          if (conversations.length === 0) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: expiredOnly
+                  ? "No expired channel conversations for this client."
+                  : pendingOnly
+                    ? "No pending channel conversations for this client."
+                    : "No tracked channel conversations for this client.",
+              }],
+            };
+          }
+
+          const payload = conversations.map((snapshot) => ({
+            conversationId: snapshot.conversation.conversationId,
+            status: snapshot.status,
+            awaitingReply: snapshot.conversation.awaitingReply,
+            pendingMessageIds: snapshot.conversation.pendingMessageIds,
+            lastMessageId: snapshot.conversation.lastMessageId,
+            lastAckState: snapshot.conversation.lastAckState,
+            lastUpdatedAt: snapshot.lastUpdatedAt,
+            expiresAt: snapshot.lastMessage?.expiresAt,
+            lastMessagePreview: snapshot.lastMessage?.content.slice(0, 160),
+            pendingMessages: snapshot.pendingMessages.map((message) => ({
+              messageId: message.messageId,
+              expiresAt: message.expiresAt,
+              content: message.content,
+            })),
+            messages: includeMessages
+              ? snapshot.messages.map((message) => ({
+                  messageId: message.messageId,
+                  fromAgentId: message.fromAgentId,
+                  toAgentId: message.toAgentId,
+                  replyTo: message.replyTo,
+                  content: message.content,
+                  createdAt: message.createdAt,
+                }))
+              : undefined,
+          }));
+
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }],
+          };
+        } catch (err) {
+          return {
+            content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+            isError: true,
+          };
+        }
+      }
+    );
+
+    this.server.registerTool(
       "message_claude_client",
       {
         description:
@@ -857,21 +853,36 @@ export class McpAgentBridge {
       async ({ clientId, project, message, conversationId, replyTo, taskId, expectsResponse = false, timeoutMs }) => {
         try {
           const client = await this.resolveClaudeClient({ clientId, project });
-          const channelMessage = await this.createChannelMessage({
-            conversationId,
-            replyTo,
-            toAgentId: client.agentId,
-            taskId,
-            kind: "chat",
-            content: message,
-            expectsResponse,
-            requiresAck: true,
-            expiresAt: expectsResponse ? Date.now() + (timeoutMs ?? 300_000) : undefined,
-            meta: {
-              targetClientId: client.agentId,
-              targetProject: client.projectPath,
-            },
-          });
+          const snapshot = replyTo || conversationId
+            ? (await this.conversationService.replyAndAcknowledge({
+                agentId: client.agentId,
+                conversationId,
+                replyTo,
+                taskId,
+                message,
+                kind: "chat",
+                requiresAck: true,
+                expectsResponse,
+                expiresAt: expectsResponse ? Date.now() + (timeoutMs ?? 300_000) : undefined,
+                meta: {
+                  targetClientId: client.agentId,
+                  targetProject: client.projectPath,
+                },
+              })).snapshot
+            : await this.conversationService.startConversation({
+                toAgentId: client.agentId,
+                taskId,
+                message,
+                kind: "chat",
+                expectsResponse,
+                requiresAck: true,
+                expiresAt: expectsResponse ? Date.now() + (timeoutMs ?? 300_000) : undefined,
+                meta: {
+                  targetClientId: client.agentId,
+                  targetProject: client.projectPath,
+                },
+              });
+          const channelMessage = snapshot.messages[snapshot.messages.length - 1];
 
           return {
             content: [{
@@ -910,38 +921,34 @@ export class McpAgentBridge {
       },
       async ({ agentId, message, conversationId, replyTo, taskId, skillId }) => {
         try {
-          const knownMessage = replyTo ? this.recentChannelMessages.get(replyTo) : undefined;
-          const inferredAgentId = agentId ?? knownMessage?.fromAgentId;
-          if (!inferredAgentId) {
+          const replyResult = await this.conversationService.replyAndAcknowledge({
+            agentId,
+            conversationId,
+            replyTo,
+            taskId,
+            kind: "chat",
+            message,
+            meta: skillId ? { skillId } : undefined,
+            requiresAck: true,
+            expectsResponse: false,
+            acknowledgementState: "answered",
+            acknowledgementDetail: "Reply sent from Claude channel",
+          });
+          const resolvedAgentId =
+            replyResult.reply.message.toAgentId ??
+            agentId ??
+            replyResult.reply.resolvedContext?.toAgentId;
+          if (!resolvedAgentId) {
             return {
               content: [{
                 type: "text" as const,
-                text: "reply needs either agentId or a known replyTo messageId from the channel event.",
+                text: "reply needs either agentId or a known replyTo/conversationId from the channel event.",
               }],
               isError: true,
             };
           }
-          const entry = await this.resolveAgent(inferredAgentId);
-          const channelMessage = await this.createChannelMessage({
-            conversationId: conversationId ?? knownMessage?.conversationId,
-            replyTo: replyTo ?? knownMessage?.messageId,
-            toAgentId: entry.agentId,
-            taskId: taskId ?? knownMessage?.taskId,
-            kind: "chat",
-            content: message,
-            meta: skillId ? { skillId } : undefined,
-            requiresAck: true,
-            expectsResponse: false,
-          });
-
-          await this.postChannelAck({
-            conversationId: channelMessage.conversationId,
-            messageId: channelMessage.messageId,
-            state: "answered",
-            actorId: this.clientAgentId ?? "mcp-adapter",
-            actorType: "client",
-            detail: "Reply sent from Claude channel",
-          });
+          const entry = await this.resolveAgent(resolvedAgentId);
+          const channelMessage = replyResult.reply.message;
 
           return {
             content: [{

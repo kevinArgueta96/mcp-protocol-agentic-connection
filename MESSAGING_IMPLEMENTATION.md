@@ -18,6 +18,10 @@ El sistema ya soporta:
 - observabilidad basica de channels en el dashboard
 - persistencia local del canal en SQLite
 - vista dedicada `/channels`
+- runtime conversacional compartido para clientes Node-side
+- seguimiento de pendientes por mensaje
+- expiracion local derivada del mensaje pendiente
+- tombstones locales para conversaciones borradas
 
 ## Cambios backend
 
@@ -217,6 +221,109 @@ Impacto:
 - se corrigieron loops y mensajes `unknown`
 - quedó una capa separada para sessions Claude
 
+### 12. Runtime conversacional compartido
+
+Archivos:
+
+- `src/client/channel-transport.ts`
+- `src/client/channel-client-runtime.ts`
+- `src/client/conversation-session-store.ts`
+- `src/client/conversation-service.ts`
+- `src/client/client-profile-resolver.ts`
+
+Se agrego:
+
+- transporte HTTP + WS compartido
+- runtime de cliente para registro, heartbeat, envio y ACK
+- store conversacional local
+- servicio conversacional para `startConversation`, `replyAndAcknowledge`, snapshots y expiracion local
+
+Impacto:
+
+- la capa node-side ya tiene una base comun para Claude, Codex y futuros clientes
+
+### 13. Pendientes por mensaje y ACK correcto
+
+Archivos:
+
+- `src/client/conversation-session-store.ts`
+- `src/client/conversation-service.ts`
+
+Se cambio:
+
+- el estado pendiente ya no es un unico booleano global por conversacion
+- cada conversacion mantiene `pendingMessageIds`
+- `answered` y `failed` se aplican al mensaje pendiente original
+
+Impacto:
+
+- una respuesta ya no cierra por error toda la conversacion
+- varias solicitudes pendientes dentro del mismo `conversationId` ya no se pisan
+
+### 14. Tombstones locales
+
+Archivos:
+
+- `src/client/conversation-session-store.ts`
+- `src/client/channel-client-runtime.ts`
+
+Se agrego:
+
+- tombstones para conversaciones borradas localmente
+- ignorar `channel.message` y `channel.ack` entrantes de conversaciones suprimidas
+- reactivacion solo cuando el cliente vuelve a enviar explicitamente sobre esa conversacion
+
+Impacto:
+
+- una conversacion borrada ya no resucita sola con historial roto
+- el runtime puede seguir una supresion emitida por el registry
+
+### 15. Alineacion del registry con el modelo conversacional
+
+Archivos:
+
+- `src/registry/channel-store.ts`
+- `src/types/messages.ts`
+- `dashboard/src/types/index.ts`
+
+Se cambio:
+
+- `listConversations()` ya no usa solo `lastMessage`
+- `pendingReply` y `expired` se calculan sobre todos los mensajes pendientes
+- se agregan `pendingCount`, `pendingMessageIds` y `status` al resumen de conversacion
+
+Impacto:
+
+- el registry y el runtime local quedaron mucho mas alineados
+- se reducen contradicciones entre `/channel/conversations` y `channel_inbox`
+
+### 16. Una sola verdad para supresion de conversaciones
+
+Archivos:
+
+- `src/registry/channel-store.ts`
+- `src/registry/server.ts`
+- `src/registry/events.ts`
+- `src/client/registry-client.ts`
+- `src/client/channel-client-runtime.ts`
+- `src/mcp/adapter.ts`
+
+Se agrego:
+
+- persistencia SQLite para conversaciones suprimidas
+- endpoint `POST /channel/conversations/:id/suppress`
+- endpoint `DELETE /channel/conversations/:id/suppress`
+- eventos WS:
+  - `channel.conversation.suppressed`
+  - `channel.conversation.revived`
+- `delete_channel_conversation` ahora suprime en registry y luego sincroniza local
+
+Impacto:
+
+- la supresion ya no es una verdad solo local
+- dashboard, registry y clientes pueden converger sobre el mismo estado
+- la conversacion solo se reactiva cuando el registry la revive o cuando un nuevo envio explicito la reabre
+
 ## Cambios frontend
 
 ### 1. Tipos del dashboard
@@ -307,6 +414,16 @@ Cambios:
 - listado de conversaciones
 - filtro `pending only`
 - detalle de mensajes y ACKs por `conversationId`
+- acciones para `suppress` y `revive`
+- chips por `status`
+- resumen de `pendingCount`
+- filtro visual para conversaciones expiradas
+- refresco en vivo por eventos WS del registry:
+  - `channel.message`
+  - `channel.ack`
+  - `channel.conversation.suppressed`
+  - `channel.conversation.revived`
+- refresco incremental por conversacion afectada, sin recargar toda la lista en cada evento
 
 ## Problemas encontrados y decisiones
 
@@ -365,6 +482,7 @@ Se validó repetidamente con:
 Todavia falta:
 
 - retry automatico programado
+- politica mas clara entre tombstones locales y persistencia del registry
 - mejor experiencia para seleccionar clientes Claude destino
 - acciones de reintento/cierre desde la vista `/channels`
 
@@ -373,6 +491,7 @@ Todavia falta:
 Prioridad alta:
 
 - scheduler de retry automatico y expiracion visible por UI
+- decidir si la supresion debe evolucionar a archivado con metadatos
 
 Prioridad media:
 
