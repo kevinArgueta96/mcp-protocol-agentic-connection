@@ -1,14 +1,14 @@
 <template>
-  <div style="height:100vh;display:flex;flex-direction:column;background:var(--bg);overflow:hidden;">
+  <div class="app-shell">
     <AppHeader />
-    <div style="flex:1;display:grid;grid-template-columns:260px 1fr 300px;min-height:0;overflow:hidden;">
-      <div style="border-right:1px solid var(--border-dim);overflow:hidden;display:flex;flex-direction:column;">
+    <div class="app-frame dashboard-grid">
+      <div class="app-column">
         <AgentGrid />
       </div>
-      <div style="border-right:1px solid var(--border-dim);overflow:hidden;display:flex;flex-direction:column;">
+      <div class="app-column">
         <TraceTimeline />
       </div>
-      <div style="overflow:hidden;display:flex;flex-direction:column;">
+      <div class="app-column">
         <AgentChat />
       </div>
     </div>

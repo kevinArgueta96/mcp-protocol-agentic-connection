@@ -2,28 +2,23 @@
   <div
     class="sig-card fade-in agent-card"
     :class="isClient ? 'card-client' : 'card-agent'"
+    :style="{ '--card-accent': isClient ? 'var(--violet)' : 'var(--emerald)' }"
     @click="expanded = !expanded"
   >
-    <!-- Row 1: name + type badge -->
-    <div style="display:flex;align-items:center;gap:8px;">
-      <span
-        :title="agent.projectPath"
-        style="font-size:11px;font-weight:600;color:var(--text);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;"
-      >{{ displayName }}</span>
+    <div class="agent-card__header">
+      <span :title="agent.projectPath" class="agent-card__name">{{ displayName }}</span>
       <span
         class="chip"
         :class="isClient ? 'chip-violet' : typeChipClass"
         :title="isClient ? chipTooltip : undefined"
-        style="flex-shrink:0;cursor:default;"
       >
         {{ isClient ? clientLabel : typeBadge }}
       </span>
     </div>
 
-    <!-- Row 2: port / heartbeat + detail link -->
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:6px;">
-      <span style="font-size:10px;color:var(--text-dim);">
-        <span v-if="!isClient" style="color:var(--text-dim);">:{{ agent.port }} · </span>{{ relativeTime }}
+    <div class="agent-card__meta">
+      <span>
+        <span v-if="!isClient">:{{ agent.port }} · </span>{{ relativeTime }}
       </span>
       <RouterLink
         v-if="!isClient"
@@ -35,19 +30,16 @@
       </RouterLink>
     </div>
 
-    <!-- Client: project path -->
-    <div v-if="isClient" style="margin-top:4px;overflow:hidden;">
-      <span style="font-size:10px;color:var(--text-dim);display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ agent.projectPath }}</span>
+    <div v-if="isClient" class="agent-card__path">
+      {{ agent.projectPath }}
     </div>
 
-    <!-- Skills -->
-    <div v-if="!isClient && agent.card.skills.length > 0" style="margin-top:8px;display:flex;flex-wrap:wrap;gap:4px;">
+    <div v-if="!isClient && agent.card.skills.length > 0" class="agent-card__skills">
       <SkillBadge v-for="s in agent.card.skills.slice(0, 4)" :key="s.id" :skill="s" />
-      <span v-if="agent.card.skills.length > 4" style="font-size:10px;color:var(--text-dim);align-self:center;">+{{ agent.card.skills.length - 4 }}</span>
+      <span v-if="agent.card.skills.length > 4" class="chip chip-dim">+{{ agent.card.skills.length - 4 }}</span>
     </div>
 
-    <!-- Expanded JSON -->
-    <div v-if="expanded" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border-dim);">
+    <div v-if="expanded" style="margin-top:14px;padding-top:14px;border-top:1px solid rgba(255,255,255,0.08);">
       <PayloadViewer :data="agentJson" />
     </div>
   </div>
@@ -107,27 +99,16 @@ const agentJson = computed(() => ({
 
 <style scoped>
 .agent-card {
-  padding: 10px;
   cursor: pointer;
-  border-left: 3px solid transparent;
-  transition: background-color 0.15s, border-color 0.15s;
+  transition: transform 0.18s ease, border-color 0.18s ease;
 }
 .agent-card:hover {
-  background-color: color-mix(in srgb, var(--text) 4%, transparent);
+  transform: translateY(-1px);
 }
 .card-agent {
-  border-color: color-mix(in srgb, var(--emerald) 25%, var(--border-dim));
-  border-left-color: var(--emerald);
+  border-color: rgba(116, 227, 156, 0.16);
 }
 .card-client {
-  border-color: color-mix(in srgb, var(--indigo) 25%, var(--border-dim));
-  border-left-color: var(--indigo);
+  border-color: rgba(196, 161, 255, 0.16);
 }
-.detail-link {
-  font-size: 10px;
-  color: var(--text-dim);
-  text-decoration: none;
-  transition: color 0.15s;
-}
-.detail-link:hover { color: var(--sky); }
 </style>

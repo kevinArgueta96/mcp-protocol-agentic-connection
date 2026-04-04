@@ -16,6 +16,8 @@ El sistema ya soporta:
 - separacion entre agentes A2A y clientes Claude
 - tool dedicada para clientes Claude: `message_claude_client`
 - observabilidad basica de channels en el dashboard
+- persistencia local del canal en SQLite
+- vista dedicada `/channels`
 
 ## Cambios backend
 
@@ -61,8 +63,8 @@ Archivo:
 
 Se implemento:
 
-- almacenamiento en memoria de mensajes
-- almacenamiento en memoria de ACKs
+- almacenamiento persistente de mensajes en SQLite
+- almacenamiento persistente de ACKs en SQLite
 - consulta por conversacion
 - listado de conversaciones
 - retry basico
@@ -94,7 +96,23 @@ Impacto:
 - el canal ya tiene API propia
 - `notify-claude` ya no es solo una notificacion suelta
 
-### 5. Estabilidad de registro
+### 5. Persistencia local del canal
+
+Archivo:
+
+- `src/registry/channel-store.ts`
+
+Se agrego:
+
+- base SQLite local en `.agent-bridge/registry.sqlite`
+- tablas para mensajes y ACKs
+- lectura ordenada por conversacion
+
+Impacto:
+
+- los mensajes del canal sobreviven reinicios del proceso
+
+### 6. Estabilidad de registro
 
 Archivo:
 
@@ -109,7 +127,7 @@ Impacto:
 
 - el registry se estabiliza mejor cuando Claude se reconecta
 
-### 6. Resolucion de clientes Claude
+### 7. Resolucion de clientes Claude
 
 Archivo:
 
@@ -123,7 +141,7 @@ Impacto:
 
 - `notify-claude` y `message_claude_client` pueden resolver destino por `clientId` o `project`
 
-### 7. `notify-claude`
+### 8. `notify-claude`
 
 Archivo:
 
@@ -143,7 +161,7 @@ Impacto:
 - ahora envia a una sesion Claude concreta
 - ya no usa un destino global tipo `"claude"` como base del MVP
 
-### 8. Enlace con tareas
+### 9. Enlace con tareas
 
 Archivo:
 
@@ -160,7 +178,7 @@ Impacto:
 
 - una tarea puede pausar y continuar por channel
 
-### 9. Recepcion de channel en agente
+### 10. Recepcion de channel en agente
 
 Archivo:
 
@@ -175,7 +193,7 @@ Impacto:
 
 - el agente ya puede consumir respuestas del canal
 
-### 10. Bridge MCP
+### 11. Bridge MCP
 
 Archivo:
 
@@ -274,6 +292,22 @@ Cambios:
 - filtro por `kind`
 - soporte visual para `input-required`
 
+### 7. Vista de conversaciones
+
+Archivos:
+
+- `dashboard/src/views/ChannelsView.vue`
+- `dashboard/src/router/index.ts`
+- `dashboard/src/lib/registry-client.ts`
+- `dashboard/src/components/layout/AppHeader.vue`
+
+Cambios:
+
+- ruta nueva `/channels`
+- listado de conversaciones
+- filtro `pending only`
+- detalle de mensajes y ACKs por `conversationId`
+
 ## Problemas encontrados y decisiones
 
 ### 1. Permission relay mezclado con chat
@@ -330,21 +364,20 @@ Se validó repetidamente con:
 
 Todavia falta:
 
-- persistencia durable real del canal
 - retry automatico programado
-- vista de conversaciones agrupadas por `conversationId`
 - mejor experiencia para seleccionar clientes Claude destino
+- acciones de reintento/cierre desde la vista `/channels`
 
 ## Siguiente paso recomendado
 
 Prioridad alta:
 
-- pasar `ChannelStore` a `SQLite`
+- scheduler de retry automatico y expiracion visible por UI
 
 Prioridad media:
 
-- crear un panel de conversaciones en el dashboard
+- selector de clientes Claude destino en dashboard o tooling
 
 Prioridad baja:
 
-- scheduler de retry automatico y expiracion visible por UI
+- acciones de retry y filtros avanzados por conversacion

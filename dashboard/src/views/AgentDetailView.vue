@@ -1,116 +1,103 @@
 <template>
-  <div class="flex flex-col h-screen bg-[#0a0e14]">
+  <div class="app-shell">
     <AppHeader />
-
-    <div class="flex-1 overflow-y-auto p-6">
-      <!-- Back link -->
-      <RouterLink
-        to="/"
-        class="inline-flex items-center gap-1.5 text-xs font-mono text-white/40 hover:text-white/70 transition-colors mb-6"
-      >
+    <div class="app-frame">
+      <div class="scrollable detail-page">
+        <RouterLink to="/" class="back-link">
         ← back to dashboard
-      </RouterLink>
+        </RouterLink>
 
-      <!-- Not found -->
-      <div v-if="!agent" class="text-center py-20">
-        <p class="font-mono text-white/30 text-sm">Agent not found</p>
-        <p class="font-mono text-white/20 text-xs mt-2">{{ agentId }}</p>
+        <template v-if="!agent">
+          <div class="empty-state">
+            <div class="empty-state__icon">?</div>
+            <p class="empty-state__title">Agent not found</p>
+            <p class="empty-state__body">{{ agentId }}</p>
+          </div>
+        </template>
+
+        <template v-else>
+          <div class="detail-hero">
+            <HealthPulse :healthy="agent.healthy" />
+            <h1 class="detail-title">{{ agent.projectName }}</h1>
+            <span class="chip" :class="`type-${agent.projectType}`">{{ agent.projectType }}</span>
+            <span class="message-card__token detail-agent-id">{{ agent.agentId }}</span>
+          </div>
+
+          <div class="detail-grid">
+            <div class="detail-card">
+              <p class="detail-card__title">Connection</p>
+              <div class="detail-list">
+                <div class="detail-row">
+                  <span class="detail-key">HTTP</span>
+                  <span class="detail-value">{{ agent.url }}</span>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-key">WebSocket</span>
+                  <span class="detail-value">{{ agent.wsUrl }}</span>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-key">Port</span>
+                  <span class="detail-value">{{ agent.port }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="detail-card">
+              <p class="detail-card__title">Project</p>
+              <div class="detail-list">
+                <div class="detail-row">
+                  <span class="detail-key">Name</span>
+                  <span class="detail-value">{{ agent.projectName }}</span>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-key">Type</span>
+                  <span class="detail-value">{{ agent.projectType }}</span>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-key">Path</span>
+                  <span class="detail-value" :title="agent.projectPath">
+                    {{ agent.projectPath.split("/").slice(-2).join("/") }}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="detail-card detail-section-gap">
+            <p class="detail-card__title">Skills ({{ agent.card.skills.length }})</p>
+            <div v-if="agent.card.skills.length === 0" class="empty-state detail-empty">
+              <p class="empty-state__body">No skills registered.</p>
+            </div>
+            <div v-else class="conversation-stack">
+              <div
+                v-for="skill in agent.card.skills"
+                :key="skill.id"
+                class="message-card"
+              >
+                <div class="message-card__head">
+                  <span class="message-card__sender">{{ skill.id }}</span>
+                  <span class="message-card__token">{{ skill.name }}</span>
+                </div>
+                <div class="message-card__content">{{ skill.description }}</div>
+                <div class="agent-card__skills">
+                  <span
+                    v-for="tag in skill.tags"
+                    :key="tag"
+                    class="chip chip-dim"
+                  >
+                    {{ tag }}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="detail-card">
+            <p class="detail-card__title">Agent Card (A2A)</p>
+            <PayloadViewer :data="agent.card" />
+          </div>
+        </template>
       </div>
-
-      <template v-else>
-        <!-- Header -->
-        <div class="flex items-center gap-3 mb-6">
-          <HealthPulse :healthy="agent.healthy" />
-          <h1 class="text-lg font-semibold text-white">{{ agent.projectName }}</h1>
-          <span
-            class="px-1.5 py-0.5 rounded text-[10px] font-mono border border-white/15 text-white/50"
-          >
-            {{ agent.projectType }}
-          </span>
-          <span class="font-mono text-xs text-white/30 ml-auto">{{ agent.agentId }}</span>
-        </div>
-
-        <!-- Info grid -->
-        <div class="grid grid-cols-2 gap-4 mb-6">
-          <div class="card p-4">
-            <p class="text-[10px] font-mono text-white/40 uppercase tracking-wider mb-2">Connection</p>
-            <div class="space-y-1.5 font-mono text-xs">
-              <div class="flex justify-between">
-                <span class="text-white/40">HTTP</span>
-                <span class="text-white/70">{{ agent.url }}</span>
-              </div>
-              <div class="flex justify-between">
-                <span class="text-white/40">WebSocket</span>
-                <span class="text-white/70">{{ agent.wsUrl }}</span>
-              </div>
-              <div class="flex justify-between">
-                <span class="text-white/40">Port</span>
-                <span class="text-white/70">{{ agent.port }}</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="card p-4">
-            <p class="text-[10px] font-mono text-white/40 uppercase tracking-wider mb-2">Project</p>
-            <div class="space-y-1.5 font-mono text-xs">
-              <div class="flex justify-between">
-                <span class="text-white/40">Name</span>
-                <span class="text-white/70">{{ agent.projectName }}</span>
-              </div>
-              <div class="flex justify-between">
-                <span class="text-white/40">Type</span>
-                <span class="text-white/70">{{ agent.projectType }}</span>
-              </div>
-              <div class="flex justify-between">
-                <span class="text-white/40">Path</span>
-                <span class="text-white/70 truncate max-w-[200px]" :title="agent.projectPath">
-                  {{ agent.projectPath.split("/").slice(-2).join("/") }}
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Skills -->
-        <div class="card p-4 mb-4">
-          <p class="text-[10px] font-mono text-white/40 uppercase tracking-wider mb-3">
-            Skills ({{ agent.card.skills.length }})
-          </p>
-          <div v-if="agent.card.skills.length === 0" class="text-white/30 text-xs font-mono">
-            No skills registered
-          </div>
-          <div v-else class="grid gap-3">
-            <div
-              v-for="skill in agent.card.skills"
-              :key="skill.id"
-              class="border border-white/6 rounded p-3"
-            >
-              <div class="flex items-center gap-2 mb-1">
-                <span class="font-mono text-xs font-semibold text-white/80">{{ skill.id }}</span>
-                <span class="font-mono text-[10px] text-white/40">{{ skill.name }}</span>
-              </div>
-              <p class="text-[10px] text-white/40 mb-2">{{ skill.description }}</p>
-              <div class="flex flex-wrap gap-1">
-                <span
-                  v-for="tag in skill.tags"
-                  :key="tag"
-                  class="px-1 py-0.5 rounded text-[9px] font-mono border border-white/10 text-white/30"
-                >
-                  {{ tag }}
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Full Agent Card JSON -->
-        <div class="card p-4">
-          <p class="text-[10px] font-mono text-white/40 uppercase tracking-wider mb-3">
-            Agent Card (A2A)
-          </p>
-          <PayloadViewer :data="agent.card" />
-        </div>
-      </template>
     </div>
   </div>
 </template>
@@ -129,3 +116,17 @@ const store = useRegistryStore();
 const agentId = computed(() => props.id);
 const agent = computed(() => store.getAgent(props.id));
 </script>
+
+<style scoped>
+.detail-agent-id {
+  margin-left: auto;
+}
+
+.detail-section-gap {
+  margin-bottom: 18px;
+}
+
+.detail-empty {
+  padding: 24px 12px;
+}
+</style>

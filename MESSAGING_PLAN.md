@@ -251,7 +251,7 @@ Archivos:
 
 Estado:
 
-- En progreso
+- Completada
 
 Resumen:
 
@@ -260,7 +260,7 @@ Resumen:
 - Cuando llega un `reply` correlacionado por `conversationId` o `taskId`, la tarea se reanuda y pasa a `completed`.
 - Se agregaron timeouts de espera en tareas pendientes.
 - El canal ahora soporta expiracion por mensaje, listado de conversaciones pendientes y retry basico desde el registry.
-- Falta endurecer esta parte con politicas de reintento automatico y persistencia duradera.
+- `ChannelStore` ya fue movido a SQLite para persistencia durable local.
 
 ### Fase 6. Separacion Claude Client / Agent
 
@@ -331,6 +331,37 @@ Resumen:
 - Se agrego filtro por `kind`.
 - Las entradas `unhealthy` ya no desaparecen visualmente.
 
+### Fase 8. Persistencia SQLite y vista de conversaciones
+
+Objetivo:
+
+- persistir el canal y exponer una vista dedicada por conversacion
+
+Entregables:
+
+- `ChannelStore` con SQLite
+- archivo local de persistencia
+- vista `/channels`
+- listado y detalle por `conversationId`
+
+Archivos:
+
+- `src/registry/channel-store.ts`
+- `dashboard/src/lib/registry-client.ts`
+- `dashboard/src/views/ChannelsView.vue`
+- `dashboard/src/router/index.ts`
+- `dashboard/src/components/layout/AppHeader.vue`
+
+Estado:
+
+- Completada
+
+Resumen:
+
+- El canal ya persiste mensajes y ACKs en `.agent-bridge/registry.sqlite`.
+- El dashboard ya tiene vista dedicada `/channels`.
+- La vista permite listar conversaciones, filtrar pendientes y abrir el detalle de mensajes y ACKs.
+
 ## Archivos por responsabilidad
 
 ### `src/types/messages.ts`
@@ -351,6 +382,10 @@ Resumen:
 ### `src/registry/store.ts` o `src/registry/channel-store.ts`
 
 - persistencia y consulta de conversaciones
+
+### `dashboard/src/views/ChannelsView.vue`
+
+- explorar conversaciones del canal por `conversationId`
 
 ### `src/skills/builtins/notify-claude.ts`
 
@@ -386,6 +421,7 @@ Resumen:
 - no mezclar mensaje conversacional con respuesta RPC cruda
 - no mezclar clientes Claude con agentes A2A
 - no usar `ask_agent` contra clientes pasivos
+- mantener persistencia local del canal separada del transporte
 
 ## Control de avance
 
@@ -397,9 +433,10 @@ Usar esta seccion para actualizar rapido el estado sin reescribir todo el docume
 - Fase 2: Completada
 - Fase 3: Completada
 - Fase 4: Completada
-- Fase 5: En progreso
+- Fase 5: Completada
 - Fase 6: Completada
 - Fase 7: Completada
+- Fase 8: Completada
 
 ### Ultimo resumen
 
@@ -411,8 +448,9 @@ Usar esta seccion para actualizar rapido el estado sin reescribir todo el docume
 - Ya existen timeout, expiracion y retry basico para conversaciones pendientes.
 - Ya existe una separacion clara entre agentes A2A y clientes Claude.
 - El dashboard ya muestra clientes conectados y mensajes enviados por el canal.
+- El canal ya persiste en SQLite y existe una vista `/channels` para explorarlo.
 - El backend compila correctamente con `pnpm run build`.
 
 ### Proximo paso
 
-- Si hace falta, migrar el `ChannelStore` de memoria a SQLite, agregar retry automatico por scheduler y construir una vista dedicada por `conversationId` en el dashboard.
+- Si hace falta, agregar retry automatico por scheduler, mejorar seleccion de cliente Claude destino y enriquecer la vista `/channels` con agrupacion y acciones.

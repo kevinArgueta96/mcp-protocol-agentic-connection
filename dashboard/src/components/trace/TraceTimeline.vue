@@ -1,30 +1,26 @@
 <template>
-  <div class="panel" style="--panel-color: var(--sky);">
-
+  <div class="panel">
     <div class="panel-header">
-      <div style="display:flex;align-items:center;gap:8px;">
+      <div class="panel-heading">
         <span class="panel-label">Trace</span>
-        <span class="panel-sublabel">tasks + channels</span>
+        <span class="panel-sublabel">task state changes, channel traffic and tool activity in a single live timeline</span>
       </div>
-      <button v-if="events.length > 0" class="btn-ghost" style="font-size:9px;padding:1px 6px;" @click="store.clearEvents()">
+      <button v-if="events.length > 0" class="btn-ghost" @click="store.clearEvents()">
         clear
       </button>
     </div>
 
     <TraceFilters />
 
-    <!-- Empty -->
-    <div v-if="filteredEvents.length === 0" style="display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:8px;text-align:center;padding:24px;">
-      <span style="font-size:20px;opacity:0.12;">◎</span>
-      <p style="font-size:11px;color:var(--text-mid);font-weight:600;margin:0;">No events yet</p>
-      <p style="font-size:10px;color:var(--text-ghost);margin:0;">Connect a client or send a task/channel message</p>
+    <div v-if="filteredEvents.length === 0" class="empty-state">
+      <div class="empty-state__icon">◎</div>
+      <p class="empty-state__title">No events yet</p>
+      <p class="empty-state__body">Once an agent connects, a task runs or a channel message moves through the bridge, the timeline will start filling in.</p>
     </div>
 
-    <!-- Events -->
-    <div v-else ref="scrollEl" class="scrollable" style="padding:8px;display:flex;flex-direction:column;gap:3px;">
+    <div v-else ref="scrollEl" class="scrollable trace-list">
       <TraceEntry v-for="event in filteredEvents" :key="event.id" :event="event" />
     </div>
-
   </div>
 </template>
 

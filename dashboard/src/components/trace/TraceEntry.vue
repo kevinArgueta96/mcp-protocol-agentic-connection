@@ -1,10 +1,8 @@
 <template>
   <div class="trace-entry fade-in" :class="borderClass" @click="store.toggleExpanded(event.id)">
-
-    <!-- Row 1: state + agent + badges + time -->
-    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+    <div class="trace-entry__head">
       <span class="state-badge" :class="`state-${event.state}`">{{ event.state }}</span>
-      <span style="font-size:10px;font-weight:600;color:var(--text);">{{ event.agentName }}</span>
+      <span class="trace-entry__agent">{{ event.agentName }}</span>
 
       <span v-if="badgeLabel" class="chip" :class="badgeChipClass">{{ badgeLabel }}</span>
 
@@ -12,25 +10,22 @@
         {{ kindLabel }}
       </span>
 
-      <span v-if="event.clientName" class="chip chip-violet" style="font-size:8px;">{{ event.clientName }}</span>
+      <span v-if="event.clientName" class="chip chip-violet">{{ event.clientName }}</span>
 
-      <span style="font-size:9px;color:var(--text-ghost);font-variant-numeric:tabular-nums;margin-left:auto;flex-shrink:0;">{{ formattedTime }}</span>
+      <span class="trace-entry__time">{{ formattedTime }}</span>
     </div>
 
-    <!-- Row 2: identity / conversation -->
-    <div style="margin-top:3px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-      <span style="font-size:9px;color:var(--text-ghost);font-variant-numeric:tabular-nums;">{{ shortTaskId }}</span>
-      <span v-if="event.conversationId" style="font-size:9px;color:var(--text-ghost);font-variant-numeric:tabular-nums;">conv {{ shortConversationId }}</span>
-      <span v-if="channelSummary" style="font-size:9px;color:var(--text-dim);">{{ channelSummary }}</span>
+    <div class="trace-entry__meta trace-entry__meta--spaced">
+      <span class="trace-entry__token">{{ shortTaskId }}</span>
+      <span v-if="event.conversationId" class="trace-entry__token">conv {{ shortConversationId }}</span>
+      <span v-if="channelSummary" class="trace-entry__token">{{ channelSummary }}</span>
     </div>
 
-    <!-- Tool args preview -->
-    <div v-if="event.kind === 'ag-ui-tool' && event.toolCallArgs" style="margin-top:6px;">
-      <pre style="font-family:var(--font);font-size:9px;color:var(--text-dim);background:var(--surface-0);border:1px solid var(--border-dim);border-radius:2px;padding:4px 6px;white-space:pre-wrap;word-break:break-all;margin:0;">{{ argsPreview }}</pre>
+    <div v-if="event.kind === 'ag-ui-tool' && event.toolCallArgs">
+      <pre class="trace-code">{{ argsPreview }}</pre>
     </div>
 
-    <!-- Expanded payload -->
-    <div v-if="event.expanded && event.payload" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border-dim);">
+    <div v-if="event.expanded && event.payload" class="trace-entry__expanded">
       <PayloadViewer :data="event.payload" />
     </div>
   </div>
@@ -107,23 +102,22 @@ const argsPreview = computed(() => {
 </script>
 
 <style scoped>
-.trace-entry {
-  padding: 7px 8px;
-  border-radius: 3px;
-  background: var(--surface-1);
-  border: 1px solid var(--border-dim);
-  border-left-width: 2px;
-  cursor: pointer;
-  transition: border-color 0.12s, background 0.12s;
-}
-.trace-entry:hover { background: var(--surface-2); }
+.border-l-blue { border-left: 6px solid var(--blue); }
+.border-l-amber { border-left: 6px solid var(--amber); }
+.border-l-emerald { border-left: 6px solid var(--emerald); }
+.border-l-red { border-left: 6px solid var(--red); }
+.border-l-indigo { border-left: 6px solid var(--indigo); }
+.border-l-sky { border-left: 6px solid var(--sky); }
+.border-l-violet { border-left: 6px solid var(--violet); }
+.border-l-dim { border-left: 6px solid rgba(72, 55, 46, 0.24); }
 
-.border-l-blue    { border-left-color: var(--blue); }
-.border-l-amber   { border-left-color: var(--amber); }
-.border-l-emerald { border-left-color: var(--emerald); }
-.border-l-red     { border-left-color: var(--red); }
-.border-l-indigo  { border-left-color: var(--indigo); }
-.border-l-sky     { border-left-color: var(--sky); }
-.border-l-violet  { border-left-color: var(--violet); }
-.border-l-dim     { border-left-color: var(--border-mid); }
+.trace-entry__meta--spaced {
+  margin-top: 10px;
+}
+
+.trace-entry__expanded {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(72, 55, 46, 0.12);
+}
 </style>

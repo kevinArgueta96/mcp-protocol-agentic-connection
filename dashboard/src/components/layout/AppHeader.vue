@@ -1,19 +1,20 @@
 <template>
-  <header style="display:flex;align-items:center;justify-content:space-between;padding:0 16px;height:40px;background:var(--surface-0);border-bottom:1px solid var(--border-dim);flex-shrink:0;">
-
-    <!-- Brand -->
-    <div style="display:flex;align-items:center;gap:8px;">
-      <div style="display:flex;align-items:center;gap:2px;">
-        <span style="width:3px;height:10px;border-radius:1px;background:var(--sky);opacity:0.5;display:block;" />
-        <span style="width:3px;height:14px;border-radius:1px;background:var(--sky);opacity:0.8;display:block;" />
-        <span style="width:3px;height:10px;border-radius:1px;background:var(--sky);opacity:0.5;display:block;" />
+  <header class="app-header">
+    <div class="app-brand">
+      <div class="brand-mark">
+        <div class="brand-mark-bars">
+          <span />
+          <span />
+          <span />
+        </div>
       </div>
-      <span style="font-size:13px;font-weight:700;color:var(--text);letter-spacing:0.02em;">agent-bridge</span>
-      <span style="font-size:10px;color:var(--text-dim);">/ mission control</span>
+      <div class="brand-copy">
+        <span class="brand-title">agent-bridge</span>
+        <span class="brand-subtitle">live orchestration for agents, clients, traces and channels</span>
+      </div>
     </div>
 
-    <!-- Nav -->
-    <nav style="display:flex;align-items:center;gap:4px;">
+    <nav class="app-nav">
       <RouterLink
         v-for="tab in tabs"
         :key="tab.to"
@@ -25,9 +26,8 @@
       </RouterLink>
     </nav>
 
-    <!-- Status -->
-    <div style="display:flex;align-items:center;gap:16px;">
-      <div style="display:flex;align-items:center;gap:6px;">
+    <div class="app-status">
+      <div class="status-pill">
         <span
           class="health-dot"
           :class="{
@@ -40,17 +40,16 @@
                         status === 'connecting' ? 'var(--amber)' : 'var(--red)'
           }"
         />
-        <span style="font-size:10px;color:var(--text-dim);">{{ statusLabel }}</span>
+        <span class="status-label">{{ statusLabel }}</span>
       </div>
-      <div style="display:flex;align-items:center;gap:4px;font-size:10px;">
-        <span style="color:var(--text-dim);">agents</span>
-        <span style="color:var(--emerald);font-weight:700;">{{ healthyCount }}</span>
-        <span style="color:var(--text-ghost);">/</span>
-        <span style="color:var(--text-mid);">{{ agentCount }}</span>
+      <div class="stat-chip">
+        <span class="stat-label">agents</span>
+        <span class="stat-value">{{ healthyCount }}</span>
+        <span class="status-label">/ {{ agentCount }}</span>
       </div>
-      <div style="display:flex;align-items:center;gap:4px;font-size:10px;">
-        <span style="color:var(--text-dim);">clients</span>
-        <span style="color:var(--indigo);font-weight:700;">{{ clientCount }}</span>
+      <div class="stat-chip">
+        <span class="stat-label">clients</span>
+        <span class="stat-value">{{ clientCount }}</span>
       </div>
     </div>
   </header>
@@ -81,22 +80,3 @@ const tabs = [
   { to: "/channels", label: "channels" },
 ];
 </script>
-
-<style scoped>
-.nav-tab {
-  padding: 3px 10px;
-  border-radius: 3px;
-  font-size: 10px;
-  font-weight: 500;
-  color: var(--text-dim);
-  text-decoration: none;
-  transition: color 0.15s, background 0.15s;
-  border: 1px solid transparent;
-}
-.nav-tab:hover { color: var(--text-mid); }
-.nav-tab--active {
-  color: var(--text);
-  background: var(--surface-2);
-  border-color: var(--border-mid);
-}
-</style>

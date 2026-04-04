@@ -1,47 +1,45 @@
 <template>
-  <div class="panel" style="--panel-color: var(--indigo);">
-
+  <div class="panel">
     <div class="panel-header">
-      <div style="display:flex;align-items:center;gap:8px;">
+      <div class="panel-heading">
         <span class="panel-label">Agents</span>
-        <span class="panel-sublabel">registry</span>
+        <span class="panel-sublabel">registry snapshot split between runnable agents and connected Claude clients</span>
       </div>
-      <span style="font-size:10px;color:var(--text-dim);">{{ agentList.length }}</span>
+      <span class="panel-count">{{ agentList.length }}</span>
     </div>
 
-    <!-- Empty -->
-    <div v-if="agentList.length === 0" style="display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:12px;padding:24px;text-align:center;">
-      <div style="width:32px;height:32px;border-radius:50%;border:1px solid var(--border-mid);display:flex;align-items:center;justify-content:center;">
-        <span style="font-size:14px;color:var(--text-ghost);">⬡</span>
-      </div>
-      <div>
-        <p style="font-size:11px;color:var(--text-mid);font-weight:600;margin:0 0 4px;">No agents connected</p>
-        <p style="font-size:10px;color:var(--text-ghost);margin:0;">Run <span style="color:var(--text-dim);">agent-bridge start .</span></p>
-      </div>
-    </div>
-
-    <div v-else class="scrollable" style="padding:10px;display:flex;flex-direction:column;gap:10px;">
-      <!-- AI Clients -->
-      <section v-if="clientList.length > 0">
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:0 2px;margin-bottom:6px;">
-          <span style="font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:var(--indigo);">● clients</span>
-          <span style="font-size:9px;color:var(--text-ghost);">{{ clientList.length }}</span>
+    <div class="section-frame panel-divider">
+      <div v-if="agentList.length === 0" class="empty-state">
+        <div class="empty-state__icon">
+          <span>⬡</span>
         </div>
-        <TransitionGroup tag="div" name="agent-fade" style="display:flex;flex-direction:column;gap:6px;">
-          <AgentCard v-for="a in clientList" :key="a.agentId" :agent="a" />
-        </TransitionGroup>
-      </section>
-
-      <!-- Skill Agents -->
-      <section v-if="skillAgentList.length > 0">
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:0 2px;margin-bottom:6px;">
-          <span style="font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-mid);">◈ skill agents</span>
-          <span style="font-size:9px;color:var(--text-ghost);">{{ skillAgentList.length }}</span>
+        <div>
+          <p class="empty-state__title">No agents connected</p>
+          <p class="empty-state__body">Start a local runtime with <code>agent-bridge start .</code> and the registry will begin streaming activity here.</p>
         </div>
-        <TransitionGroup tag="div" name="agent-fade" style="display:flex;flex-direction:column;gap:6px;">
-          <AgentCard v-for="a in skillAgentList" :key="a.agentId" :agent="a" />
-        </TransitionGroup>
-      </section>
+      </div>
+
+      <div v-else class="scrollable section-stack">
+        <section v-if="clientList.length > 0">
+          <div class="section-label-row">
+            <span class="section-label section-label--accent">Claude Clients</span>
+            <span class="section-count">{{ clientList.length }}</span>
+          </div>
+          <TransitionGroup tag="div" name="agent-fade" class="conversation-stack">
+            <AgentCard v-for="a in clientList" :key="a.agentId" :agent="a" />
+          </TransitionGroup>
+        </section>
+
+        <section v-if="skillAgentList.length > 0">
+          <div class="section-label-row">
+            <span class="section-label">Runnable Agents</span>
+            <span class="section-count">{{ skillAgentList.length }}</span>
+          </div>
+          <TransitionGroup tag="div" name="agent-fade" class="conversation-stack">
+            <AgentCard v-for="a in skillAgentList" :key="a.agentId" :agent="a" />
+          </TransitionGroup>
+        </section>
+      </div>
     </div>
   </div>
 </template>

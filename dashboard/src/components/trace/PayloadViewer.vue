@@ -1,10 +1,7 @@
 <template>
-  <div class="font-mono text-[10px] leading-relaxed">
-    <pre class="text-white/60 whitespace-pre-wrap break-all overflow-x-auto">{{ formatted }}</pre>
-    <button
-      class="mt-1 text-[9px] text-white/30 hover:text-white/60 transition-colors"
-      @click="copyToClipboard"
-    >
+  <div class="payload-viewer">
+    <pre class="payload-pre">{{ formatted }}</pre>
+    <button class="btn-ghost payload-copy" @click="copyToClipboard">
       {{ copied ? "copied!" : "copy" }}
     </button>
   </div>

@@ -1,32 +1,30 @@
 <template>
-  <div style="position:relative;display:flex;align-items:center;">
-    <select
-      class="sig-select"
-      style="width:100%;padding:5px 24px 5px 9px;height:30px;font-size:11px;color:var(--text);"
-      :value="selectedId"
-      @change="onSelect"
-    >
-      <option value="">— select an agent —</option>
-      <optgroup v-if="skillAgents.length > 0" label="Skill Agents">
-        <option
-          v-for="agent in skillAgents"
-          :key="agent.agentId"
-          :value="agent.agentId"
-        >
-          {{ agent.projectName }} (:{{ agent.port }})
-        </option>
-      </optgroup>
-      <optgroup v-if="clientAgents.length > 0" label="AI Clients (read-only)">
-        <option
-          v-for="agent in clientAgents"
-          :key="agent.agentId"
-          disabled
-        >
-          {{ agent.clientInfo?.clientName ?? agent.name }} — connected
-        </option>
-      </optgroup>
-    </select>
-    <span style="position:absolute;right:7px;pointer-events:none;font-size:9px;color:var(--text-dim);">▾</span>
+  <div class="toolbar-field agent-selector-field">
+    <label class="toolbar-label">Send Tasks To</label>
+    <div class="select-wrap">
+      <select class="sig-select" :value="selectedId" @change="onSelect">
+        <option value="">Choose a runnable agent</option>
+        <optgroup v-if="skillAgents.length > 0" label="Runnable agents">
+          <option
+            v-for="agent in skillAgents"
+            :key="agent.agentId"
+            :value="agent.agentId"
+          >
+            {{ agent.projectName }} (:{{ agent.port }})
+          </option>
+        </optgroup>
+        <optgroup v-if="clientAgents.length > 0" label="Claude clients (channel-only)">
+          <option
+            v-for="agent in clientAgents"
+            :key="agent.agentId"
+            disabled
+          >
+            {{ agent.clientInfo?.clientName ?? agent.name }} — connected
+          </option>
+        </optgroup>
+      </select>
+      <span class="select-caret">▾</span>
+    </div>
   </div>
 </template>
 
@@ -49,3 +47,9 @@ function onSelect(e: Event) {
   chatStore.selectAgent(agent ?? null);
 }
 </script>
+
+<style scoped>
+.agent-selector-field {
+  min-width: 100%;
+}
+</style>
