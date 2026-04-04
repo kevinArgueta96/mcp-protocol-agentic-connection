@@ -17,6 +17,7 @@ export function registerMcpCommand(program: Command): void {
     )
     .option("--registry-url <url>", "Registry URL", "http://localhost:4999")
     .option("--project <path>", "Project path for the auto-started agent (default: cwd)")
+    .option("--config <path>", "Path to .agent-bridge.mcp.yml")
     .option("--no-auto", "Disable auto-start of registry/agent (require manual setup)")
     .option("--skill-tools", "Also register per-agent skill tools (disabled by default)")
     .option("--claude", "Enable Claude Code AI backend for the auto-started agent")
@@ -25,6 +26,7 @@ export function registerMcpCommand(program: Command): void {
         registryUrl: options.registryUrl,
         auto: options.auto !== false,
         projectPath: options.project ?? process.env["AGENT_BRIDGE_PROJECT"] ?? process.cwd(),
+        configPath: options.config,
         registerSkillTools: options.skillTools === true,
         useClaudeCode: options.claude ?? false,
       });

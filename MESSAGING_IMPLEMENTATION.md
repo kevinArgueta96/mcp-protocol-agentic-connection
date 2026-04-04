@@ -267,7 +267,9 @@ Se cambio:
 - Claude se mantiene como cliente `push-first`
 - los clientes `inbox-first` reciben un recordatorio liviano por notificacion y usan `channel_inbox` para leer el mensaje completo
 - mientras el mensaje siga pendiente, el bridge reenvia recordatorios periodicos a clientes `inbox-first`
+- el bridge tambien hace polling local del inbox conversacional y solo vuelve a anunciar mensajes pendientes no vistos
 - `message_client_session` ahora espera brevemente un ACK y retorna `deliveryState`
+- la automatizacion de clientes no nativos ahora se puede configurar desde `.agent-bridge.mcp.yml`
 
 Impacto:
 

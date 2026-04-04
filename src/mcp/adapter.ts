@@ -20,6 +20,7 @@ import { ChannelTransport } from "../client/channel-transport.js";
 import { ChannelClientRuntime } from "../client/channel-client-runtime.js";
 import { ConversationService } from "../client/conversation-service.js";
 import { DefaultClientProfileResolver, type ClientBehaviorProfile } from "../client/client-profile-resolver.js";
+import { loadMcpBridgeConfig, resolveInboxFirstClientConfig, type McpBridgeConfig, type ResolvedInboxFirstClientConfig } from "./config.js";
 import { A2AClient } from "../client/a2a-client.js";
 import { RegistryServer } from "../registry/server.js";
 import { AgentServer } from "../agent/server.js";
@@ -37,6 +38,8 @@ export interface McpAdapterOptions {
   registerSkillTools?: boolean;
   /** Enable Claude Code AI backend for the auto-started embedded agent (default: false) */
   useClaudeCode?: boolean;
+  /** Optional path to .agent-bridge.mcp.yml */
+  configPath?: string;
 }
 
 function toolPrefix(name: string): string {
@@ -108,14 +111,15 @@ function formatAgentsSummary(agents: RegistryEntry[]): string {
 }
 
 export class McpAgentBridge {
-  private static readonly INBOX_REMINDER_INTERVAL_MS = 20_000;
   private server: McpServer;
   private registry: RegistryClient;
   private channelTransport: ChannelTransport;
   private channelRuntime: ChannelClientRuntime;
   private conversationService: ConversationService;
   private readonly profileResolver = new DefaultClientProfileResolver();
+  private readonly bridgeConfig: McpBridgeConfig;
   private clientProfile: ClientBehaviorProfile;
+  private inboxFirstConfig: ResolvedInboxFirstClientConfig;
   private options: Required<McpAdapterOptions>;
   private clientAgentId: string | null = null;
   private embeddedAgent: AgentServer | null = null;
@@ -127,6 +131,8 @@ export class McpAgentBridge {
     timer: NodeJS.Timeout;
   }>();
   private inboxReminderTimers = new Map<string, NodeJS.Timeout>();
+  private inboxPollTimer: NodeJS.Timeout | null = null;
+  private surfacedInboxMessageIds = new Set<string>();
   private agentToolMap = new Map<string, RegisteredTool[]>();
 
   constructor(options: McpAdapterOptions = {}) {
@@ -136,8 +142,10 @@ export class McpAgentBridge {
       projectPath: process.cwd(),
       registerSkillTools: false,
       useClaudeCode: false,
+      configPath: "",
       ...options,
     };
+    this.bridgeConfig = loadMcpBridgeConfig(this.options.projectPath, this.options.configPath || undefined);
     this.registry = new RegistryClient(this.options.registryUrl);
     this.channelTransport = new ChannelTransport({ registryUrl: this.options.registryUrl });
     this.channelRuntime = new ChannelClientRuntime({
@@ -147,6 +155,7 @@ export class McpAgentBridge {
     });
     this.conversationService = new ConversationService(this.channelRuntime);
     this.clientProfile = this.profileResolver.resolve({ clientName: "codex" });
+    this.inboxFirstConfig = resolveInboxFirstClientConfig(this.bridgeConfig, this.clientProfile.id);
     this.server = new McpServer(
       { name: "agent-bridge", version: "0.1.0" },
       {
@@ -298,7 +307,7 @@ export class McpAgentBridge {
         // Ignore notification failures; WS relay remains alive.
       });
 
-      if (this.clientProfile.deliveryMode === "inbox-first") {
+      if (this.clientProfile.deliveryMode === "inbox-first" && this.inboxFirstConfig.sendReminderNotifications) {
         this.scheduleInboxReminder(channelMessage);
       }
     });
@@ -341,6 +350,10 @@ export class McpAgentBridge {
     const key = this.getInboxReminderKey(message.conversationId, message.messageId);
     this.clearInboxReminder(message.conversationId, message.messageId);
 
+    if (!this.inboxFirstConfig.repeatReminders) {
+      return;
+    }
+
     const timer = setInterval(() => {
       const snapshot = this.conversationService.getSnapshot(message.conversationId);
       const stillPending = snapshot?.pendingMessages.some((pending) => pending.messageId === message.messageId);
@@ -371,7 +384,7 @@ export class McpAgentBridge {
       }).catch(() => {
         // Ignore reminder failures.
       });
-    }, McpAgentBridge.INBOX_REMINDER_INTERVAL_MS);
+    }, this.inboxFirstConfig.reminderIntervalMs);
 
     this.inboxReminderTimers.set(key, timer);
   }
@@ -386,6 +399,62 @@ export class McpAgentBridge {
 
   private getInboxReminderKey(conversationId: string, messageId: string): string {
     return `${conversationId}:${messageId}`;
+  }
+
+  private startInboxPolling(): void {
+    this.stopInboxPolling();
+    if (this.clientProfile.deliveryMode !== "inbox-first") return;
+    if (!this.inboxFirstConfig.autoPollInbox) return;
+
+    this.inboxPollTimer = setInterval(() => {
+      void this.surfacePendingInboxMessages();
+    }, this.inboxFirstConfig.pollIntervalMs);
+  }
+
+  private stopInboxPolling(): void {
+    if (this.inboxPollTimer) {
+      clearInterval(this.inboxPollTimer);
+      this.inboxPollTimer = null;
+    }
+    this.surfacedInboxMessageIds.clear();
+  }
+
+  private async surfacePendingInboxMessages(): Promise<void> {
+    if (this.clientProfile.deliveryMode !== "inbox-first") return;
+
+    const pending = this.conversationService.listPendingSnapshots();
+    for (const snapshot of pending) {
+      for (const message of snapshot.pendingMessages) {
+        if (this.surfacedInboxMessageIds.has(message.messageId)) continue;
+        this.surfacedInboxMessageIds.add(message.messageId);
+
+        await this.server.server.notification({
+          method: "notifications/message",
+          params: {
+            level: "info",
+            logger: "agent-bridge.channel",
+            data: {
+              content:
+                pending.length === 1 && snapshot.pendingMessages.length === 1
+                  ? `New pending channel conversation from ${message.fromAgentName ?? message.fromAgentId}. ` +
+                    `Open channel_inbox and reply. Preview: ${message.content.slice(0, 220)}${message.content.length > 220 ? "…" : ""}`
+                  : `You have ${pending.length} pending channel conversation(s). Open channel_inbox to inspect and reply.`,
+              meta: {
+                type: "inbox-poll",
+                conversationId: snapshot.conversation.conversationId,
+                messageId: message.messageId,
+                fromAgentId: message.fromAgentId,
+                fromAgentName: message.fromAgentName,
+                taskId: message.taskId,
+                pendingCount: pending.length,
+              },
+            },
+          },
+        }).catch(() => {
+          // Ignore visibility failures; polling continues.
+        });
+      }
+    }
   }
 
   private async postChannelAck(ack: {
@@ -515,6 +584,7 @@ export class McpAgentBridge {
         const clientName: string = clientVersion.name;
         const version: string = clientVersion.version ?? "unknown";
         this.clientProfile = this.profileResolver.resolve({ clientName });
+        this.inboxFirstConfig = resolveInboxFirstClientConfig(this.bridgeConfig, this.clientProfile.id);
         this.clientAgentId = `client-${clientName}-${Date.now()}`;
 
         // Resolve real project path from client's workspace roots (MCP roots protocol)
@@ -561,9 +631,11 @@ export class McpAgentBridge {
         };
 
         await this.channelRuntime.activateClient(registration);
+        this.startInboxPolling();
         console.error(`[MCP] Registered client: ${realProjectName} (${clientName} v${version})`);
 
         const cleanup = async () => {
+          this.stopInboxPolling();
           await this.channelRuntime.deactivateClient();
           this.clientAgentId = null;
           // Stop embedded agent so it deregisters from registry

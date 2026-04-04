@@ -1,0 +1,21 @@
+clientAutomation:
+  nonNative:
+    autoPollInbox: true
+    sendReminderNotifications: true
+    repeatReminders: true
+    pollIntervalMs: 3000
+    reminderIntervalMs: 12000
+
+  codex:
+    autoPollInbox: true
+    sendReminderNotifications: true
+    repeatReminders: true
+    pollIntervalMs: 1000
+    reminderIntervalMs: 5000
+
+  gemini:
+    autoPollInbox: true
+    sendReminderNotifications: true
+    repeatReminders: false
+    pollIntervalMs: 4000
+    reminderIntervalMs: 15000

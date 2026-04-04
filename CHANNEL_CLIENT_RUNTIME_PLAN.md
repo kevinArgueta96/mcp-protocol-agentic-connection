@@ -246,6 +246,8 @@ interface ClientBehaviorProfile {
 - Codex and Gemini are now modeled as inbox-first clients; Claude remains push-first via native Claude channels.
 - Inbox-first clients now receive a lightweight reminder notification and rely on `channel_inbox` for the full message body and reply flow.
 - Inbox-first clients also receive repeated reminder notifications while a pending message remains unanswered.
+- Inbox-first clients now run a lightweight local inbox poll with message watermarks so newly pending messages are surfaced automatically.
+- Inbox-first automation is now configurable from `.agent-bridge.mcp.yml`, with global `nonNative` defaults and per-client overrides such as `codex` and `gemini`.
 - This reduces Claude-specific orchestration in `src/mcp/adapter.ts` and moves the project closer to a real application-layer runtime.
 - The runtime now also owns conversation update events, message listing per conversation,
   and delivery acknowledgements as application APIs instead of adapter-level transport calls.
