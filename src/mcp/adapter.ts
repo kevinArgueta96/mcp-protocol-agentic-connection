@@ -154,7 +154,8 @@ export class McpAgentBridge {
           "Connected agents can send you channel events through your current client profile. " +
           "Use list_agents to discover available agents and client sessions, agent_health to check runnable agents, " +
           "ask_agent for A2A agents with skills/HTTP endpoints, and message_client_session for passive client sessions over channels. " +
-          "Use reply to respond to incoming channel events.",
+          "Use reply to respond to incoming channel events. " +
+          "If your client behaves inbox-first, use channel_inbox to review inbound channel messages before replying.",
       },
     );
     this.setupChannelRuntime();
@@ -288,7 +289,9 @@ export class McpAgentBridge {
         state: "displayed_to_client",
         actorId: this.clientAgentId ?? "mcp-adapter",
         actorType: "bridge",
-        detail: "Message forwarded to Claude channel",
+        detail: this.clientProfile.deliveryMode === "inbox-first"
+          ? "Inbox reminder forwarded to client"
+          : "Message forwarded to client channel",
       })).catch(() => {
         // Ignore notification failures; WS relay remains alive.
       });
@@ -758,7 +761,8 @@ export class McpAgentBridge {
       {
         description:
           "Inspect the current client's channel conversations. " +
-          "Useful for debugging the channel MVP and seeing pending or recent conversations tracked locally by the runtime.",
+          "Useful for debugging the channel MVP and seeing pending or recent conversations tracked locally by the runtime. " +
+          "For Codex and other inbox-first clients, this is the primary way to review inbound channel messages.",
         inputSchema: {
           expiredOnly: z.boolean().optional().describe("Show only locally expired conversations awaiting reply"),
           pendingOnly: z.boolean().optional().describe("Show only conversations awaiting reply (default: true)"),
@@ -831,7 +835,8 @@ export class McpAgentBridge {
         description:
           "Send a channel message to a specific client session. " +
           "Use this for Codex, Claude, Gemini, or dashboard conversations over channels. " +
-          "Do not use ask_agent for passive client entries.",
+          "Do not use ask_agent for passive client entries. " +
+          "When the target client is Codex, expect replies to be handled through channel_inbox plus reply rather than automatic push rendering.",
         inputSchema: {
           clientId: z.string().optional().describe("Target client session agentId"),
           project: z.string().optional().describe("Project name or path used to resolve the target client session"),
@@ -1171,6 +1176,7 @@ export class McpAgentBridge {
               "- **ask_agent** — Send any message/task to a runnable A2A agent",
               "- **message_client_session** — Send a channel message to a passive client session",
               "- **message_claude_client** — Compatibility alias for Claude-oriented workflows",
+              "- **channel_inbox** — Refresh your local inbox of pending or recent channel conversations",
               "- **reply** — Reply to an incoming channel event from an agent",
               "- **project_info** — Get project metadata from an agent",
               "- **project_files** — List files in a remote project",
@@ -1312,6 +1318,15 @@ export class McpAgentBridge {
             },
           });
       const channelMessage = snapshot.messages[snapshot.messages.length - 1];
+      const deliveryState = await this.conversationService.waitForAcknowledgement(
+        channelMessage.conversationId,
+        channelMessage.messageId,
+      );
+      const targetClientName = client.clientInfo?.clientName?.toLowerCase();
+      const inboxFirst = targetClientName === "codex"
+        || targetClientName === "codex-cli"
+        || targetClientName === "gemini"
+        || targetClientName === "gemini-cli";
 
       return {
         content: [{
@@ -1320,7 +1335,11 @@ export class McpAgentBridge {
             `Channel message sent to ${client.name}\n` +
             `clientId=${client.agentId}\n` +
             `conversationId=${channelMessage.conversationId}\n` +
-            `messageId=${channelMessage.messageId}`,
+            `messageId=${channelMessage.messageId}\n` +
+            `deliveryState=${deliveryState ?? "pending"}`
+            + (inboxFirst
+              ? "\nTarget client is inbox-first. If you are waiting for its reply, refresh with channel_inbox."
+              : ""),
         }],
       };
     } catch (err) {

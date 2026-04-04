@@ -13,6 +13,7 @@ function stringifyMeta(meta?: Record<string, unknown>): Record<string, string> {
 
 export class ClaudeClientProfile implements ClientBehaviorProfile {
   readonly id = "claude";
+  readonly deliveryMode = "push" as const;
 
   acceptsChannelMessage(message: ChannelMessage, selfAgentId: string | null): boolean {
     return (

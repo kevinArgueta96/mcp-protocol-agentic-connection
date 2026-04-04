@@ -243,6 +243,8 @@ interface ClientBehaviorProfile {
 - The runtime/store layer now owns conversation correlation and reply context resolution.
 - The MCP surface is moving from Claude-specific naming to generic client-session naming.
 - Codex is now the target production client layer; Claude remains compatibility-first, Gemini follows the same seam.
+- Codex and Gemini are now modeled as inbox-first clients; Claude remains push-first via native Claude channels.
+- Inbox-first clients now receive a lightweight reminder notification and rely on `channel_inbox` for the full message body and reply flow.
 - This reduces Claude-specific orchestration in `src/mcp/adapter.ts` and moves the project closer to a real application-layer runtime.
 - The runtime now also owns conversation update events, message listing per conversation,
   and delivery acknowledgements as application APIs instead of adapter-level transport calls.

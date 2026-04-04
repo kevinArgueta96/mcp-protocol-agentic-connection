@@ -19,6 +19,7 @@ export interface LegacyNotifyPayload {
 
 export interface ClientBehaviorProfile {
   id: string;
+  deliveryMode: "push" | "inbox-first";
   acceptsChannelMessage(message: ChannelMessage, selfAgentId: string | null): boolean;
   mapChannelMessage(message: ChannelMessage): ClientNotificationEnvelope | null;
   mapLegacyNotify(payload: LegacyNotifyPayload): ClientNotificationEnvelope | null;

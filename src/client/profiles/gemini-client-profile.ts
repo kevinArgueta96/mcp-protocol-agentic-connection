@@ -18,6 +18,7 @@ function buildGeminiPayload(content: string, meta: Record<string, unknown>): Cli
 
 export class GeminiClientProfile implements ClientBehaviorProfile {
   readonly id = "gemini";
+  readonly deliveryMode = "inbox-first" as const;
 
   acceptsChannelMessage(message: ChannelMessage, selfAgentId: string | null): boolean {
     return !message.toAgentId || (selfAgentId != null && message.toAgentId === selfAgentId);

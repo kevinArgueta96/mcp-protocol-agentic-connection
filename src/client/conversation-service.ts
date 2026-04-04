@@ -143,6 +143,32 @@ export class ConversationService {
     };
   }
 
+  async waitForAcknowledgement(
+    conversationId: string,
+    messageId: string,
+    options?: {
+      timeoutMs?: number;
+      pollIntervalMs?: number;
+      states?: ChannelDeliveryState[];
+    },
+  ): Promise<ChannelDeliveryState | undefined> {
+    const timeoutMs = options?.timeoutMs ?? 1_500;
+    const pollIntervalMs = options?.pollIntervalMs ?? 150;
+    const states = options?.states ?? ["delivered_to_bridge", "displayed_to_client", "answered", "failed"];
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const snapshot = this.getSnapshot(conversationId);
+      const state = snapshot?.conversation.lastAckState;
+      if (state && states.includes(state)) {
+        return state;
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+    }
+
+    return this.getSnapshot(conversationId)?.conversation.lastAckState;
+  }
+
   private requireSnapshot(conversationId: string): ConversationSnapshot {
     const snapshot = this.getSnapshot(conversationId);
     if (!snapshot) {

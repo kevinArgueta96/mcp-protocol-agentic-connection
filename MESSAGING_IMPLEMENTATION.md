@@ -263,12 +263,18 @@ Se cambio:
 - el resolver ya no cae por defecto a Claude; ahora usa Codex como comportamiento generico seguro
 - la tool principal paso a ser `message_client_session`
 - `message_claude_client` queda como alias de compatibilidad
+- Codex y Gemini se tratan como clientes `inbox-first`
+- Claude se mantiene como cliente `push-first`
+- los clientes `inbox-first` reciben un recordatorio liviano por notificacion y usan `channel_inbox` para leer el mensaje completo
+- `message_client_session` ahora espera brevemente un ACK y retorna `deliveryState`
 
 Impacto:
 
 - el MVP ya no refleja una arquitectura Claude-only
 - Codex queda como capa objetivo de produccion sin romper soporte actual para Claude
 - Gemini puede entrar sobre el mismo seam sin rehacer la mensajeria
+- ya no asumimos que `fit-backend -> Codex` aparezca como push automatico; en Codex el flujo correcto es `channel_inbox` + `reply`
+- al enviar mensajes desde MCP ya se puede ver de inmediato si el bridge alcanzo al menos `delivered_to_bridge` o `displayed_to_client`
 
 ### 13. Pendientes por mensaje y ACK correcto
 
