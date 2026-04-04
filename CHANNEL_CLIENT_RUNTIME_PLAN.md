@@ -248,6 +248,8 @@ interface ClientBehaviorProfile {
 - Inbox-first clients also receive repeated reminder notifications while a pending message remains unanswered.
 - Inbox-first clients now run a lightweight local inbox poll with message watermarks so newly pending messages are surfaced automatically.
 - Inbox-first automation is now configurable from `.agent-bridge.mcp.yml`, with global `nonNative` defaults and per-client overrides such as `codex` and `gemini`.
+- Codex now has a dedicated proxy layer in the MCP bridge so inbound and pending messages are surfaced with conversation context instead of generic reminders only.
+- The dashboard now includes a manual `remind` action on active client-session threads so an operator can keep a Codex or Gemini conversation moving without leaving the chat UI.
 - This reduces Claude-specific orchestration in `src/mcp/adapter.ts` and moves the project closer to a real application-layer runtime.
 - The runtime now also owns conversation update events, message listing per conversation,
   and delivery acknowledgements as application APIs instead of adapter-level transport calls.
@@ -276,7 +278,7 @@ interface ClientBehaviorProfile {
 
 - keep node-side and registry semantics aligned
 - decide whether suppression should evolve into archive semantics with actor metadata and timestamps
-- once stable, use the same conversation surface for Codex-facing client behavior
+- if Codex needs more autonomy than inbox-first + reminders, evolve the proxy layer instead of adding more YAML-only behavior
 
 Resolution examples:
 

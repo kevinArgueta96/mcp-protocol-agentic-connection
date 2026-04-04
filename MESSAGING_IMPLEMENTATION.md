@@ -23,6 +23,10 @@ El sistema ya soporta:
 - seguimiento de pendientes por mensaje
 - expiracion local derivada del mensaje pendiente
 - tombstones locales para conversaciones borradas
+- perfiles cliente `push-first` e `inbox-first`
+- configuracion de automatizacion para clientes no nativos via `.agent-bridge.mcp.yml`
+- proxy dedicado para Codex dentro del bridge MCP
+- accion manual `remind` desde el chat del dashboard
 
 ## Cambios backend
 
@@ -245,7 +249,7 @@ Impacto:
 
 - la capa node-side ya tiene una base comun para Codex, Claude, Gemini y futuros clientes
 
-### 15. Capa Codex-first en el bridge MCP
+### 13. Capa Codex-first en el bridge MCP
 
 Archivos:
 
@@ -254,6 +258,10 @@ Archivos:
 - `src/client/profiles/claude-client-profile.ts`
 - `src/client/client-profile-resolver.ts`
 - `src/mcp/adapter.ts`
+- `src/mcp/proxies/codex-proxy.ts`
+- `src/mcp/config.ts`
+- `.agent-bridge.mcp.yml`
+- `src/cli/commands/mcp.ts`
 
 Se cambio:
 
@@ -270,6 +278,8 @@ Se cambio:
 - el bridge tambien hace polling local del inbox conversacional y solo vuelve a anunciar mensajes pendientes no vistos
 - `message_client_session` ahora espera brevemente un ACK y retorna `deliveryState`
 - la automatizacion de clientes no nativos ahora se puede configurar desde `.agent-bridge.mcp.yml`
+- Codex ahora usa un proxy dedicado dentro del bridge MCP para transformar mensajes entrantes y pendientes en notificaciones con contexto del hilo
+- la CLI `agent-bridge mcp start` ahora acepta `--config` para cargar una config YAML explicita
 
 Impacto:
 
@@ -279,7 +289,7 @@ Impacto:
 - ya no asumimos que `fit-backend -> Codex` aparezca como push automatico; en Codex el flujo correcto es `channel_inbox` + `reply`
 - al enviar mensajes desde MCP ya se puede ver de inmediato si el bridge alcanzo al menos `delivered_to_bridge` o `displayed_to_client`
 
-### 13. Pendientes por mensaje y ACK correcto
+### 14. Pendientes por mensaje y ACK correcto
 
 Archivos:
 
@@ -297,7 +307,7 @@ Impacto:
 - una respuesta ya no cierra por error toda la conversacion
 - varias solicitudes pendientes dentro del mismo `conversationId` ya no se pisan
 
-### 14. Tombstones locales
+### 15. Tombstones locales
 
 Archivos:
 
@@ -315,7 +325,7 @@ Impacto:
 - una conversacion borrada ya no resucita sola con historial roto
 - el runtime puede seguir una supresion emitida por el registry
 
-### 15. Alineacion del registry con el modelo conversacional
+### 16. Alineacion del registry con el modelo conversacional
 
 Archivos:
 
@@ -334,7 +344,7 @@ Impacto:
 - el registry y el runtime local quedaron mucho mas alineados
 - se reducen contradicciones entre `/channel/conversations` y `channel_inbox`
 
-### 16. Una sola verdad para supresion de conversaciones
+### 17. Una sola verdad para supresion de conversaciones
 
 Archivos:
 
@@ -462,6 +472,28 @@ Cambios:
   - `channel.conversation.revived`
 - refresco incremental por conversacion afectada, sin recargar toda la lista en cada evento
 
+### 8. Chat operativo para sesiones cliente
+
+Archivos:
+
+- `dashboard/src/lib/channel-chat-session.ts`
+- `dashboard/src/stores/chat.ts`
+- `dashboard/src/components/chat/AgentChat.vue`
+- `dashboard/src/components/chat/AgentSelector.vue`
+- `dashboard/src/components/chat/ChatMessage.vue`
+
+Cambios:
+
+- el chat del dashboard se enfoco en sesiones cliente del canal y no en `ag-ui`
+- se mantiene `conversationId` activo por cliente seleccionado
+- el selector muestra sesiones cliente pasivas como destino principal
+- se agrego la accion `remind` para volver a empujar seguimiento dentro del mismo hilo
+
+Impacto:
+
+- el dashboard ya sirve como operador manual de conversaciones con clientes `inbox-first`
+- el recordatorio manual complementa el polling y los reminders del bridge cuando el cliente no responde solo
+
 ## Problemas encontrados y decisiones
 
 ### 1. Permission relay mezclado con chat
@@ -507,6 +539,19 @@ Decision:
 
 - dejar visibles las entradas y mostrar el estado
 
+### 5. YAML configurable pero no autonomo
+
+Problema:
+
+- el archivo `.agent-bridge.mcp.yml` si cambia el comportamiento interno del bridge
+- pero no puede obligar a Codex a ejecutar tools ni responder automaticamente
+
+Decision:
+
+- mantener el YAML como configuracion de polling y reminders
+- dejar claro que la automatizacion real para clientes no nativos depende de un proxy o companion mas activo
+- introducir `CodexProxy` para enriquecer la notificacion y acercar la experiencia a una activacion usable
+
 ## Validacion realizada
 
 Se validó repetidamente con:
@@ -519,9 +564,9 @@ Se validó repetidamente con:
 Todavia falta:
 
 - retry automatico programado
-- politica mas clara entre tombstones locales y persistencia del registry
-- mejor experiencia para seleccionar clientes Claude destino
-- acciones de reintento/cierre desde la vista `/channels`
+- evolucionar el proxy de Codex si se quiere comportamiento mas autonomo que `inbox-first`
+- mejor experiencia para seleccionar clientes destino desde dashboard y tooling
+- acciones de reintento/cierre mas completas desde la vista `/channels`
 
 ## Siguiente paso recomendado
 
@@ -529,10 +574,11 @@ Prioridad alta:
 
 - scheduler de retry automatico y expiracion visible por UI
 - decidir si la supresion debe evolucionar a archivado con metadatos
+- si se quiere mas automatizacion para Codex, endurecer el proxy en vez de seguir empujando solo YAML
 
 Prioridad media:
 
-- selector de clientes Claude destino en dashboard o tooling
+- selector de clientes destino en dashboard o tooling
 
 Prioridad baja:
 

@@ -24,6 +24,7 @@ import { loadMcpBridgeConfig, resolveInboxFirstClientConfig, type McpBridgeConfi
 import { A2AClient } from "../client/a2a-client.js";
 import { RegistryServer } from "../registry/server.js";
 import { AgentServer } from "../agent/server.js";
+import { CodexProxy } from "./proxies/codex-proxy.js";
 import type { RegistryEntry, AgentMessage, ChannelMessage } from "../types/messages.js";
 import type { Task, Part, Message } from "../types/a2a.js";
 import { WebSocket } from "ws";
@@ -117,6 +118,7 @@ export class McpAgentBridge {
   private channelRuntime: ChannelClientRuntime;
   private conversationService: ConversationService;
   private readonly profileResolver = new DefaultClientProfileResolver();
+  private readonly codexProxy: CodexProxy;
   private readonly bridgeConfig: McpBridgeConfig;
   private clientProfile: ClientBehaviorProfile;
   private inboxFirstConfig: ResolvedInboxFirstClientConfig;
@@ -154,6 +156,7 @@ export class McpAgentBridge {
       maxReconnectAttempts: 5,
     });
     this.conversationService = new ConversationService(this.channelRuntime);
+    this.codexProxy = new CodexProxy(this.conversationService);
     this.clientProfile = this.profileResolver.resolve({ clientName: "codex" });
     this.inboxFirstConfig = resolveInboxFirstClientConfig(this.bridgeConfig, this.clientProfile.id);
     this.server = new McpServer(
@@ -292,7 +295,9 @@ export class McpAgentBridge {
         detail: "Message received by MCP bridge",
       });
 
-      const notification = this.clientProfile.mapChannelMessage(channelMessage);
+      const notification = this.clientProfile.id === "codex"
+        ? this.codexProxy.buildChannelNotification(channelMessage)
+        : this.clientProfile.mapChannelMessage(channelMessage);
       if (!notification) return;
       void this.server.server.notification(notification).then(() => this.postChannelAck({
         conversationId: channelMessage.conversationId,
@@ -330,7 +335,9 @@ export class McpAgentBridge {
           return;
         }
 
-        const notification = this.clientProfile.mapTaskRequestMessage(agentMsg);
+        const notification = this.clientProfile.id === "codex"
+          ? this.codexProxy.buildTaskRequestNotification(agentMsg)
+          : this.clientProfile.mapTaskRequestMessage(agentMsg);
         if (!notification) return;
         void this.server.server.notification(notification);
       }
@@ -428,29 +435,33 @@ export class McpAgentBridge {
         if (this.surfacedInboxMessageIds.has(message.messageId)) continue;
         this.surfacedInboxMessageIds.add(message.messageId);
 
-        await this.server.server.notification({
-          method: "notifications/message",
-          params: {
-            level: "info",
-            logger: "agent-bridge.channel",
-            data: {
-              content:
-                pending.length === 1 && snapshot.pendingMessages.length === 1
-                  ? `New pending channel conversation from ${message.fromAgentName ?? message.fromAgentId}. ` +
-                    `Open channel_inbox and reply. Preview: ${message.content.slice(0, 220)}${message.content.length > 220 ? "…" : ""}`
-                  : `You have ${pending.length} pending channel conversation(s). Open channel_inbox to inspect and reply.`,
-              meta: {
-                type: "inbox-poll",
-                conversationId: snapshot.conversation.conversationId,
-                messageId: message.messageId,
-                fromAgentId: message.fromAgentId,
-                fromAgentName: message.fromAgentName,
-                taskId: message.taskId,
-                pendingCount: pending.length,
+        const notification = this.clientProfile.id === "codex"
+          ? this.codexProxy.buildPendingReminder(snapshot, message, pending.length)
+          : {
+              method: "notifications/message",
+              params: {
+                level: "info",
+                logger: "agent-bridge.channel",
+                data: {
+                  content:
+                    pending.length === 1 && snapshot.pendingMessages.length === 1
+                      ? `New pending channel conversation from ${message.fromAgentName ?? message.fromAgentId}. ` +
+                        `Open channel_inbox and reply. Preview: ${message.content.slice(0, 220)}${message.content.length > 220 ? "…" : ""}`
+                      : `You have ${pending.length} pending channel conversation(s). Open channel_inbox to inspect and reply.`,
+                  meta: {
+                    type: "inbox-poll",
+                    conversationId: snapshot.conversation.conversationId,
+                    messageId: message.messageId,
+                    fromAgentId: message.fromAgentId,
+                    fromAgentName: message.fromAgentName,
+                    taskId: message.taskId,
+                    pendingCount: pending.length,
+                  },
+                },
               },
-            },
-          },
-        }).catch(() => {
+            };
+
+        await this.server.server.notification(notification).catch(() => {
           // Ignore visibility failures; polling continues.
         });
       }
