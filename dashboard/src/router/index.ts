@@ -14,6 +14,11 @@ const routes: RouteRecordRaw[] = [
     props: true,
   },
   {
+    path: "/channels",
+    name: "channels",
+    component: () => import("@/views/ChannelsView.vue"),
+  },
+  {
     path: "/:pathMatch(.*)*",
     redirect: "/",
   },

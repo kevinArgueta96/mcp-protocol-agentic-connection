@@ -76,7 +76,10 @@ const statusLabel = computed(() => ({
   error: "error",
 }[status.value] ?? status.value));
 
-const tabs = [{ to: "/", label: "dashboard" }];
+const tabs = [
+  { to: "/", label: "dashboard" },
+  { to: "/channels", label: "channels" },
+];
 </script>
 
 <style scoped>

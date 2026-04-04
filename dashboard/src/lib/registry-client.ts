@@ -1,7 +1,7 @@
 // REST client for the registry API
 const BASE = import.meta.env.VITE_REGISTRY_URL ?? "http://localhost:4999";
 
-import type { RegistryAgent } from "@/types";
+import type { ChannelConversationListEntry, ChannelConversationSnapshot, RegistryAgent } from "@/types";
 
 export async function fetchAgents(filter?: {
   skill?: string;
@@ -32,4 +32,19 @@ export async function fetchRegistryHealth(): Promise<{
   const res = await fetch(`${BASE}/health`);
   if (!res.ok) throw new Error(`Registry unhealthy: ${res.status}`);
   return res.json() as Promise<{ status: string; agents: number; timestamp: string }>;
+}
+
+export async function fetchChannelConversations(filter?: { pending?: boolean }): Promise<ChannelConversationListEntry[]> {
+  const params = new URLSearchParams();
+  if (filter?.pending !== undefined) params.set("pending", String(filter.pending));
+  const qs = params.toString();
+  const res = await fetch(`${BASE}/channel/conversations${qs ? `?${qs}` : ""}`);
+  if (!res.ok) throw new Error(`Channel conversations error: ${res.status}`);
+  return res.json() as Promise<ChannelConversationListEntry[]>;
+}
+
+export async function fetchChannelConversation(conversationId: string): Promise<ChannelConversationSnapshot> {
+  const res = await fetch(`${BASE}/channel/conversations/${encodeURIComponent(conversationId)}`);
+  if (!res.ok) throw new Error(`Conversation not found: ${conversationId}`);
+  return res.json() as Promise<ChannelConversationSnapshot>;
 }

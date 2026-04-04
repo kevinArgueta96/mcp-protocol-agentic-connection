@@ -29,6 +29,7 @@ Al terminar este plan, el sistema debe poder:
 - responder un mensaje usando `replyTo`
 - consultar el historial de una conversacion
 - dejar la base lista para reanudar tareas mas adelante
+- separar claramente agentes A2A y clientes Claude via channels
 
 ## Estructura propuesta
 
@@ -99,6 +100,17 @@ Transportes actuales:
 - registry WebSocket
 - MCP bridge
 - agent relay
+
+### 5. Capa de clientes Claude
+
+Responsable de separar el uso de channels del uso de agentes A2A.
+
+Principios:
+
+- un cliente Claude no es un agente ejecutable
+- `ask_agent` solo aplica a agentes con URL y skills
+- los clientes Claude se contactan via channels
+- el destino de un channel debe ser explicito
 
 ## Fases
 
@@ -250,6 +262,75 @@ Resumen:
 - El canal ahora soporta expiracion por mensaje, listado de conversaciones pendientes y retry basico desde el registry.
 - Falta endurecer esta parte con politicas de reintento automatico y persistencia duradera.
 
+### Fase 6. Separacion Claude Client / Agent
+
+Objetivo:
+
+- evitar mezclar clientes Claude con agentes A2A
+
+Entregables:
+
+- `notify-claude` con destino explicito
+- `message_claude_client` como tool separada
+- `ask_agent` rechazando clientes pasivos
+- routing de channels por `clientAgentId`
+- reemplazo de entradas duplicadas por proyecto/cliente en el registry
+
+Archivos:
+
+- `src/mcp/adapter.ts`
+- `src/skills/builtins/notify-claude.ts`
+- `src/client/registry-client.ts`
+- `src/registry/store.ts`
+
+Estado:
+
+- Completada
+
+Resumen:
+
+- `notify-claude` ahora requiere `targetClientId` o `targetProject`.
+- Se agrego `message_claude_client` para sesiones Claude via channels.
+- `ask_agent` ahora falla temprano si el destino es un cliente Claude.
+- El bridge ya enruta `channel.message` al `clientAgentId` correcto.
+- El registry reemplaza entradas duplicadas del mismo cliente/proyecto para estabilizar el estado.
+
+### Fase 7. Observabilidad en dashboard
+
+Objetivo:
+
+- ver clientes conectados y mensajes del canal en tiempo real
+
+Entregables:
+
+- conteo separado de agentes y clientes
+- timeline de `channel.message`
+- timeline de `channel.ack`
+- filtros por tipo de evento
+- visibilidad de entradas `unhealthy`
+
+Archivos:
+
+- `dashboard/src/types/index.ts`
+- `dashboard/src/stores/registry.ts`
+- `dashboard/src/stores/trace.ts`
+- `dashboard/src/components/layout/AppHeader.vue`
+- `dashboard/src/components/agents/AgentGrid.vue`
+- `dashboard/src/components/trace/TraceTimeline.vue`
+- `dashboard/src/components/trace/TraceEntry.vue`
+- `dashboard/src/components/trace/TraceFilters.vue`
+
+Estado:
+
+- Completada
+
+Resumen:
+
+- El dashboard ya muestra clientes Claude por separado.
+- La timeline ahora incluye mensajes y ACKs del canal.
+- Se agrego filtro por `kind`.
+- Las entradas `unhealthy` ya no desaparecen visualmente.
+
 ## Archivos por responsabilidad
 
 ### `src/types/messages.ts`
@@ -280,10 +361,20 @@ Resumen:
 - adaptar mensajes del canal a Claude
 - registrar ACKs
 - resolver replies
+- separar agentes A2A y clientes Claude
+- exponer `message_claude_client`
 
 ### `src/agent/handlers.ts`
 
 - enlazar mensajes con ciclo de vida de tareas
+
+### `dashboard/src/stores/trace.ts`
+
+- combinar tareas y mensajes del canal en una sola timeline
+
+### `dashboard/src/stores/registry.ts`
+
+- separar clientes Claude y agentes ejecutables
 
 ## Reglas de diseño
 
@@ -293,6 +384,8 @@ Resumen:
 - `reply` siempre referencia un mensaje previo
 - no depender solo de WebSocket para el estado
 - no mezclar mensaje conversacional con respuesta RPC cruda
+- no mezclar clientes Claude con agentes A2A
+- no usar `ask_agent` contra clientes pasivos
 
 ## Control de avance
 
@@ -305,6 +398,8 @@ Usar esta seccion para actualizar rapido el estado sin reescribir todo el docume
 - Fase 3: Completada
 - Fase 4: Completada
 - Fase 5: En progreso
+- Fase 6: Completada
+- Fase 7: Completada
 
 ### Ultimo resumen
 
@@ -314,8 +409,10 @@ Usar esta seccion para actualizar rapido el estado sin reescribir todo el docume
 - El `McpAgentBridge` ya registra ACKs y `reply` conversacional.
 - Las tareas del agente ya pueden quedar en `input-required` y reanudarse por reply del canal.
 - Ya existen timeout, expiracion y retry basico para conversaciones pendientes.
+- Ya existe una separacion clara entre agentes A2A y clientes Claude.
+- El dashboard ya muestra clientes conectados y mensajes enviados por el canal.
 - El backend compila correctamente con `pnpm run build`.
 
 ### Proximo paso
 
-- Si hace falta, migrar el `ChannelStore` de memoria a SQLite y agregar retry automatico por scheduler.
+- Si hace falta, migrar el `ChannelStore` de memoria a SQLite, agregar retry automatico por scheduler y construir una vista dedicada por `conversationId` en el dashboard.

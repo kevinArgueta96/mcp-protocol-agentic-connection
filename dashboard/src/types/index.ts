@@ -137,4 +137,18 @@ export interface ChannelAckPayload {
   detail?: string;
 }
 
+export interface ChannelConversationListEntry {
+  conversationId: string;
+  lastMessage: ChannelMessagePayload;
+  pendingReply: boolean;
+  expired: boolean;
+  lastAckState?: ChannelDeliveryState;
+}
+
+export interface ChannelConversationSnapshot {
+  conversationId: string;
+  messages: ChannelMessagePayload[];
+  acknowledgements: ChannelAckPayload[];
+}
+
 export type ConnectionStatus = "connecting" | "connected" | "disconnected" | "error";
