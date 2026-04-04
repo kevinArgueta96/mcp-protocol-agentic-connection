@@ -72,10 +72,13 @@ export interface TraceEvent {
 
 export interface ChatMessage {
   id: string;
-  role: "user" | "agent" | "tool";
+  role: "user" | "agent" | "tool" | "system";
   content: string;
   timestamp: string;
   streaming?: boolean;
+  messageId?: string;
+  conversationId?: string;
+  deliveryState?: ChannelDeliveryState;
   toolCall?: {
     name: string;
     args?: unknown;

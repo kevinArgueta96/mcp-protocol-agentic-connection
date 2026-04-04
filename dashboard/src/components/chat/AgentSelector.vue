@@ -1,25 +1,25 @@
 <template>
   <div class="toolbar-field agent-selector-field">
-    <label class="toolbar-label">Send Tasks To</label>
+    <label class="toolbar-label">Send Channel To</label>
     <div class="select-wrap">
       <select class="sig-select" :value="selectedId" @change="onSelect">
-        <option value="">Choose a runnable agent</option>
-        <optgroup v-if="skillAgents.length > 0" label="Runnable agents">
-          <option
-            v-for="agent in skillAgents"
-            :key="agent.agentId"
-            :value="agent.agentId"
-          >
-            {{ agent.projectName }} (:{{ agent.port }})
-          </option>
-        </optgroup>
-        <optgroup v-if="clientAgents.length > 0" label="Claude clients (channel-only)">
+        <option value="">Choose a Claude client session</option>
+        <optgroup v-if="clientAgents.length > 0" label="Claude clients">
           <option
             v-for="agent in clientAgents"
             :key="agent.agentId"
+            :value="agent.agentId"
+          >
+            {{ agent.projectName }} · {{ agent.clientInfo?.clientName ?? agent.name }}
+          </option>
+        </optgroup>
+        <optgroup v-if="skillAgents.length > 0" label="Runnable agents (not used here)">
+          <option
+            v-for="agent in skillAgents"
+            :key="agent.agentId"
             disabled
           >
-            {{ agent.clientInfo?.clientName ?? agent.name }} — connected
+            {{ agent.projectName }} — use ask_agent, not channel chat
           </option>
         </optgroup>
       </select>
@@ -39,12 +39,12 @@ const chatStore = useChatStore();
 const healthyAgents = computed(() => registryStore.agentList.filter((a) => a.healthy));
 const skillAgents = computed(() => healthyAgents.value.filter((a) => a.entryType !== "client"));
 const clientAgents = computed(() => healthyAgents.value.filter((a) => a.entryType === "client"));
-const selectedId = computed(() => chatStore.selectedAgent?.agentId ?? "");
+const selectedId = computed(() => chatStore.selectedClient?.agentId ?? "");
 
 function onSelect(e: Event) {
   const id = (e.target as HTMLSelectElement).value;
   const agent = id ? registryStore.getAgent(id) : null;
-  chatStore.selectAgent(agent ?? null);
+  chatStore.selectClient(agent ?? null);
 }
 </script>
 

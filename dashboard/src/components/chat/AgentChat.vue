@@ -3,7 +3,7 @@
     <div class="panel-header">
       <div class="panel-heading">
         <span class="panel-label">Chat</span>
-        <span class="panel-sublabel">direct task conversation with a runnable agent</span>
+        <span class="panel-sublabel">channel composer for Claude client sessions</span>
       </div>
       <button v-if="messages.length > 0" class="btn-ghost" @click="chatStore.clearMessages()">
         clear
@@ -14,17 +14,17 @@
       <AgentSelector />
     </div>
 
-    <div v-if="!selectedAgent" class="empty-state">
+    <div v-if="!selectedClient" class="empty-state">
       <div class="empty-state__icon">⬡</div>
-      <p class="empty-state__title">Select an agent</p>
-      <p class="empty-state__body">Use this panel for skill agents only. Claude clients are channel targets and should be contacted through the messaging flow, not direct chat.</p>
+      <p class="empty-state__title">Select a Claude client</p>
+      <p class="empty-state__body">This panel is now dedicated to channel messaging. Runnable agents stay in the trace and ask-agent flows, but chat here only targets connected Claude sessions.</p>
     </div>
 
     <div v-else ref="messagesEl" class="scrollable chat-list">
       <div v-if="messages.length === 0" class="empty-state">
         <div class="empty-state__icon">✦</div>
-        <p class="empty-state__title">Ready for {{ selectedAgent.projectName }}</p>
-        <p class="empty-state__body">Try a concrete task such as “list files”, “find endpoints” or “run tests” so the agent can respond with a structured result.</p>
+        <p class="empty-state__title">Ready for {{ selectedClient.projectName }}</p>
+        <p class="empty-state__body">Send the first channel message to start a conversation. Replies from that Claude session will stream back here when they arrive through the registry.</p>
       </div>
       <ChatMessage v-for="msg in messages" :key="msg.id" :message="msg" />
     </div>
@@ -36,9 +36,9 @@
     <div class="chat-box">
       <div class="chat-box__head">
         <div class="panel-heading chat-compose-heading">
-          <span class="field-note">Compose task</span>
+          <span class="field-note">Compose message</span>
           <span class="panel-sublabel chat-compose-subtitle">
-            {{ selectedAgent ? `Targeting ${selectedAgent.projectName}` : "Pick an agent above" }}
+            {{ selectedClient ? `Targeting ${selectedClient.projectName}` : "Pick a Claude client above" }}
           </span>
         </div>
       </div>
@@ -48,8 +48,8 @@
           v-model="input"
           rows="1"
           class="chat-textarea"
-          placeholder="Describe the task you want the agent to perform..."
-          :disabled="!selectedAgent || isStreaming"
+          placeholder="Write the channel message you want to push to the selected Claude session..."
+          :disabled="!selectedClient || isStreaming"
           @focus="focused = true"
           @blur="focused = false"
           @keydown.enter.exact.prevent="submit"
@@ -61,7 +61,7 @@
           <span v-else>↑</span>
         </button>
       </div>
-      <p class="chat-box__hint">Enter to send · Shift+Enter for newline</p>
+      <p class="chat-box__hint">Enter to send · Shift+Enter for newline · the panel stays on one conversation thread per selected client</p>
     </div>
   </div>
 </template>
@@ -79,10 +79,10 @@ const messagesEl = ref<HTMLElement | null>(null);
 const focused = ref(false);
 
 const messages = computed(() => chatStore.messages);
-const selectedAgent = computed(() => chatStore.selectedAgent);
+const selectedClient = computed(() => chatStore.selectedClient);
 const isStreaming = computed(() => chatStore.isStreaming);
 const error = computed(() => chatStore.error);
-const canSend = computed(() => !!selectedAgent.value && !isStreaming.value && input.value.trim().length > 0);
+const canSend = computed(() => !!selectedClient.value && !isStreaming.value && input.value.trim().length > 0);
 
 async function submit() {
   if (!canSend.value) return;

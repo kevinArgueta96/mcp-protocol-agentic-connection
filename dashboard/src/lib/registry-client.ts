@@ -1,7 +1,7 @@
 // REST client for the registry API
 const BASE = import.meta.env.VITE_REGISTRY_URL ?? "http://localhost:4999";
 
-import type { ChannelConversationListEntry, ChannelConversationSnapshot, RegistryAgent } from "@/types";
+import type { ChannelConversationListEntry, ChannelConversationSnapshot, ChannelMessagePayload, RegistryAgent } from "@/types";
 
 export async function fetchAgents(filter?: {
   skill?: string;
@@ -47,4 +47,40 @@ export async function fetchChannelConversation(conversationId: string): Promise<
   const res = await fetch(`${BASE}/channel/conversations/${encodeURIComponent(conversationId)}`);
   if (!res.ok) throw new Error(`Conversation not found: ${conversationId}`);
   return res.json() as Promise<ChannelConversationSnapshot>;
+}
+
+export async function createChannelMessage(input: {
+  conversationId?: string;
+  replyTo?: string;
+  fromAgentId: string;
+  fromAgentName?: string;
+  toAgentId: string;
+  taskId?: string;
+  kind?: string;
+  content: string;
+  meta?: Record<string, unknown>;
+  requiresAck?: boolean;
+  expectsResponse?: boolean;
+  expiresAt?: number;
+}): Promise<ChannelMessagePayload> {
+  const res = await fetch(`${BASE}/channel/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      conversationId: input.conversationId,
+      replyTo: input.replyTo,
+      fromAgentId: input.fromAgentId,
+      fromAgentName: input.fromAgentName,
+      toAgentId: input.toAgentId,
+      taskId: input.taskId,
+      kind: input.kind ?? "chat",
+      content: input.content,
+      meta: input.meta,
+      requiresAck: input.requiresAck ?? true,
+      expectsResponse: input.expectsResponse ?? true,
+      expiresAt: input.expiresAt,
+    }),
+  });
+  if (!res.ok) throw new Error(`Channel message failed: ${res.status}`);
+  return res.json() as Promise<ChannelMessagePayload>;
 }

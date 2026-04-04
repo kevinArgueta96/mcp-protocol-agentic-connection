@@ -1,5 +1,14 @@
 <template>
-  <div v-if="message.role === 'tool'" class="tool-card fade-in">
+  <div v-if="message.role === 'system'" class="tool-card fade-in system-card">
+    <div class="tool-card__title system-card__title">
+      <span class="tool-avatar">!</span>
+      <span>channel status</span>
+    </div>
+    <p class="chat-copy system-card__copy">{{ message.content }}</p>
+    <span class="message-time tool-time">{{ time }}</span>
+  </div>
+
+  <div v-else-if="message.role === 'tool'" class="tool-card fade-in">
     <div class="tool-card__title">
       <span class="tool-avatar">T</span>
       <span>{{ message.toolCall?.name ?? "tool" }}</span>
@@ -24,6 +33,9 @@
       {{ message.role === "user" ? "U" : "A" }}
     </span>
     <div class="chat-bubble" :class="message.role === 'user' ? 'chat-bubble--user' : 'chat-bubble--agent'">
+      <div v-if="message.deliveryState" class="chat-message-state">
+        <span class="chip" :class="deliveryChipClass">{{ deliveryLabel }}</span>
+      </div>
       <span v-if="message.streaming && !message.content" class="stream-cursor cursor-blink" />
       <pre v-else-if="isJson" class="message-pre">{{ message.content }}</pre>
       <p v-else class="chat-copy">{{ message.content }}</p>
@@ -60,9 +72,40 @@ const resultDisplay = computed(() => {
   if (r === undefined) return "";
   return typeof r === "string" ? r : JSON.stringify(r, null, 2);
 });
+
+const deliveryLabel = computed(() => {
+  if (!props.message.deliveryState) return "";
+  return props.message.deliveryState.replaceAll("_", " ");
+});
+
+const deliveryChipClass = computed(() => {
+  switch (props.message.deliveryState) {
+    case "answered":
+      return "chip-emerald";
+    case "failed":
+      return "chip-red";
+    case "displayed_to_client":
+      return "chip-cyan";
+    default:
+      return "chip-amber";
+  }
+});
 </script>
 
 <style scoped>
+.system-card {
+  background: rgba(255, 197, 108, 0.08);
+  border: 1px solid rgba(255, 197, 108, 0.22);
+}
+
+.system-card__title {
+  color: #8b5a00;
+}
+
+.system-card__copy {
+  margin-top: 10px;
+}
+
 .stream-cursor {
   display: inline-block;
   width: 7px;
@@ -104,5 +147,9 @@ const resultDisplay = computed(() => {
 
 .stream-copy {
   margin-left: 2px;
+}
+
+.chat-message-state {
+  margin-bottom: 8px;
 }
 </style>
