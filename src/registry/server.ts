@@ -5,8 +5,15 @@ import express from "express";
 import { WebSocketServer, WebSocket } from "ws";
 import { AgentStore } from "./store.js";
 import { RegistryEventBus } from "./events.js";
+import { ChannelStore } from "./channel-store.js";
 import type { RegistryEvent } from "./events.js";
-import type { AgentRegistration, AgentListFilter, AgentMessage } from "../types/messages.js";
+import type {
+  AgentRegistration,
+  AgentListFilter,
+  AgentMessage,
+  ChannelAck,
+  ChannelMessage,
+} from "../types/messages.js";
 
 const REGISTRY_PORT = 4999;
 const HEALTH_CHECK_INTERVAL_MS = 60_000;
@@ -16,6 +23,7 @@ const dashboardDir = new URL("../../dashboard/dist", import.meta.url).pathname;
 export class RegistryServer {
   private eventBus = new RegistryEventBus();
   private store = new AgentStore(this.eventBus);
+  private channelStore = new ChannelStore();
   private app = express();
   private httpServer: ReturnType<typeof createServer> | null = null;
   private healthCheckTimer: NodeJS.Timeout | null = null;
@@ -177,11 +185,19 @@ export class RegistryServer {
 
     // Push a notification to the Claude terminal via claude/channel
     this.app.post("/notify-claude", (req, res) => {
-      const { agentId, agentName, content, meta } = req.body as {
+      const { agentId, agentName, toAgentId, content, meta, conversationId, messageId, replyTo, taskId, requiresAck, expectsResponse, expiresAt } = req.body as {
         agentId?: string;
         agentName?: string;
+        toAgentId?: string;
         content: string;
         meta?: Record<string, unknown>;
+        conversationId?: string;
+        messageId?: string;
+        replyTo?: string;
+        taskId?: string;
+        requiresAck?: boolean;
+        expectsResponse?: boolean;
+        expiresAt?: number;
       };
 
       if (!content) {
@@ -189,13 +205,136 @@ export class RegistryServer {
         return;
       }
 
+      const message = this.channelStore.createMessage({
+        conversationId,
+        messageId,
+        replyTo,
+        fromAgentId: agentId ?? "unknown",
+        fromAgentName: agentName,
+        taskId,
+        toAgentId: toAgentId ?? "claude",
+        kind: "chat",
+        content,
+        meta,
+        expiresAt,
+        requiresAck,
+        expectsResponse,
+      });
+
+      this.eventBus.broadcast({
+        type: "channel.message",
+        timestamp: new Date().toISOString(),
+        data: message,
+      });
+
+      // Backward-compatible event for older listeners
       this.eventBus.broadcast({
         type: "claude.notify",
         timestamp: new Date().toISOString(),
-        data: { agentId, agentName, content, meta },
+        data: { agentId, agentName, content, meta, conversationId: message.conversationId, messageId: message.messageId },
       });
 
-      res.json({ ok: true });
+      res.json({ ok: true, conversationId: message.conversationId, messageId: message.messageId });
+    });
+
+    this.app.post("/channel/messages", (req, res) => {
+      const body = req.body as Partial<ChannelMessage>;
+
+      if (!body.content || !body.fromAgentId || !body.kind) {
+        res.status(400).json({ error: "fromAgentId, kind and content are required" });
+        return;
+      }
+
+      const message = this.channelStore.createMessage({
+        conversationId: body.conversationId,
+        messageId: body.messageId,
+        replyTo: body.replyTo,
+        fromAgentId: body.fromAgentId,
+        fromAgentName: body.fromAgentName,
+        toAgentId: body.toAgentId,
+        taskId: body.taskId,
+        kind: body.kind,
+        content: body.content,
+        meta: body.meta,
+        createdAt: body.createdAt,
+        expiresAt: body.expiresAt,
+        attemptCount: body.attemptCount,
+        requiresAck: body.requiresAck,
+        expectsResponse: body.expectsResponse,
+      });
+
+      this.eventBus.broadcast({
+        type: "channel.message",
+        timestamp: new Date().toISOString(),
+        data: message,
+      });
+
+      res.status(201).json(message);
+    });
+
+    this.app.post("/channel/acks", (req, res) => {
+      const body = req.body as ChannelAck;
+      if (!body.conversationId || !body.messageId || !body.state || !body.actorId || !body.actorType) {
+        res.status(400).json({ error: "conversationId, messageId, state, actorId and actorType are required" });
+        return;
+      }
+
+      const ack = this.channelStore.addAck({
+        ...body,
+        timestamp: body.timestamp ?? Date.now(),
+      });
+
+      this.eventBus.broadcast({
+        type: "channel.ack",
+        timestamp: new Date().toISOString(),
+        data: ack,
+      });
+
+      res.status(201).json(ack);
+    });
+
+    this.app.get("/channel/conversations/:id", (req, res) => {
+      const snapshot = this.channelStore.getConversation(req.params.id);
+      if (!snapshot) {
+        res.status(404).json({ error: "Conversation not found" });
+        return;
+      }
+      res.json(snapshot);
+    });
+
+    this.app.get("/channel/conversations", (req, res) => {
+      const pendingOnly = req.query.pending === "true";
+      res.json(this.channelStore.listConversations({ pendingOnly }));
+    });
+
+    this.app.post("/channel/messages/:conversationId/:messageId/retry", (req, res) => {
+      const retried = this.channelStore.retryMessage(req.params.conversationId, req.params.messageId);
+      if (!retried) {
+        res.status(404).json({ error: "Message not found" });
+        return;
+      }
+
+      this.eventBus.broadcast({
+        type: "channel.message",
+        timestamp: new Date().toISOString(),
+        data: retried,
+      });
+
+      this.eventBus.broadcast({
+        type: "channel.ack",
+        timestamp: new Date().toISOString(),
+        data: this.channelStore.addAck({
+          conversationId: retried.conversationId,
+          messageId: retried.messageId,
+          state: "queued",
+          actorId: "registry",
+          actorType: "registry",
+          timestamp: Date.now(),
+          detail: `Retry attempt ${retried.attemptCount ?? 1}`,
+        }),
+      });
+
+      res.json(retried);
     });
 
     // Send message to a specific agent via registry relay

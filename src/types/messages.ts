@@ -45,3 +45,60 @@ export interface AgentMessage {
   payload: unknown;
   timestamp: number;
 }
+
+export type ChannelMessageKind =
+  | "chat"
+  | "task_request"
+  | "task_result"
+  | "ack"
+  | "error"
+  | "presence";
+
+export type ChannelDeliveryState =
+  | "queued"
+  | "delivered_to_bridge"
+  | "displayed_to_client"
+  | "answered"
+  | "failed";
+
+export interface ChannelMessage {
+  conversationId: string;
+  messageId: string;
+  replyTo?: string;
+  fromAgentId: string;
+  fromAgentName?: string;
+  toAgentId?: string;
+  taskId?: string;
+  kind: ChannelMessageKind;
+  content: string;
+  meta?: Record<string, unknown>;
+  createdAt: number;
+  expiresAt?: number;
+  attemptCount?: number;
+  requiresAck?: boolean;
+  expectsResponse?: boolean;
+}
+
+export interface ChannelAck {
+  conversationId: string;
+  messageId: string;
+  state: ChannelDeliveryState;
+  actorId: string;
+  actorType: "registry" | "bridge" | "client" | "agent";
+  timestamp: number;
+  detail?: string;
+}
+
+export interface ChannelConversationSnapshot {
+  conversationId: string;
+  messages: ChannelMessage[];
+  acknowledgements: ChannelAck[];
+}
+
+export interface ChannelConversationListEntry {
+  conversationId: string;
+  lastMessage: ChannelMessage;
+  pendingReply: boolean;
+  expired: boolean;
+  lastAckState?: ChannelDeliveryState;
+}

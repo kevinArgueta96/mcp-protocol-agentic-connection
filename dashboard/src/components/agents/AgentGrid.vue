@@ -52,7 +52,7 @@ import { useRegistryStore } from "@/stores/registry";
 import AgentCard from "./AgentCard.vue";
 
 const store = useRegistryStore();
-const agentList = computed(() => store.agentList.filter(a => a.healthy));
+const agentList = computed(() => store.agentList);
 const clientList = computed(() => agentList.value.filter((a) => a.entryType === "client"));
 const skillAgentList = computed(() => agentList.value.filter((a) => a.entryType !== "client"));
 </script>

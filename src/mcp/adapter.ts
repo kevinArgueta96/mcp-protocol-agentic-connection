@@ -19,7 +19,7 @@ import { RegistryClient } from "../client/registry-client.js";
 import { A2AClient } from "../client/a2a-client.js";
 import { RegistryServer } from "../registry/server.js";
 import { AgentServer } from "../agent/server.js";
-import type { RegistryEntry, AgentMessage } from "../types/messages.js";
+import type { RegistryEntry, AgentMessage, ChannelMessage } from "../types/messages.js";
 import type { Task, Part, Message } from "../types/a2a.js";
 import { WebSocket } from "ws";
 
@@ -85,9 +85,13 @@ function formatAgentsSummary(agents: RegistryEntry[]): string {
   if (agents.length === 0) {
     return "No agents currently connected. Start one with: agent-bridge start <project-path>";
   }
+  const runnableAgents = agents.filter((a) => a.entryType !== "client" || a.card.skills.length > 0);
+  const clients = agents.filter((a) => a.entryType === "client" && a.card.skills.length === 0);
+
   return [
-    `${agents.length} agent(s) connected via agent-bridge:\n`,
-    ...agents.map((a) => {
+    `${agents.length} entry(ies) connected via agent-bridge:\n`,
+    runnableAgents.length > 0 ? "Agents with skills:\n" : "Agents with skills:\n  (none)",
+    ...runnableAgents.map((a) => {
       const skills = a.card.skills.map((s) => `    • ${s.id}: ${s.description}`).join("\n");
       return [
         `Agent: ${a.name}  [${a.agentId.slice(0, 8)}]`,
@@ -97,6 +101,15 @@ function formatAgentsSummary(agents: RegistryEntry[]): string {
         `  Skills:\n${skills}`,
       ].join("\n");
     }),
+    "",
+    clients.length > 0 ? "Claude clients via channels:\n" : "Claude clients via channels:\n  (none)",
+    ...clients.map((a) => [
+      `Client: ${a.name}  [${a.agentId.slice(0, 8)}]`,
+      `  Project: ${a.projectPath}`,
+      `  Client:  ${a.clientInfo?.clientName ?? "unknown"} ${a.clientInfo?.clientVersion ?? ""}`.trimEnd(),
+      `  Status:  ${a.healthy ? "healthy" : "unhealthy"}`,
+      "  Use:     message_claude_client",
+    ].join("\n")),
   ].join("\n");
 }
 
@@ -118,7 +131,7 @@ export class McpAgentBridge {
     timer: NodeJS.Timeout;
   }>();
   private agentToolMap = new Map<string, RegisteredTool[]>();
-  private pendingPermissions = new Set<string>();
+  private recentChannelMessages = new Map<string, ChannelMessage>();
 
   constructor(options: McpAdapterOptions = {}) {
     this.options = {
@@ -133,13 +146,13 @@ export class McpAgentBridge {
     this.server = new McpServer(
       { name: "agent-bridge", version: "0.1.0" },
       {
-        capabilities: { experimental: { "claude/channel": {}, "claude/channel/permission": {} } },
+        capabilities: { experimental: { "claude/channel": {} } },
         instructions:
           "You are connected to agent-bridge, a multi-agent communication hub. " +
           "Connected agents appear as <channel source=\"agent-bridge\" from_agent=\"<name>\" agent_id=\"<id>\"> events when they send you a message. " +
-          "Use list_agents to discover available agents, agent_health to check if they are alive, " +
-          "and ask_agent to send tasks or reply to incoming messages. " +
-          "Always use ask_agent (with the originating agent_id) to respond to channel events.",
+          "Use list_agents to discover available agents and Claude clients, agent_health to check runnable agents, " +
+          "ask_agent for A2A agents with skills/HTTP endpoints, and message_claude_client for passive Claude client sessions over channels. " +
+          "Use reply to respond to incoming channel events.",
       },
     );
   }
@@ -164,9 +177,6 @@ export class McpAgentBridge {
 
     // ── 1c. Connect WS to registry for message relay ──────────────────────
     this.connectRegistryWs();
-
-    // ── 1d. Register permission relay handler ─────────────────────────────
-    this.setupPermissionRelay();
 
     // ── 2. Register all tools, resources, prompts ──────────────────────────
     this.registerMetaTools();
@@ -254,17 +264,80 @@ export class McpAgentBridge {
             if (agentId) this.setAgentToolsEnabled(agentId, true);
           }
 
-          // ── Push notifications from agents to Claude terminal ─────────────
+          // ── Conversational channel messages ──────────────────────────────
+          if (msg.type === "channel.message" && msg.data) {
+            const channelMessage = msg.data as ChannelMessage;
+            this.recentChannelMessages.set(channelMessage.messageId, channelMessage);
+            setTimeout(() => this.recentChannelMessages.delete(channelMessage.messageId), 3_600_000);
+
+            const isForThisClient =
+              !channelMessage.toAgentId ||
+              channelMessage.toAgentId === "claude" ||
+              (this.clientAgentId != null && channelMessage.toAgentId === this.clientAgentId);
+
+            if (isForThisClient) {
+              void this.postChannelAck({
+                conversationId: channelMessage.conversationId,
+                messageId: channelMessage.messageId,
+                state: "delivered_to_bridge",
+                actorId: this.clientAgentId ?? "mcp-adapter",
+                actorType: "bridge",
+                detail: "Message received by MCP bridge",
+              });
+
+              void this.server.server.notification({
+                method: "notifications/claude/channel",
+                params: {
+                  content: channelMessage.content,
+                  meta: {
+                    from_agent: channelMessage.fromAgentId,
+                    ...(channelMessage.fromAgentName ? { agent_name: channelMessage.fromAgentName } : {}),
+                    conversation_id: channelMessage.conversationId,
+                    message_id: channelMessage.messageId,
+                    ...(channelMessage.replyTo ? { reply_to: channelMessage.replyTo } : {}),
+                    ...(channelMessage.taskId ? { task_id: channelMessage.taskId } : {}),
+                    kind: channelMessage.kind,
+                    ...stringifyMeta(channelMessage.meta),
+                  },
+                },
+              }).then(() => this.postChannelAck({
+                conversationId: channelMessage.conversationId,
+                messageId: channelMessage.messageId,
+                state: "displayed_to_client",
+                actorId: this.clientAgentId ?? "mcp-adapter",
+                actorType: "bridge",
+                detail: "Message forwarded to Claude channel",
+              })).catch(() => {
+                // Ignore notification failures; WS relay remains alive.
+              });
+            }
+          }
+
+          // Backward-compatible path for older notify payloads
           if (msg.type === "claude.notify" && msg.data) {
-            const notify = msg.data as { agentId?: string; agentName?: string; content: string; meta?: Record<string, unknown> };
+            const notify = msg.data as { agentId?: string; agentName?: string; content: string; meta?: Record<string, unknown>; conversationId?: string; messageId?: string };
+            const messageId = notify.messageId ?? randomUUID();
+            const conversationId = notify.conversationId ?? randomUUID();
+            this.recentChannelMessages.set(messageId, {
+              conversationId,
+              messageId,
+              fromAgentId: notify.agentId ?? "unknown",
+              fromAgentName: notify.agentName,
+              toAgentId: "claude",
+              kind: "chat",
+              content: notify.content,
+              meta: notify.meta,
+              createdAt: Date.now(),
+            });
             void this.server.server.notification({
               method: "notifications/claude/channel",
               params: {
                 content: notify.content,
-                // source is set automatically by Claude Code from the MCP server name
                 meta: {
                   ...(notify.agentId ? { from_agent: notify.agentId } : {}),
                   ...(notify.agentName ? { agent_name: notify.agentName } : {}),
+                  conversation_id: conversationId,
+                  message_id: messageId,
                   ...stringifyMeta(notify.meta),
                 },
               },
@@ -275,18 +348,15 @@ export class McpAgentBridge {
           if (msg.type === "agent.message" && msg.data) {
             const agentMsg = msg.data as AgentMessage;
 
-            // Incoming request from another agent → check for permission verdict first
             if (agentMsg.type === "task.request") {
+              // The registry broadcasts agent.message events to every WS client.
+              // Only surface requests that are explicitly addressed to THIS Claude client.
+              if (!this.clientAgentId || agentMsg.toAgentId !== this.clientAgentId) {
+                return;
+              }
+
               const payload = agentMsg.payload as { message?: string; skillId?: string } | null;
               const rawMessage = payload?.message ?? "";
-
-              // Intercept "yes <id>" / "no <id>" verdict replies — don't forward to Claude
-              const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i;
-              const verdictMatch = PERMISSION_REPLY_RE.exec(rawMessage);
-              if (verdictMatch) {
-                const behavior = verdictMatch[1].toLowerCase().startsWith("y") ? "allow" : "deny";
-                void this.sendPermissionVerdict(verdictMatch[2].toLowerCase(), behavior);
-              } else {
               const content = rawMessage || JSON.stringify(payload);
               void this.server.server.notification({
                 method: "notifications/claude/channel",
@@ -299,7 +369,6 @@ export class McpAgentBridge {
                   },
                 },
               });
-              } // end else (not a verdict)
             }
 
             // Response to a pending request → resolve the promise
@@ -343,6 +412,69 @@ export class McpAgentBridge {
     }, 5_000);
   }
 
+  private async postChannelAck(ack: {
+    conversationId: string;
+    messageId: string;
+    state: "queued" | "delivered_to_bridge" | "displayed_to_client" | "answered" | "failed";
+    actorId: string;
+    actorType: "registry" | "bridge" | "client" | "agent";
+    detail?: string;
+  }): Promise<void> {
+    try {
+      await fetch(`${this.options.registryUrl}/channel/acks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...ack,
+          timestamp: Date.now(),
+        }),
+      });
+    } catch {
+      // Ignore ack failures; conversation can continue without them.
+    }
+  }
+
+  private async createChannelMessage(message: {
+    conversationId?: string;
+    replyTo?: string;
+    toAgentId?: string;
+    taskId?: string;
+    kind?: "chat" | "task_request" | "task_result" | "ack" | "error" | "presence";
+    content: string;
+    meta?: Record<string, unknown>;
+    expectsResponse?: boolean;
+    requiresAck?: boolean;
+    expiresAt?: number;
+  }): Promise<ChannelMessage> {
+    const fromAgentId = this.clientAgentId ?? "mcp-adapter";
+    const body = {
+      conversationId: message.conversationId,
+      replyTo: message.replyTo,
+      fromAgentId,
+      fromAgentName: this.getClientDisplayName(),
+      toAgentId: message.toAgentId,
+      taskId: message.taskId,
+      kind: message.kind ?? "chat",
+      content: message.content,
+      meta: message.meta,
+      expectsResponse: message.expectsResponse,
+      requiresAck: message.requiresAck,
+      expiresAt: message.expiresAt,
+    };
+
+    const response = await fetch(`${this.options.registryUrl}/channel/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Channel message failed: ${response.status}`);
+    }
+
+    return response.json() as Promise<ChannelMessage>;
+  }
+
   /** Send a message via WS relay and wait for response */
   private sendMessageViaWs(targetAgentId: string, message: string, options?: {
     skillId?: string;
@@ -384,64 +516,6 @@ export class McpAgentBridge {
         data: agentMessage,
       }));
     });
-  }
-
-  // ── Permission relay ──────────────────────────────────────────────────────
-
-  private setupPermissionRelay(): void {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const innerServer = (this.server as unknown as { server: any }).server;
-    if (!innerServer?.setNotificationHandler) return;
-
-    // setNotificationHandler requires a Zod schema with z.literal() on the method field
-    const PermissionRequestSchema = z.object({
-      method: z.literal("notifications/claude/channel/permission_request"),
-      params: z.object({
-        request_id: z.string(),
-        tool_name: z.string(),
-        description: z.string(),
-        input_preview: z.string().optional(),
-      }),
-    });
-
-    // Claude Code sends this when a tool approval dialog opens
-    innerServer.setNotificationHandler(
-      PermissionRequestSchema,
-      async (notification: { params: { request_id: string; tool_name: string; description: string; input_preview?: string } }) => {
-        const { request_id, tool_name, description } = notification.params;
-        this.pendingPermissions.add(request_id);
-
-        // Forward to all connected agents via notify-claude
-        const content =
-          `Claude wants to run **${tool_name}**: ${description}\n\n` +
-          `Reply "yes ${request_id}" or "no ${request_id}" to approve or deny.`;
-
-        try {
-          await fetch(`${this.options.registryUrl}/notify-claude`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              content,
-              meta: { type: "permission_request", request_id, tool_name },
-            }),
-          });
-        } catch {
-          // Registry unreachable — local terminal dialog still open
-        }
-      }
-    );
-  }
-
-  /** Send a permission verdict to Claude Code */
-  private async sendPermissionVerdict(requestId: string, behavior: "allow" | "deny"): Promise<void> {
-    if (!this.pendingPermissions.has(requestId)) return;
-    this.pendingPermissions.delete(requestId);
-    try {
-      await this.server.server.notification({
-        method: "notifications/claude/channel/permission",
-        params: { request_id: requestId, behavior },
-      });
-    } catch { /* ignore */ }
   }
 
   // ── Infrastructure bootstrap ───────────────────────────────────────────────
@@ -682,7 +756,8 @@ export class McpAgentBridge {
           "Send a message or task to any connected agent. " +
           "Tries WebSocket relay first for real-time communication, falls back to HTTP. " +
           "Optionally specify a skillId to invoke a specific capability. " +
-          "Use list_agents to see available agents.",
+          "Use this only with runnable agents that expose skills/HTTP endpoints. " +
+          "For Claude client sessions discovered in list_agents, use message_claude_client instead.",
         inputSchema: {
           agentId: z.string().describe("Target agent ID or name (from list_agents)"),
           message: z.string().describe("The message, question, or task to send"),
@@ -698,6 +773,15 @@ export class McpAgentBridge {
       async ({ agentId, message, skillId, input, timeout, waitForResponse = true }) => {
         try {
           const entry = await this.resolveAgent(agentId);
+          if (entry.entryType === "client" && entry.card.skills.length === 0) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `Target "${entry.name}" is a Claude client session, not a runnable A2A agent. Use message_claude_client with clientId=${entry.agentId}.`,
+              }],
+              isError: true,
+            };
+          }
           const taskId = randomUUID();
           await this.emitTraceEvent({ agentId: entry.agentId, agentName: entry.name, taskId, state: "submitted", skillId });
 
@@ -753,6 +837,62 @@ export class McpAgentBridge {
     );
 
     this.server.registerTool(
+      "message_claude_client",
+      {
+        description:
+          "Send a channel message to a specific Claude Code client session. " +
+          "Use this for Claude-to-Claude or agent-to-Claude conversations over channels. " +
+          "Do not use ask_agent for passive client entries.",
+        inputSchema: {
+          clientId: z.string().optional().describe("Target Claude client agentId"),
+          project: z.string().optional().describe("Project name or path used to resolve the Claude client"),
+          message: z.string().describe("Message to send over the Claude channel"),
+          conversationId: z.string().optional().describe("Conversation ID to continue"),
+          replyTo: z.string().optional().describe("Message ID this replies to"),
+          taskId: z.string().optional().describe("Optional task ID associated with the channel conversation"),
+          expectsResponse: z.boolean().optional().describe("Whether the sender expects a reply"),
+          timeoutMs: z.coerce.number().optional().describe("How long the receiver may take to reply before the message expires"),
+        },
+      },
+      async ({ clientId, project, message, conversationId, replyTo, taskId, expectsResponse = false, timeoutMs }) => {
+        try {
+          const client = await this.resolveClaudeClient({ clientId, project });
+          const channelMessage = await this.createChannelMessage({
+            conversationId,
+            replyTo,
+            toAgentId: client.agentId,
+            taskId,
+            kind: "chat",
+            content: message,
+            expectsResponse,
+            requiresAck: true,
+            expiresAt: expectsResponse ? Date.now() + (timeoutMs ?? 300_000) : undefined,
+            meta: {
+              targetClientId: client.agentId,
+              targetProject: client.projectPath,
+            },
+          });
+
+          return {
+            content: [{
+              type: "text" as const,
+              text:
+                `Channel message sent to ${client.name}\n` +
+                `clientId=${client.agentId}\n` +
+                `conversationId=${channelMessage.conversationId}\n` +
+                `messageId=${channelMessage.messageId}`,
+            }],
+          };
+        } catch (err) {
+          return {
+            content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+            isError: true,
+          };
+        }
+      }
+    );
+
+    this.server.registerTool(
       "reply",
       {
         description:
@@ -760,42 +900,55 @@ export class McpAgentBridge {
           "Use this when you receive a <channel> event and want to respond to the originating agent. " +
           "This is a shorthand for ask_agent focused on two-way channel communication.",
         inputSchema: {
-          agentId: z.string().describe("Agent ID from the channel event (agent_id attribute)"),
+          agentId: z.string().optional().describe("Agent ID from the channel event. Optional when replyTo or conversationId is provided."),
           message: z.string().describe("Your reply message"),
-          skillId: z.string().optional().describe("Skill to invoke on the target agent"),
+          conversationId: z.string().optional().describe("Conversation ID from the channel event"),
+          replyTo: z.string().optional().describe("Message ID you are replying to"),
+          taskId: z.string().optional().describe("Task ID associated with the conversation"),
+          skillId: z.string().optional().describe("Optional fallback skill when using task invocation"),
         },
       },
-      async ({ agentId, message, skillId }) => {
+      async ({ agentId, message, conversationId, replyTo, taskId, skillId }) => {
         try {
-          const entry = await this.resolveAgent(agentId);
-
-          if (this.registryWs?.readyState === WebSocket.OPEN) {
-            try {
-              const result = await this.sendMessageViaWs(entry.agentId, message, { skillId, timeoutMs: 60_000 });
-              const rpcResult = result as { result?: unknown; error?: { message: string } };
-              if (rpcResult?.error) {
-                return { content: [{ type: "text" as const, text: `Agent error: ${rpcResult.error.message}` }], isError: true };
-              }
-              const task = rpcResult?.result ?? result;
-              return { content: [{ type: "text" as const, text: extractTaskResponse(task) }] };
-            } catch {
-              // fallthrough to HTTP
-            }
-          }
-
-          if (!entry.url) {
+          const knownMessage = replyTo ? this.recentChannelMessages.get(replyTo) : undefined;
+          const inferredAgentId = agentId ?? knownMessage?.fromAgentId;
+          if (!inferredAgentId) {
             return {
-              content: [{ type: "text" as const, text: `Agent "${entry.name}" has no HTTP endpoint. WS relay unavailable.` }],
+              content: [{
+                type: "text" as const,
+                text: "reply needs either agentId or a known replyTo messageId from the channel event.",
+              }],
               isError: true,
             };
           }
-
-          const client = new A2AClient(entry.url);
-          const task = await client.sendTask({
-            message: { role: "user", parts: [{ type: "text", text: message }] },
-            metadata: skillId ? { skillId } : {},
+          const entry = await this.resolveAgent(inferredAgentId);
+          const channelMessage = await this.createChannelMessage({
+            conversationId: conversationId ?? knownMessage?.conversationId,
+            replyTo: replyTo ?? knownMessage?.messageId,
+            toAgentId: entry.agentId,
+            taskId: taskId ?? knownMessage?.taskId,
+            kind: "chat",
+            content: message,
+            meta: skillId ? { skillId } : undefined,
+            requiresAck: true,
+            expectsResponse: false,
           });
-          return { content: [{ type: "text" as const, text: extractTaskResponse(task) }] };
+
+          await this.postChannelAck({
+            conversationId: channelMessage.conversationId,
+            messageId: channelMessage.messageId,
+            state: "answered",
+            actorId: this.clientAgentId ?? "mcp-adapter",
+            actorType: "client",
+            detail: "Reply sent from Claude channel",
+          });
+
+          return {
+            content: [{
+              type: "text" as const,
+              text: `Reply sent to ${entry.name}\nconversationId=${channelMessage.conversationId}\nmessageId=${channelMessage.messageId}`,
+            }],
+          };
         } catch (err) {
           return {
             content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
@@ -952,6 +1105,13 @@ export class McpAgentBridge {
       case "notify-claude":
         return {
           content: z.string().describe("Message content to push to the Claude terminal"),
+          targetClientId: z.string().optional().describe("Target Claude client agentId"),
+          targetProject: z.string().optional().describe("Project path or name used to resolve the target Claude client"),
+          conversationId: z.string().optional().describe("Conversation ID to continue"),
+          replyTo: z.string().optional().describe("Message ID this message replies to"),
+          requiresAck: z.boolean().optional().describe("Whether to request delivery acknowledgements"),
+          expectsResponse: z.boolean().optional().describe("Whether this message expects a reply"),
+          responseTimeoutMs: z.number().optional().describe("How long to wait for a reply before expiring"),
           meta: z.record(z.unknown()).optional().describe("Optional metadata to attach"),
         };
       case "code-review":
@@ -1038,7 +1198,8 @@ export class McpAgentBridge {
               "\n## Available MCP Tools\n",
               "- **list_agents** — Refresh and list all connected agents",
               "- **agent_health** — Check if a specific agent is alive",
-              "- **ask_agent** — Send any message/task to an agent",
+              "- **ask_agent** — Send any message/task to a runnable A2A agent",
+              "- **message_claude_client** — Send a channel message to a Claude client session",
               "- **reply** — Reply to an incoming channel event from an agent",
               "- **project_info** — Get project metadata from an agent",
               "- **project_files** — List files in a remote project",
@@ -1111,6 +1272,27 @@ export class McpAgentBridge {
       if (!anyMatch) throw new Error(`Agent "${agentId}" not found. Use list_agents to see available agents.`);
       return anyMatch;
     }
+  }
+
+  private async resolveClaudeClient(params: { clientId?: string; project?: string }): Promise<RegistryEntry> {
+    const entry = await this.registry.findClaudeClient({
+      clientId: params.clientId,
+      project: params.project,
+    });
+
+    if (!entry) {
+      throw new Error(
+        params.clientId
+          ? `Claude client "${params.clientId}" not found. Use list_agents with includeClients=true.`
+          : `No Claude client found for project "${params.project}". Use list_agents with includeClients=true.`
+      );
+    }
+
+    if (entry.entryType !== "client") {
+      throw new Error(`Target "${entry.name}" is not a Claude client session.`);
+    }
+
+    return entry;
   }
 
   // ── HTTP transport ─────────────────────────────────────────────────────────

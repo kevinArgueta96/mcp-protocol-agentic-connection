@@ -1,7 +1,8 @@
 // Shared types for the agent-bridge dashboard
 
 export type AgentState = "healthy" | "unhealthy" | "unknown";
-export type TaskState = "submitted" | "working" | "completed" | "failed" | "canceled";
+export type TaskState = "submitted" | "working" | "input-required" | "completed" | "failed" | "canceled";
+export type ChannelDeliveryState = "queued" | "delivered_to_bridge" | "displayed_to_client" | "answered" | "failed";
 
 export interface AgentSkill {
   id: string;
@@ -43,7 +44,7 @@ export interface RegistryAgent {
   };
 }
 
-export type TraceEventKind = "task" | "ag-ui-step" | "ag-ui-tool";
+export type TraceEventKind = "task" | "ag-ui-step" | "ag-ui-tool" | "channel-message" | "channel-ack";
 
 export interface TraceEvent {
   id: string;
@@ -62,6 +63,11 @@ export interface TraceEvent {
   toolCallArgs?: unknown;
   clientId?: string;
   clientName?: string;
+  conversationId?: string;
+  messageId?: string;
+  replyTo?: string;
+  direction?: "incoming" | "outgoing";
+  channelState?: ChannelDeliveryState;
 }
 
 export interface ChatMessage {
@@ -87,7 +93,9 @@ export type WsMessage =
   | { type: "agent.heartbeat"; timestamp: string; data: { agentId: string; timestamp: number } }
   | { type: "agent.unhealthy"; timestamp: string; data: { agentId: string } }
   | { type: "agent.removed"; timestamp: string; data: { agentId: string } }
-  | { type: "task.update"; timestamp: string; data: TaskUpdatePayload };
+  | { type: "task.update"; timestamp: string; data: TaskUpdatePayload }
+  | { type: "channel.message"; timestamp: string; data: ChannelMessagePayload }
+  | { type: "channel.ack"; timestamp: string; data: ChannelAckPayload };
 
 export interface TaskUpdatePayload {
   agentId: string;
@@ -99,6 +107,34 @@ export interface TaskUpdatePayload {
   payload?: unknown;
   clientId?: string;
   clientName?: string;
+}
+
+export interface ChannelMessagePayload {
+  conversationId: string;
+  messageId: string;
+  replyTo?: string;
+  fromAgentId: string;
+  fromAgentName?: string;
+  toAgentId?: string;
+  taskId?: string;
+  kind: string;
+  content: string;
+  meta?: Record<string, unknown>;
+  createdAt: number;
+  requiresAck?: boolean;
+  expectsResponse?: boolean;
+  expiresAt?: number;
+  attemptCount?: number;
+}
+
+export interface ChannelAckPayload {
+  conversationId: string;
+  messageId: string;
+  state: ChannelDeliveryState;
+  actorId: string;
+  actorType: "registry" | "bridge" | "client" | "agent";
+  timestamp: number;
+  detail?: string;
 }
 
 export type ConnectionStatus = "connecting" | "connected" | "disconnected" | "error";

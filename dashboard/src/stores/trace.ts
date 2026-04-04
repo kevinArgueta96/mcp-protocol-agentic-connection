@@ -12,6 +12,7 @@ export interface TraceFilters {
   skillId?: string;
   state?: TaskState;
   clientId?: string;
+  kind?: TraceEventKind;
 }
 
 export const useTraceStore = defineStore("trace", () => {
@@ -43,6 +44,39 @@ export const useTraceStore = defineStore("trace", () => {
             clientId: msg.data.clientId,
             clientName: msg.data.clientName,
             expanded: false,
+          });
+        } else if (msg.type === "channel.message") {
+          addEvent({
+            id: randomUUID(),
+            timestamp: new Date(msg.data.createdAt).toISOString(),
+            agentId: msg.data.fromAgentId,
+            agentName: msg.data.fromAgentName ?? msg.data.fromAgentId,
+            taskId: msg.data.taskId ?? msg.data.messageId,
+            state: msg.data.expectsResponse ? "input-required" : "working",
+            payload: msg.data,
+            expanded: false,
+            kind: "channel-message",
+            conversationId: msg.data.conversationId,
+            messageId: msg.data.messageId,
+            replyTo: msg.data.replyTo,
+            direction: msg.data.toAgentId ? "outgoing" : "incoming",
+            clientId: typeof msg.data.meta?.targetClientId === "string" ? msg.data.meta.targetClientId : msg.data.toAgentId,
+            clientName: typeof msg.data.meta?.targetProject === "string" ? msg.data.meta.targetProject : undefined,
+          });
+        } else if (msg.type === "channel.ack") {
+          addEvent({
+            id: randomUUID(),
+            timestamp: new Date(msg.data.timestamp).toISOString(),
+            agentId: msg.data.actorId,
+            agentName: msg.data.actorType,
+            taskId: msg.data.messageId,
+            state: msg.data.state === "failed" ? "failed" : msg.data.state === "answered" ? "completed" : "working",
+            payload: msg.data,
+            expanded: false,
+            kind: "channel-ack",
+            conversationId: msg.data.conversationId,
+            messageId: msg.data.messageId,
+            channelState: msg.data.state,
           });
         }
       } catch {
@@ -78,6 +112,7 @@ export const useTraceStore = defineStore("trace", () => {
       if (filters.value.skillId && e.skillId !== filters.value.skillId) return false;
       if (filters.value.state && e.state !== filters.value.state) return false;
       if (filters.value.clientId && e.clientId !== filters.value.clientId) return false;
+      if (filters.value.kind && e.kind !== filters.value.kind) return false;
       return true;
     });
   });

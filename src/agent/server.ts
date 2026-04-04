@@ -19,7 +19,7 @@ import {
 } from "./ag-ui-events.js";
 import { createDefaultRegistry, createClaudeRegistry } from "../skills/index.js";
 import type { BaseSkill } from "../skills/framework.js";
-import type { AgentMessage } from "../types/messages.js";
+import type { AgentMessage, ChannelMessage } from "../types/messages.js";
 import { ClaudeProcess } from "../skills/builtins/claude-process.js";
 
 const REGISTRY_URL = "http://localhost:4999";
@@ -396,6 +396,29 @@ export class AgentServer {
             for (const handler of this.messageHandlers) {
               try { handler(agentMsg); } catch { /* ignore handler errors */ }
             }
+          }
+
+          if (msg.type === "channel.message" && msg.data) {
+            const channelMsg = msg.data as ChannelMessage;
+            if (channelMsg.toAgentId && channelMsg.toAgentId !== this.agentId) {
+              return;
+            }
+
+            const resumedTask = this.routerCtx?.taskStore.resolveConversationReply({
+              conversationId: channelMsg.conversationId,
+              taskId: channelMsg.taskId,
+              messageId: channelMsg.messageId,
+              replyTo: channelMsg.replyTo,
+              fromAgentId: channelMsg.fromAgentId,
+              content: channelMsg.content,
+            });
+
+            const fromId = channelMsg.fromAgentId.slice(0, 8);
+            const preview = channelMsg.content.slice(0, 120);
+            console.error(
+              `[← CHANNEL] ${fromId} [${channelMsg.conversationId.slice(0, 8)}] ${preview}` +
+              (resumedTask ? ` -> resumed task ${resumedTask.id.slice(0, 8)}` : "")
+            );
           }
         } catch {
           // Ignore non-JSON or unrecognized messages

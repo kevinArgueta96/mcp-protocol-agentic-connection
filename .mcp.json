@@ -3,13 +3,12 @@
     "agent-bridge": {
       "command": "node",
       "args": [
-        "/home/kevin-osigu/Documents/PROYECTOS_OSIGU/10. PERSONAL/mcp-protocol-agentic-connection/dist/cli/index.js",
+        "/Users/kevs/Documents/DEV_PROJECTS/1. MCP/mcp-protocol-agentic-connection/dist/cli/index.js",
         "mcp",
         "start",
         "--claude",
         "--project",
-        "/home/kevin-osigu/Documents/PROYECTOS_OSIGU/10. PERSONAL/mcp-protocol-agentic-connection"
-
+        "/Users/kevs/Documents/DEV_PROJECTS/1. MCP/mcp-protocol-agentic-connection"
       ]
     },
     "chrome-devtools": {
