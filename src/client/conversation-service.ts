@@ -52,6 +52,19 @@ export class ConversationService {
       .filter((snapshot) => snapshot.status === "pending");
   }
 
+  listUnsurfacedSnapshots(surfacedMessageIds: ReadonlySet<string>): ConversationSnapshot[] {
+    return this.runtime
+      .listConversations()
+      .map((conversation) =>
+        this.buildSnapshot(
+          conversation,
+          this.runtime.listConversationMessages(conversation.conversationId),
+          this.runtime.listPendingConversationMessages(conversation.conversationId),
+        )
+      )
+      .filter((snapshot) => snapshot.messages.some((m) => !surfacedMessageIds.has(m.messageId)));
+  }
+
   listExpiredSnapshots(limit = 10): ConversationSnapshot[] {
     return this.runtime
       .listConversations()

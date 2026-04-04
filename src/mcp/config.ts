@@ -3,6 +3,7 @@ import { isAbsolute, join, resolve } from "node:path";
 
 export interface InboxFirstClientConfig {
   autoPollInbox?: boolean;
+  pollActiveConversations?: boolean;
   sendReminderNotifications?: boolean;
   repeatReminders?: boolean;
   pollIntervalMs?: number;
@@ -20,6 +21,7 @@ export interface McpBridgeConfig {
 
 export interface ResolvedInboxFirstClientConfig {
   autoPollInbox: boolean;
+  pollActiveConversations: boolean;
   sendReminderNotifications: boolean;
   repeatReminders: boolean;
   pollIntervalMs: number;
@@ -28,6 +30,7 @@ export interface ResolvedInboxFirstClientConfig {
 
 const DEFAULT_INBOX_FIRST_CONFIG: ResolvedInboxFirstClientConfig = {
   autoPollInbox: true,
+  pollActiveConversations: false,
   sendReminderNotifications: true,
   repeatReminders: true,
   pollIntervalMs: 5_000,
@@ -90,6 +93,7 @@ function coerceInboxConfig(value: unknown): InboxFirstClientConfig {
   if (!obj) return {};
   return {
     autoPollInbox: typeof obj.autoPollInbox === "boolean" ? obj.autoPollInbox : undefined,
+    pollActiveConversations: typeof obj.pollActiveConversations === "boolean" ? obj.pollActiveConversations : undefined,
     sendReminderNotifications: typeof obj.sendReminderNotifications === "boolean" ? obj.sendReminderNotifications : undefined,
     repeatReminders: typeof obj.repeatReminders === "boolean" ? obj.repeatReminders : undefined,
     pollIntervalMs: typeof obj.pollIntervalMs === "number" ? obj.pollIntervalMs : undefined,
@@ -125,6 +129,7 @@ export function resolveInboxFirstClientConfig(config: McpBridgeConfig, clientPro
 
   return {
     autoPollInbox: clientSpecific.autoPollInbox ?? nonNative.autoPollInbox ?? DEFAULT_INBOX_FIRST_CONFIG.autoPollInbox,
+    pollActiveConversations: clientSpecific.pollActiveConversations ?? nonNative.pollActiveConversations ?? DEFAULT_INBOX_FIRST_CONFIG.pollActiveConversations,
     sendReminderNotifications: clientSpecific.sendReminderNotifications ?? nonNative.sendReminderNotifications ?? DEFAULT_INBOX_FIRST_CONFIG.sendReminderNotifications,
     repeatReminders: clientSpecific.repeatReminders ?? nonNative.repeatReminders ?? DEFAULT_INBOX_FIRST_CONFIG.repeatReminders,
     pollIntervalMs: clientSpecific.pollIntervalMs ?? nonNative.pollIntervalMs ?? DEFAULT_INBOX_FIRST_CONFIG.pollIntervalMs,

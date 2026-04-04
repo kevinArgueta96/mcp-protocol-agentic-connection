@@ -149,6 +149,14 @@ export class ChannelClientRuntime {
     return this.conversationStore.deleteConversation(conversationId);
   }
 
+  /** Seed the local conversation store with messages from the registry HTTP snapshot.
+   *  Call this once after client activation to surface pre-existing conversations. */
+  seedFromSnapshot(messages: import("../types/messages.js").ChannelMessage[]): void {
+    for (const message of messages) {
+      this.conversationStore.trackMessage(message);
+    }
+  }
+
   resolveReplyContext(input: {
     replyTo?: string;
     conversationId?: string;

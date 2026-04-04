@@ -7,7 +7,7 @@ function buildEnvelope(content: string, meta: Record<string, unknown>): ClientNo
     method: "notifications/message",
     params: {
       level: "info",
-      logger: "agent-bridge.codex-proxy",
+      logger: "agent-bridge.gemini-proxy",
       data: {
         content,
         meta,
@@ -31,7 +31,7 @@ function buildThreadContext(snapshot: ConversationSnapshot, maxMessages = 3): st
   }).join("\n");
 }
 
-export class CodexProxy {
+export class GeminiProxy {
   constructor(private readonly conversations: ConversationService) {}
 
   buildChannelNotification(message: ChannelMessage): ClientNotificationEnvelope {
@@ -41,7 +41,7 @@ export class CodexProxy {
 
     return buildEnvelope(
       [
-        "[agent-bridge codex proxy]",
+        "[agent-bridge gemini proxy]",
         `New channel message from ${sender}.`,
         `Conversation: ${message.conversationId}`,
         message.taskId ? `Task: ${message.taskId}` : "",
@@ -50,7 +50,7 @@ export class CodexProxy {
         "Next step: use channel_inbox to inspect the full thread, then reply with the same conversationId/replyTo.",
       ].filter(Boolean).join("\n"),
       {
-        type: "codex-proxy-message",
+        type: "gemini-proxy-message",
         conversationId: message.conversationId,
         messageId: message.messageId,
         fromAgentId: message.fromAgentId,
@@ -66,7 +66,7 @@ export class CodexProxy {
     const threadContext = buildThreadContext(snapshot);
     return buildEnvelope(
       [
-        "[agent-bridge codex proxy]",
+        "[agent-bridge gemini proxy]",
         pendingCount > 1
           ? `You have ${pendingCount} pending channel conversations.`
           : `Pending channel conversation from ${sender}.`,
@@ -76,7 +76,7 @@ export class CodexProxy {
         "Use channel_inbox to inspect and reply.",
       ].filter(Boolean).join("\n"),
       {
-        type: "codex-proxy-pending",
+        type: "gemini-proxy-pending",
         conversationId: snapshot.conversation.conversationId,
         messageId: message.messageId,
         pendingCount,
@@ -95,7 +95,7 @@ export class CodexProxy {
     const threadContext = buildThreadContext(snapshot);
     return buildEnvelope(
       [
-        "[agent-bridge codex proxy]",
+        "[agent-bridge gemini proxy]",
         `New message in active conversation from ${sender}.`,
         `Conversation: ${snapshot.conversation.conversationId}`,
         `Message: ${previewText(message.content)}`,
@@ -103,7 +103,7 @@ export class CodexProxy {
         "Use channel_inbox to inspect and reply.",
       ].filter(Boolean).join("\n"),
       {
-        type: "codex-proxy-active-message",
+        type: "gemini-proxy-active-message",
         conversationId: snapshot.conversation.conversationId,
         messageId: message.messageId,
         fromAgentId: message.fromAgentId,
@@ -118,7 +118,7 @@ export class CodexProxy {
     const payload = message.payload as { message?: string; skillId?: string } | null;
     return buildEnvelope(
       [
-        "[agent-bridge codex proxy]",
+        "[agent-bridge gemini proxy]",
         `Incoming task request from ${message.fromAgentId}.`,
         message.taskId ? `Task: ${message.taskId}` : "",
         payload?.skillId ? `Skill: ${payload.skillId}` : "",
@@ -126,7 +126,7 @@ export class CodexProxy {
         "Use channel_inbox or ask_agent/reply as appropriate.",
       ].filter(Boolean).join("\n"),
       {
-        type: "codex-proxy-task-request",
+        type: "gemini-proxy-task-request",
         fromAgentId: message.fromAgentId,
         taskId: message.taskId,
         skillId: payload?.skillId,

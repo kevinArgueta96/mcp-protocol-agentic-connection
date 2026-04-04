@@ -25,6 +25,7 @@ import { A2AClient } from "../client/a2a-client.js";
 import { RegistryServer } from "../registry/server.js";
 import { AgentServer } from "../agent/server.js";
 import { CodexProxy } from "./proxies/codex-proxy.js";
+import { GeminiProxy } from "./proxies/gemini-proxy.js";
 import type { RegistryEntry, AgentMessage, ChannelMessage } from "../types/messages.js";
 import type { Task, Part, Message } from "../types/a2a.js";
 import { WebSocket } from "ws";
@@ -119,6 +120,7 @@ export class McpAgentBridge {
   private conversationService: ConversationService;
   private readonly profileResolver = new DefaultClientProfileResolver();
   private readonly codexProxy: CodexProxy;
+  private readonly geminiProxy: GeminiProxy;
   private readonly bridgeConfig: McpBridgeConfig;
   private clientProfile: ClientBehaviorProfile;
   private inboxFirstConfig: ResolvedInboxFirstClientConfig;
@@ -157,6 +159,7 @@ export class McpAgentBridge {
     });
     this.conversationService = new ConversationService(this.channelRuntime);
     this.codexProxy = new CodexProxy(this.conversationService);
+    this.geminiProxy = new GeminiProxy(this.conversationService);
     this.clientProfile = this.profileResolver.resolve({ clientName: "codex" });
     this.inboxFirstConfig = resolveInboxFirstClientConfig(this.bridgeConfig, this.clientProfile.id);
     this.server = new McpServer(
@@ -295,9 +298,7 @@ export class McpAgentBridge {
         detail: "Message received by MCP bridge",
       });
 
-      const notification = this.clientProfile.id === "codex"
-        ? this.codexProxy.buildChannelNotification(channelMessage)
-        : this.clientProfile.mapChannelMessage(channelMessage);
+      const notification = this.buildInboundChannelNotification(channelMessage);
       if (!notification) return;
       void this.server.server.notification(notification).then(() => this.postChannelAck({
         conversationId: channelMessage.conversationId,
@@ -335,9 +336,7 @@ export class McpAgentBridge {
           return;
         }
 
-        const notification = this.clientProfile.id === "codex"
-          ? this.codexProxy.buildTaskRequestNotification(agentMsg)
-          : this.clientProfile.mapTaskRequestMessage(agentMsg);
+        const notification = this.buildTaskRequestNotification(agentMsg);
         if (!notification) return;
         void this.server.server.notification(notification);
       }
@@ -408,6 +407,23 @@ export class McpAgentBridge {
     return `${conversationId}:${messageId}`;
   }
 
+  /** Fetch all conversations from the registry HTTP endpoint and seed the local store.
+   *  This ensures pre-existing conversations (before Codex connected) are visible to polling. */
+  private async syncRegistryToLocalStore(): Promise<void> {
+    try {
+      const entries = await this.registry.listChannelConversations();
+      for (const entry of entries) {
+        const snapshot = await this.registry.getChannelConversation(entry.conversationId);
+        if (snapshot) {
+          this.channelRuntime.seedFromSnapshot(snapshot.messages);
+        }
+      }
+      console.error(`[MCP] Synced ${entries.length} conversation(s) from registry to local store`);
+    } catch {
+      // Registry may not be ready yet; WebSocket events will populate the store.
+    }
+  }
+
   private startInboxPolling(): void {
     this.stopInboxPolling();
     if (this.clientProfile.deliveryMode !== "inbox-first") return;
@@ -430,32 +446,50 @@ export class McpAgentBridge {
     if (this.clientProfile.deliveryMode !== "inbox-first") return;
 
     const pending = this.conversationService.listPendingSnapshots();
-    for (const snapshot of pending) {
-      for (const message of snapshot.pendingMessages) {
+    await this.surfaceSnapshotMessages(pending, "pending");
+
+    if (this.inboxFirstConfig.pollActiveConversations) {
+      const allUnsurfaced = this.conversationService.listUnsurfacedSnapshots(this.surfacedInboxMessageIds);
+      const pendingIds = new Set(pending.map((s) => s.conversation.conversationId));
+      const activeOnly = allUnsurfaced.filter((s) => !pendingIds.has(s.conversation.conversationId));
+      await this.surfaceSnapshotMessages(activeOnly, "active");
+    }
+  }
+
+  private async surfaceSnapshotMessages(
+    snapshots: import("../client/conversation-service.js").ConversationSnapshot[],
+    source: "pending" | "active",
+  ): Promise<void> {
+    const totalCount = snapshots.length;
+    for (const snapshot of snapshots) {
+      const messagesToCheck = source === "pending" ? snapshot.pendingMessages : snapshot.messages;
+      for (const message of messagesToCheck) {
+        if (message.fromAgentId === this.clientAgentId) continue;
         if (this.surfacedInboxMessageIds.has(message.messageId)) continue;
         this.surfacedInboxMessageIds.add(message.messageId);
 
-        const notification = this.clientProfile.id === "codex"
-          ? this.codexProxy.buildPendingReminder(snapshot, message, pending.length)
-          : {
+        const notification = this.buildSurfacedInboxNotification(snapshot, message, totalCount, source)
+          ?? {
               method: "notifications/message",
               params: {
                 level: "info",
                 logger: "agent-bridge.channel",
                 data: {
-                  content:
-                    pending.length === 1 && snapshot.pendingMessages.length === 1
+                  content: source === "pending"
+                    ? totalCount === 1 && snapshot.pendingMessages.length === 1
                       ? `New pending channel conversation from ${message.fromAgentName ?? message.fromAgentId}. ` +
                         `Open channel_inbox and reply. Preview: ${message.content.slice(0, 220)}${message.content.length > 220 ? "…" : ""}`
-                      : `You have ${pending.length} pending channel conversation(s). Open channel_inbox to inspect and reply.`,
+                      : `You have ${totalCount} pending channel conversation(s). Open channel_inbox to inspect and reply.`
+                    : `New message in active conversation from ${message.fromAgentName ?? message.fromAgentId}. ` +
+                      `Open channel_inbox to view. Preview: ${message.content.slice(0, 220)}${message.content.length > 220 ? "…" : ""}`,
                   meta: {
-                    type: "inbox-poll",
+                    type: source === "pending" ? "inbox-poll" : "inbox-poll-active",
                     conversationId: snapshot.conversation.conversationId,
                     messageId: message.messageId,
                     fromAgentId: message.fromAgentId,
                     fromAgentName: message.fromAgentName,
                     taskId: message.taskId,
-                    pendingCount: pending.length,
+                    pendingCount: totalCount,
                   },
                 },
               },
@@ -466,6 +500,45 @@ export class McpAgentBridge {
         });
       }
     }
+  }
+
+  private buildInboundChannelNotification(message: ChannelMessage) {
+    if (this.clientProfile.id === "codex") {
+      return this.codexProxy.buildChannelNotification(message);
+    }
+    if (this.clientProfile.id === "gemini") {
+      return this.geminiProxy.buildChannelNotification(message);
+    }
+    return this.clientProfile.mapChannelMessage(message);
+  }
+
+  private buildSurfacedInboxNotification(
+    snapshot: import("../client/conversation-service.js").ConversationSnapshot,
+    message: ChannelMessage,
+    totalCount: number,
+    source: "pending" | "active",
+  ) {
+    if (this.clientProfile.id === "codex") {
+      return source === "pending"
+        ? this.codexProxy.buildPendingReminder(snapshot, message, totalCount)
+        : this.codexProxy.buildActiveConversationNotification(snapshot, message);
+    }
+    if (this.clientProfile.id === "gemini") {
+      return source === "pending"
+        ? this.geminiProxy.buildPendingReminder(snapshot, message, totalCount)
+        : this.geminiProxy.buildActiveConversationNotification(snapshot, message);
+    }
+    return null;
+  }
+
+  private buildTaskRequestNotification(message: AgentMessage) {
+    if (this.clientProfile.id === "codex") {
+      return this.codexProxy.buildTaskRequestNotification(message);
+    }
+    if (this.clientProfile.id === "gemini") {
+      return this.geminiProxy.buildTaskRequestNotification(message);
+    }
+    return this.clientProfile.mapTaskRequestMessage(message);
   }
 
   private async postChannelAck(ack: {
@@ -642,6 +715,7 @@ export class McpAgentBridge {
         };
 
         await this.channelRuntime.activateClient(registration);
+        await this.syncRegistryToLocalStore();
         this.startInboxPolling();
         console.error(`[MCP] Registered client: ${realProjectName} (${clientName} v${version})`);
 

@@ -76,6 +76,22 @@ export class RegistryClient {
     return body.revived;
   }
 
+  async listChannelConversations(options?: { pendingOnly?: boolean }): Promise<import("../types/messages.js").ChannelConversationListEntry[]> {
+    const params = new URLSearchParams();
+    if (options?.pendingOnly) params.set("pending", "true");
+    const url = `${this.registryUrl}/channel/conversations${params.size > 0 ? `?${params}` : ""}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Registry error: ${res.status}`);
+    return res.json() as Promise<import("../types/messages.js").ChannelConversationListEntry[]>;
+  }
+
+  async getChannelConversation(conversationId: string): Promise<import("../types/messages.js").ChannelConversationSnapshot | undefined> {
+    const res = await fetch(`${this.registryUrl}/channel/conversations/${encodeURIComponent(conversationId)}`);
+    if (res.status === 404) return undefined;
+    if (!res.ok) throw new Error(`Registry error: ${res.status}`);
+    return res.json() as Promise<import("../types/messages.js").ChannelConversationSnapshot>;
+  }
+
   async isAvailable(): Promise<boolean> {
     try {
       await this.health();

@@ -249,6 +249,7 @@ interface ClientBehaviorProfile {
 - Inbox-first clients now run a lightweight local inbox poll with message watermarks so newly pending messages are surfaced automatically.
 - Inbox-first automation is now configurable from `.agent-bridge.mcp.yml`, with global `nonNative` defaults and per-client overrides such as `codex` and `gemini`.
 - Codex now has a dedicated proxy layer in the MCP bridge so inbound and pending messages are surfaced with conversation context instead of generic reminders only.
+- Gemini now has the same dedicated proxy treatment in the MCP bridge, so `inbox-first` behavior is consistent across non-native clients instead of being Codex-only.
 - The dashboard now includes a manual `remind` action on active client-session threads so an operator can keep a Codex or Gemini conversation moving without leaving the chat UI.
 - This reduces Claude-specific orchestration in `src/mcp/adapter.ts` and moves the project closer to a real application-layer runtime.
 - The runtime now also owns conversation update events, message listing per conversation,

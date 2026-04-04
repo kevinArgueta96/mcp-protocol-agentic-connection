@@ -259,6 +259,7 @@ Archivos:
 - `src/client/client-profile-resolver.ts`
 - `src/mcp/adapter.ts`
 - `src/mcp/proxies/codex-proxy.ts`
+- `src/mcp/proxies/gemini-proxy.ts`
 - `src/mcp/config.ts`
 - `.agent-bridge.mcp.yml`
 - `src/cli/commands/mcp.ts`
@@ -279,13 +280,14 @@ Se cambio:
 - `message_client_session` ahora espera brevemente un ACK y retorna `deliveryState`
 - la automatizacion de clientes no nativos ahora se puede configurar desde `.agent-bridge.mcp.yml`
 - Codex ahora usa un proxy dedicado dentro del bridge MCP para transformar mensajes entrantes y pendientes en notificaciones con contexto del hilo
+- Gemini ahora usa un proxy dedicado dentro del bridge MCP para el mismo flujo `inbox-first`, incluyendo mensajes nuevos, pendientes y conversaciones activas
 - la CLI `agent-bridge mcp start` ahora acepta `--config` para cargar una config YAML explicita
 
 Impacto:
 
 - el MVP ya no refleja una arquitectura Claude-only
 - Codex queda como capa objetivo de produccion sin romper soporte actual para Claude
-- Gemini puede entrar sobre el mismo seam sin rehacer la mensajeria
+- Gemini ya entra sobre el mismo seam que Codex sin rehacer la mensajeria
 - ya no asumimos que `fit-backend -> Codex` aparezca como push automatico; en Codex el flujo correcto es `channel_inbox` + `reply`
 - al enviar mensajes desde MCP ya se puede ver de inmediato si el bridge alcanzo al menos `delivered_to_bridge` o `displayed_to_client`
 
