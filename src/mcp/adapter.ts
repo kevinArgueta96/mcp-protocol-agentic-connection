@@ -108,6 +108,7 @@ function formatAgentsSummary(agents: RegistryEntry[]): string {
 }
 
 export class McpAgentBridge {
+  private static readonly INBOX_REMINDER_INTERVAL_MS = 20_000;
   private server: McpServer;
   private registry: RegistryClient;
   private channelTransport: ChannelTransport;
@@ -125,6 +126,7 @@ export class McpAgentBridge {
     reject: (reason: Error) => void;
     timer: NodeJS.Timeout;
   }>();
+  private inboxReminderTimers = new Map<string, NodeJS.Timeout>();
   private agentToolMap = new Map<string, RegisteredTool[]>();
 
   constructor(options: McpAdapterOptions = {}) {
@@ -295,6 +297,16 @@ export class McpAgentBridge {
       })).catch(() => {
         // Ignore notification failures; WS relay remains alive.
       });
+
+      if (this.clientProfile.deliveryMode === "inbox-first") {
+        this.scheduleInboxReminder(channelMessage);
+      }
+    });
+
+    this.channelRuntime.on("channel.ack", (ack) => {
+      if (ack.state === "answered" || ack.state === "failed") {
+        this.clearInboxReminder(ack.conversationId, ack.messageId);
+      }
     });
 
     this.channelRuntime.on("legacy.notify", (notify) => {
@@ -323,6 +335,57 @@ export class McpAgentBridge {
         }
       }
     });
+  }
+
+  private scheduleInboxReminder(message: ChannelMessage): void {
+    const key = this.getInboxReminderKey(message.conversationId, message.messageId);
+    this.clearInboxReminder(message.conversationId, message.messageId);
+
+    const timer = setInterval(() => {
+      const snapshot = this.conversationService.getSnapshot(message.conversationId);
+      const stillPending = snapshot?.pendingMessages.some((pending) => pending.messageId === message.messageId);
+      if (!stillPending) {
+        this.clearInboxReminder(message.conversationId, message.messageId);
+        return;
+      }
+
+      void this.server.server.notification({
+        method: "notifications/message",
+        params: {
+          level: "info",
+          logger: "agent-bridge.channel",
+          data: {
+            content:
+              `Pending channel message from ${message.fromAgentName ?? message.fromAgentId}. ` +
+              `Use channel_inbox to review and reply. Conversation: ${message.conversationId}.`,
+            meta: {
+              conversationId: message.conversationId,
+              messageId: message.messageId,
+              fromAgentId: message.fromAgentId,
+              fromAgentName: message.fromAgentName,
+              taskId: message.taskId,
+              type: "inbox-reminder",
+            },
+          },
+        },
+      }).catch(() => {
+        // Ignore reminder failures.
+      });
+    }, McpAgentBridge.INBOX_REMINDER_INTERVAL_MS);
+
+    this.inboxReminderTimers.set(key, timer);
+  }
+
+  private clearInboxReminder(conversationId: string, messageId: string): void {
+    const key = this.getInboxReminderKey(conversationId, messageId);
+    const timer = this.inboxReminderTimers.get(key);
+    if (!timer) return;
+    clearInterval(timer);
+    this.inboxReminderTimers.delete(key);
+  }
+
+  private getInboxReminderKey(conversationId: string, messageId: string): string {
+    return `${conversationId}:${messageId}`;
   }
 
   private async postChannelAck(ack: {

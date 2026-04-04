@@ -266,6 +266,7 @@ Se cambio:
 - Codex y Gemini se tratan como clientes `inbox-first`
 - Claude se mantiene como cliente `push-first`
 - los clientes `inbox-first` reciben un recordatorio liviano por notificacion y usan `channel_inbox` para leer el mensaje completo
+- mientras el mensaje siga pendiente, el bridge reenvia recordatorios periodicos a clientes `inbox-first`
 - `message_client_session` ahora espera brevemente un ACK y retorna `deliveryState`
 
 Impacto:
