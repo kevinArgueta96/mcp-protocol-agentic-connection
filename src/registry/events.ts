@@ -9,7 +9,9 @@ export type RegistryEventType =
   | "agent.removed"
   | "task.update"
   | "agent.message"
-  | "claude.notify";
+  | "claude.notify"
+  | "channel.message"
+  | "channel.ack";
 
 export interface RegistryEvent {
   type: RegistryEventType;

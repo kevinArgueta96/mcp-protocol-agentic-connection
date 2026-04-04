@@ -21,6 +21,9 @@ export interface TaskUpdateEvent {
 
 export class TaskStore {
   private tasks = new Map<string, Task>();
+  private conversationToTask = new Map<string, string>();
+  private taskToConversation = new Map<string, string>();
+  private pendingReplyTimers = new Map<string, NodeJS.Timeout>();
   private agentId: string;
   private onTaskUpdate?: (event: TaskUpdateEvent) => void;
 
@@ -61,6 +64,11 @@ export class TaskStore {
     return this.tasks.get(id);
   }
 
+  getPendingTaskForConversation(conversationId: string): Task | undefined {
+    const taskId = this.conversationToTask.get(conversationId);
+    return taskId ? this.tasks.get(taskId) : undefined;
+  }
+
   update(id: string, status: TaskStatus, artifacts?: Artifact[]): Task {
     const task = this.tasks.get(id);
     if (!task) throw { code: RpcErrorCodes.TASK_NOT_FOUND, message: `Task ${id} not found` };
@@ -88,6 +96,128 @@ export class TaskStore {
     return updated;
   }
 
+  awaitInput(
+    id: string,
+    params: {
+      conversationId: string;
+      messageId: string;
+      content: string;
+      skillId?: string;
+      timeoutMs?: number;
+    }
+  ): Task {
+    const task = this.tasks.get(id);
+    if (!task) throw { code: RpcErrorCodes.TASK_NOT_FOUND, message: `Task ${id} not found` };
+
+    this.conversationToTask.set(params.conversationId, id);
+    this.taskToConversation.set(id, params.conversationId);
+
+    const updated: Task = {
+      ...task,
+      status: {
+        state: "input-required",
+        timestamp: new Date().toISOString(),
+        message: {
+          role: "agent",
+          parts: [{ type: "text", text: `Waiting for reply in conversation ${params.conversationId}` }],
+        },
+      },
+      metadata: {
+        ...task.metadata,
+        conversationId: params.conversationId,
+        channelMessageId: params.messageId,
+        awaitingReply: true,
+        skillId: params.skillId ?? task.metadata?.skillId,
+      },
+      history: [
+        ...task.history,
+        { role: "agent", parts: [{ type: "text", text: params.content }] },
+      ],
+    };
+
+    this.tasks.set(id, updated);
+    const timeoutMs = Math.max(1_000, params.timeoutMs ?? 300_000);
+    const existingTimer = this.pendingReplyTimers.get(id);
+    if (existingTimer) clearTimeout(existingTimer);
+    const timer = setTimeout(() => {
+      const current = this.tasks.get(id);
+      if (!current || current.status.state !== "input-required") return;
+      this.fail(id, `Timed out waiting for reply in conversation ${params.conversationId}`);
+      this.conversationToTask.delete(params.conversationId);
+      this.taskToConversation.delete(id);
+      this.pendingReplyTimers.delete(id);
+    }, timeoutMs);
+    this.pendingReplyTimers.set(id, timer);
+    this.fireUpdate(id, "input-required", params.skillId, {
+      conversationId: params.conversationId,
+      messageId: params.messageId,
+      timeoutMs,
+    });
+    return updated;
+  }
+
+  resolveConversationReply(params: {
+    conversationId?: string;
+    taskId?: string;
+    messageId: string;
+    replyTo?: string;
+    fromAgentId: string;
+    content: string;
+  }): Task | undefined {
+    const taskId = params.taskId ??
+      (params.conversationId ? this.conversationToTask.get(params.conversationId) : undefined);
+    if (!taskId) return undefined;
+
+    const task = this.tasks.get(taskId);
+    if (!task || task.status.state !== "input-required") return undefined;
+
+    const conversationId = params.conversationId ??
+      this.taskToConversation.get(taskId) ??
+      (typeof task.metadata?.conversationId === "string" ? task.metadata.conversationId : undefined);
+    if (!conversationId) return undefined;
+
+    const artifact: Artifact = {
+      index: 0,
+      lastChunk: true,
+      parts: [{
+        type: "data",
+        data: {
+          conversationId,
+          messageId: params.messageId,
+          replyTo: params.replyTo,
+          fromAgentId: params.fromAgentId,
+          content: params.content,
+        },
+      }],
+    };
+
+    const updated: Task = {
+      ...task,
+      status: { state: "completed", timestamp: new Date().toISOString() },
+      artifacts: [artifact],
+      metadata: {
+        ...task.metadata,
+        awaitingReply: false,
+        lastReplyMessageId: params.messageId,
+      },
+      history: [
+        ...task.history,
+        { role: "user", parts: [{ type: "text", text: params.content }] },
+      ],
+    };
+
+    this.tasks.set(taskId, updated);
+    const timer = this.pendingReplyTimers.get(taskId);
+    if (timer) {
+      clearTimeout(timer);
+      this.pendingReplyTimers.delete(taskId);
+    }
+    this.conversationToTask.delete(conversationId);
+    this.taskToConversation.delete(taskId);
+    this.fireUpdate(taskId, "completed", task.metadata?.skillId as string | undefined, artifact.parts[0]);
+    return updated;
+  }
+
   fail(id: string, message: string): Task {
     const errorPart: TextPart = { type: "text", text: message };
     const task = this.tasks.get(id);
@@ -102,6 +232,16 @@ export class TaskStore {
       artifacts: task.artifacts,
     };
     this.tasks.set(id, updated);
+    const timer = this.pendingReplyTimers.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      this.pendingReplyTimers.delete(id);
+    }
+    const conversationId = this.taskToConversation.get(id);
+    if (conversationId) {
+      this.taskToConversation.delete(id);
+      this.conversationToTask.delete(conversationId);
+    }
     this.fireUpdate(id, "failed", undefined, { error: message });
     return updated;
   }
@@ -115,6 +255,16 @@ export class TaskStore {
       artifacts: task.artifacts,
     };
     this.tasks.set(id, updated);
+    const timer = this.pendingReplyTimers.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      this.pendingReplyTimers.delete(id);
+    }
+    const conversationId = this.taskToConversation.get(id);
+    if (conversationId) {
+      this.taskToConversation.delete(id);
+      this.conversationToTask.delete(conversationId);
+    }
     this.fireUpdate(id, "canceled");
     return updated;
   }
@@ -179,6 +329,22 @@ export class RequestRouter {
             return ctx.taskStore.fail(task.id, `Invalid input for skill "${skillId}": ${parsed.error.message}`);
           }
           const result = await skill.execute(parsed.data, skillContext);
+          if (
+            skillId === "notify-claude" &&
+            isNotifyClaudePendingInput(parsed.data) &&
+            isNotifyClaudePendingResult(result)
+          ) {
+            if (!result.delivered) {
+              return ctx.taskStore.fail(task.id, "notify-claude did not reach the registry");
+            }
+            return ctx.taskStore.awaitInput(task.id, {
+              conversationId: result.conversationId,
+              messageId: result.messageId,
+              content: parsed.data.content,
+              skillId,
+              timeoutMs: parsed.data.responseTimeoutMs,
+            });
+          }
           return ctx.taskStore.complete(task.id, result);
         }
 
@@ -447,6 +613,30 @@ export function parseInputFromMessage(
 
   const fieldName = skillId ? (SKILL_INPUT_FIELDS[skillId] ?? "message") : "message";
   return { [fieldName]: text };
+}
+
+function isNotifyClaudePendingInput(input: unknown): input is {
+  content: string;
+  expectsResponse?: boolean;
+  responseTimeoutMs?: number;
+} {
+  if (!input || typeof input !== "object") return false;
+  const maybe = input as { content?: unknown; expectsResponse?: unknown; responseTimeoutMs?: unknown };
+  return typeof maybe.content === "string" &&
+    maybe.expectsResponse === true &&
+    (maybe.responseTimeoutMs === undefined || typeof maybe.responseTimeoutMs === "number");
+}
+
+function isNotifyClaudePendingResult(result: unknown): result is {
+  delivered: boolean;
+  conversationId: string;
+  messageId: string;
+} {
+  if (!result || typeof result !== "object") return false;
+  const maybe = result as { delivered?: unknown; conversationId?: unknown; messageId?: unknown };
+  return typeof maybe.delivered === "boolean" &&
+    typeof maybe.conversationId === "string" &&
+    typeof maybe.messageId === "string";
 }
 
 /** List directory contents up to a given depth */
