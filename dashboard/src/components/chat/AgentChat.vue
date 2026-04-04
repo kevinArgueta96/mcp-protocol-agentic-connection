@@ -41,6 +41,14 @@
             {{ selectedClient ? `Targeting ${selectedClient.projectName}` : "Pick a client session above" }}
           </span>
         </div>
+        <button
+          v-if="selectedClient && messages.length > 0"
+          class="btn-ghost"
+          :disabled="isStreaming"
+          @click="sendReminder"
+        >
+          remind
+        </button>
       </div>
       <div class="chat-input">
         <textarea
@@ -91,6 +99,10 @@ async function submit() {
   await nextTick();
   autoResize();
   await chatStore.sendMessage(text);
+}
+
+async function sendReminder() {
+  await chatStore.sendReminder();
 }
 
 function autoResize() {

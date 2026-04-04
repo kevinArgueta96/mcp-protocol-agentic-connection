@@ -12,6 +12,7 @@ export const useChatStore = defineStore("chat", () => {
     error: session.error,
     selectClient: session.selectClient.bind(session),
     sendMessage: session.sendMessage.bind(session),
+    sendReminder: session.sendReminder.bind(session),
     clearMessages: session.clear.bind(session),
     destroy: session.destroy.bind(session),
   };
