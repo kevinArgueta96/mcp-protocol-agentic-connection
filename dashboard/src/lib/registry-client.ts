@@ -18,6 +18,32 @@ export async function fetchAgents(filter?: {
   return res.json() as Promise<RegistryAgent[]>;
 }
 
+export async function registerClient(entry: RegistryAgent): Promise<RegistryAgent> {
+  const res = await fetch(`${BASE}/agents`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(entry),
+  });
+  if (!res.ok) throw new Error(`Client registration failed: ${res.status}`);
+  return res.json() as Promise<RegistryAgent>;
+}
+
+export async function sendClientHeartbeat(agentId: string): Promise<void> {
+  const res = await fetch(`${BASE}/agents/${encodeURIComponent(agentId)}/heartbeat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agentId, timestamp: Date.now(), status: "alive" }),
+  });
+  if (!res.ok) throw new Error(`Heartbeat failed: ${res.status}`);
+}
+
+export async function deregisterClient(agentId: string): Promise<void> {
+  const res = await fetch(`${BASE}/agents/${encodeURIComponent(agentId)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error(`Client deregistration failed: ${res.status}`);
+}
+
 export async function fetchAgent(agentId: string): Promise<RegistryAgent> {
   const res = await fetch(`${BASE}/agents/${encodeURIComponent(agentId)}`);
   if (!res.ok) throw new Error(`Agent not found: ${agentId}`);

@@ -5,7 +5,7 @@ import { createChannelMessage } from "@/lib/registry-client";
 import type { ChannelAckPayload, ChannelMessagePayload, ChatMessage, RegistryAgent, WsMessage } from "@/types";
 
 const REGISTRY_WS = import.meta.env.VITE_REGISTRY_WS ?? "ws://localhost:4999/ws";
-const DASHBOARD_AGENT_ID = "dashboard-ui";
+const DASHBOARD_AGENT_ID = "client-dashboard-ui";
 const DASHBOARD_AGENT_NAME = "Dashboard";
 
 function toChatMessage(message: ChannelMessagePayload): ChatMessage {
