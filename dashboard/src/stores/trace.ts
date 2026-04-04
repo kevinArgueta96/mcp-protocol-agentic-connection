@@ -7,6 +7,17 @@ import type { TraceEvent, WsMessage, TaskState, TraceEventKind } from "@/types";
 const REGISTRY_WS = import.meta.env.VITE_REGISTRY_WS ?? "ws://localhost:4999/ws";
 const MAX_EVENTS = 500;
 
+function normalizeClientLabel(value?: string): string | undefined {
+  if (!value) return undefined;
+  const normalized = value.toLowerCase();
+  if (normalized === "claude-code") return "Claude Code";
+  if (normalized === "claude") return "Claude";
+  if (normalized === "codex" || normalized === "codex-cli") return "Codex";
+  if (normalized === "gemini" || normalized === "gemini-cli") return "Gemini";
+  if (normalized === "client-dashboard-ui" || normalized === "dashboard-ui") return "Dashboard";
+  return value;
+}
+
 export interface TraceFilters {
   agentId?: string;
   skillId?: string;
@@ -46,6 +57,13 @@ export const useTraceStore = defineStore("trace", () => {
             expanded: false,
           });
         } else if (msg.type === "channel.message") {
+          const meta = msg.data.meta ?? {};
+          const targetClientId = typeof meta.targetClientId === "string" ? meta.targetClientId : msg.data.toAgentId;
+          const targetClientName = typeof meta.targetClientName === "string"
+            ? meta.targetClientName
+            : typeof meta.targetClient === "string"
+              ? meta.targetClient
+              : undefined;
           addEvent({
             id: randomUUID(),
             timestamp: new Date(msg.data.createdAt).toISOString(),
@@ -60,8 +78,9 @@ export const useTraceStore = defineStore("trace", () => {
             messageId: msg.data.messageId,
             replyTo: msg.data.replyTo,
             direction: msg.data.toAgentId ? "outgoing" : "incoming",
-            clientId: typeof msg.data.meta?.targetClientId === "string" ? msg.data.meta.targetClientId : msg.data.toAgentId,
-            clientName: typeof msg.data.meta?.targetProject === "string" ? msg.data.meta.targetProject : undefined,
+            clientId: targetClientId,
+            clientName: typeof meta.targetProject === "string" ? meta.targetProject : undefined,
+            clientLabel: normalizeClientLabel(targetClientName),
           });
         } else if (msg.type === "channel.ack") {
           addEvent({
@@ -77,6 +96,7 @@ export const useTraceStore = defineStore("trace", () => {
             conversationId: msg.data.conversationId,
             messageId: msg.data.messageId,
             channelState: msg.data.state,
+            clientLabel: normalizeClientLabel(msg.data.actorType === "client" ? msg.data.actorId : undefined),
           });
         }
       } catch {

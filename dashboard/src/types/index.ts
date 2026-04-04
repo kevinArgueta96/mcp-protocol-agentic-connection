@@ -63,6 +63,7 @@ export interface TraceEvent {
   toolCallArgs?: unknown;
   clientId?: string;
   clientName?: string;
+  clientLabel?: string;
   conversationId?: string;
   messageId?: string;
   replyTo?: string;

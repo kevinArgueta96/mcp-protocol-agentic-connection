@@ -3,7 +3,7 @@
     <div class="panel-header">
       <div class="panel-heading">
         <span class="panel-label">Agents</span>
-        <span class="panel-sublabel">registry snapshot split between runnable agents and connected Claude clients</span>
+        <span class="panel-sublabel">registry snapshot split between runnable agents and connected passive client sessions</span>
       </div>
       <span class="panel-count">{{ agentList.length }}</span>
     </div>
@@ -22,7 +22,7 @@
       <div v-else class="scrollable section-stack">
         <section v-if="clientList.length > 0">
           <div class="section-label-row">
-            <span class="section-label section-label--accent">Claude Clients</span>
+            <span class="section-label section-label--accent">Client Sessions</span>
             <span class="section-count">{{ clientList.length }}</span>
           </div>
           <TransitionGroup tag="div" name="agent-fade" class="conversation-stack">

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AgentMessage, ChannelMessage } from "../../types/messages.js";
-import type { ClientBehaviorProfile, ClaudeChannelNotification, LegacyNotifyPayload } from "../client-profile-resolver.js";
+import type { ClientBehaviorProfile, ClientNotificationEnvelope, LegacyNotifyPayload } from "../client-profile-resolver.js";
 
 function stringifyMeta(meta?: Record<string, unknown>): Record<string, string> {
   if (!meta) return {};
@@ -22,46 +22,55 @@ export class ClaudeClientProfile implements ClientBehaviorProfile {
     );
   }
 
-  mapChannelMessage(message: ChannelMessage): ClaudeChannelNotification {
+  mapChannelMessage(message: ChannelMessage): ClientNotificationEnvelope {
     return {
-      content: message.content,
-      meta: {
-        from_agent: message.fromAgentId,
-        ...(message.fromAgentName ? { agent_name: message.fromAgentName } : {}),
-        conversation_id: message.conversationId,
-        message_id: message.messageId,
-        ...(message.replyTo ? { reply_to: message.replyTo } : {}),
-        ...(message.taskId ? { task_id: message.taskId } : {}),
-        kind: message.kind,
-        ...stringifyMeta(message.meta),
+      method: "notifications/claude/channel",
+      params: {
+        content: message.content,
+        meta: {
+          from_agent: message.fromAgentId,
+          ...(message.fromAgentName ? { agent_name: message.fromAgentName } : {}),
+          conversation_id: message.conversationId,
+          message_id: message.messageId,
+          ...(message.replyTo ? { reply_to: message.replyTo } : {}),
+          ...(message.taskId ? { task_id: message.taskId } : {}),
+          kind: message.kind,
+          ...stringifyMeta(message.meta),
+        },
       },
     };
   }
 
-  mapLegacyNotify(payload: LegacyNotifyPayload): ClaudeChannelNotification {
+  mapLegacyNotify(payload: LegacyNotifyPayload): ClientNotificationEnvelope {
     return {
-      content: payload.content,
-      meta: {
-        ...(payload.agentId ? { from_agent: payload.agentId } : {}),
-        ...(payload.agentName ? { agent_name: payload.agentName } : {}),
-        conversation_id: payload.conversationId ?? randomUUID(),
-        message_id: payload.messageId ?? randomUUID(),
-        ...stringifyMeta(payload.meta),
+      method: "notifications/claude/channel",
+      params: {
+        content: payload.content,
+        meta: {
+          ...(payload.agentId ? { from_agent: payload.agentId } : {}),
+          ...(payload.agentName ? { agent_name: payload.agentName } : {}),
+          conversation_id: payload.conversationId ?? randomUUID(),
+          message_id: payload.messageId ?? randomUUID(),
+          ...stringifyMeta(payload.meta),
+        },
       },
     };
   }
 
-  mapTaskRequestMessage(message: AgentMessage): ClaudeChannelNotification | null {
+  mapTaskRequestMessage(message: AgentMessage): ClientNotificationEnvelope | null {
     if (message.type !== "task.request") return null;
     const payload = message.payload as { message?: string; skillId?: string } | null;
     const rawMessage = payload?.message ?? "";
     const content = rawMessage || JSON.stringify(payload);
     return {
-      content,
-      meta: {
-        from_agent: message.fromAgentId ?? "",
-        task_id: message.taskId ?? "",
-        ...(payload?.skillId ? { skill_id: payload.skillId } : {}),
+      method: "notifications/claude/channel",
+      params: {
+        content,
+        meta: {
+          from_agent: message.fromAgentId ?? "",
+          task_id: message.taskId ?? "",
+          ...(payload?.skillId ? { skill_id: payload.skillId } : {}),
+        },
       },
     };
   }

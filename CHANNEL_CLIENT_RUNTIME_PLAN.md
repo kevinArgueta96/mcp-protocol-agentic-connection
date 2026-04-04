@@ -2,7 +2,7 @@
 
 ## Goal
 
-Create a shared client runtime so Claude, Codex, dashboard, and future clients behave the same way over agent-bridge channels.
+Create a shared client runtime so Codex, Claude, dashboard, Gemini, and future clients behave the same way over agent-bridge channels.
 
 The runtime must standardize:
 
@@ -42,8 +42,8 @@ In scope:
 - shared transport against registry HTTP + WS
 - shared conversation behavior
 - dashboard migration
-- MCP / Claude bridge migration
-- prep for Codex client support
+- MCP / client bridge migration
+- Codex-first client support
 
 Out of scope:
 
@@ -94,7 +94,7 @@ Responsibility:
 
 - registry HTTP transport
 - registry websocket transport
-- MCP / Claude notification bridge
+- MCP / client notification bridge
 - dashboard bindings
 - future Codex bindings
 
@@ -159,8 +159,10 @@ Responsibility:
 Adapters:
 
 - dashboard adapter
-- MCP / Claude adapter
-- future Codex adapter
+- MCP / client adapter
+- Codex adapter
+- Claude adapter
+- Gemini adapter
 
 ### 5. Client Behavior Profiles
 
@@ -168,7 +170,8 @@ Responsibility:
 
 - choose client-specific behavior without breaking the shared runtime
 - preserve known-good Claude behavior
-- allow Codex and dashboard to evolve independently
+- make Codex the default production-facing client layer
+- allow Codex, Claude, and dashboard to evolve independently
 
 Examples:
 
@@ -227,7 +230,7 @@ interface ClientBehaviorProfile {
 - Phase 2: in progress
   shared runtime active in `src/client/channel-client-runtime.ts`
 - Phase 2A: completed
-  Claude-specific behavior moved behind `ClaudeClientProfile`
+  client-specific behavior moved behind profiles (`ClaudeClientProfile`, `CodexClientProfile`, `GeminiClientProfile`)
 - Phase 3: in progress
   conversation state extracted to `src/client/conversation-session-store.ts`
   and `reply` context is now being centralized in the runtime/store layer
@@ -238,6 +241,8 @@ interface ClientBehaviorProfile {
 
 - Node-side no longer needs to keep reply inference in the MCP adapter only.
 - The runtime/store layer now owns conversation correlation and reply context resolution.
+- The MCP surface is moving from Claude-specific naming to generic client-session naming.
+- Codex is now the target production client layer; Claude remains compatibility-first, Gemini follows the same seam.
 - This reduces Claude-specific orchestration in `src/mcp/adapter.ts` and moves the project closer to a real application-layer runtime.
 - The runtime now also owns conversation update events, message listing per conversation,
   and delivery acknowledgements as application APIs instead of adapter-level transport calls.

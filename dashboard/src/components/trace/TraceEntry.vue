@@ -10,7 +10,8 @@
         {{ kindLabel }}
       </span>
 
-      <span v-if="event.clientName" class="chip chip-violet">{{ event.clientName }}</span>
+      <span v-if="event.clientLabel" class="chip chip-violet">{{ event.clientLabel }}</span>
+      <span v-if="event.clientName" class="chip chip-dim">{{ event.clientName }}</span>
 
       <span class="trace-entry__time">{{ formattedTime }}</span>
     </div>
@@ -18,6 +19,7 @@
     <div class="trace-entry__meta trace-entry__meta--spaced">
       <span class="trace-entry__token">{{ shortTaskId }}</span>
       <span v-if="event.conversationId" class="trace-entry__token">conv {{ shortConversationId }}</span>
+      <span v-if="clientSummary" class="trace-entry__token">{{ clientSummary }}</span>
       <span v-if="channelSummary" class="trace-entry__token">{{ channelSummary }}</span>
     </div>
 
@@ -91,6 +93,14 @@ const channelSummary = computed(() => {
     return props.event.messageId ? `msg ${props.event.messageId.slice(0, 8)}…` : "";
   }
   return "";
+});
+
+const clientSummary = computed(() => {
+  if (!props.event.clientLabel && !props.event.clientName) return "";
+  if (props.event.clientLabel && props.event.clientName) {
+    return `${props.event.clientLabel} · ${props.event.clientName}`;
+  }
+  return props.event.clientLabel ?? props.event.clientName ?? "";
 });
 
 const argsPreview = computed(() => {

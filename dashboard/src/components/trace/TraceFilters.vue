@@ -31,7 +31,7 @@
     </div>
 
     <div v-if="clientList.length > 0" class="toolbar-field">
-      <label class="toolbar-label">Client</label>
+      <label class="toolbar-label">Client Session</label>
       <div class="select-wrap">
         <select
           class="sig-select"
@@ -39,7 +39,7 @@
           @change="(e) => store.setFilter('clientId', (e.target as HTMLSelectElement).value)"
         >
           <option value="">all</option>
-          <option v-for="c in clientList" :key="c.agentId" :value="c.agentId">{{ c.clientInfo?.clientName ?? c.name }}</option>
+          <option v-for="c in clientList" :key="c.agentId" :value="c.agentId">{{ c.projectName }} · {{ clientLabel(c.clientInfo?.clientName) }}</option>
         </select>
         <span class="select-caret">▾</span>
       </div>
@@ -90,6 +90,17 @@ const totalCount = computed(() => store.events.length);
 
 const states: TaskState[] = ["submitted", "working", "input-required", "completed", "failed", "canceled"];
 const kinds: TraceEventKind[] = ["task", "channel-message", "channel-ack", "ag-ui-step", "ag-ui-tool"];
+
+function clientLabel(name?: string): string {
+  if (!name) return "unknown";
+  const normalized = name.toLowerCase();
+  if (normalized === "claude-code") return "Claude Code";
+  if (normalized === "claude") return "Claude";
+  if (normalized === "codex" || normalized === "codex-cli") return "Codex";
+  if (normalized === "gemini" || normalized === "gemini-cli") return "Gemini";
+  if (normalized === "client-dashboard-ui" || normalized === "dashboard-ui") return "Dashboard";
+  return name;
+}
 </script>
 
 <style scoped>

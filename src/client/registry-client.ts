@@ -29,7 +29,7 @@ export class RegistryClient {
     return agents.find((a) => a.projectPath === projectPath) ?? agents[0];
   }
 
-  async findClaudeClient(params: { clientId?: string; project?: string }): Promise<RegistryEntry | undefined> {
+  async findClientSession(params: { clientId?: string; project?: string }): Promise<RegistryEntry | undefined> {
     const agents = await this.listAgents();
     const clients = agents.filter((entry) => entry.entryType === "client");
 
@@ -47,6 +47,10 @@ export class RegistryClient {
     }
 
     return undefined;
+  }
+
+  async findClaudeClient(params: { clientId?: string; project?: string }): Promise<RegistryEntry | undefined> {
+    return this.findClientSession(params);
   }
 
   async health(): Promise<{ status: string; agents: number }> {

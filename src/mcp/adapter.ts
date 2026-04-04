@@ -96,13 +96,13 @@ function formatAgentsSummary(agents: RegistryEntry[]): string {
       ].join("\n");
     }),
     "",
-    clients.length > 0 ? "Claude clients via channels:\n" : "Claude clients via channels:\n  (none)",
+    clients.length > 0 ? "Client sessions via channels:\n" : "Client sessions via channels:\n  (none)",
     ...clients.map((a) => [
       `Client: ${a.name}  [${a.agentId.slice(0, 8)}]`,
       `  Project: ${a.projectPath}`,
       `  Client:  ${a.clientInfo?.clientName ?? "unknown"} ${a.clientInfo?.clientVersion ?? ""}`.trimEnd(),
       `  Status:  ${a.healthy ? "healthy" : "unhealthy"}`,
-      "  Use:     message_claude_client",
+      "  Use:     message_client_session",
     ].join("\n")),
   ].join("\n");
 }
@@ -144,16 +144,16 @@ export class McpAgentBridge {
       maxReconnectAttempts: 5,
     });
     this.conversationService = new ConversationService(this.channelRuntime);
-    this.clientProfile = this.profileResolver.resolve({ clientName: "claude-code" });
+    this.clientProfile = this.profileResolver.resolve({ clientName: "codex" });
     this.server = new McpServer(
       { name: "agent-bridge", version: "0.1.0" },
       {
         capabilities: { experimental: { "claude/channel": {} } },
         instructions:
           "You are connected to agent-bridge, a multi-agent communication hub. " +
-          "Connected agents appear as <channel source=\"agent-bridge\" from_agent=\"<name>\" agent_id=\"<id>\"> events when they send you a message. " +
-          "Use list_agents to discover available agents and Claude clients, agent_health to check runnable agents, " +
-          "ask_agent for A2A agents with skills/HTTP endpoints, and message_claude_client for passive Claude client sessions over channels. " +
+          "Connected agents can send you channel events through your current client profile. " +
+          "Use list_agents to discover available agents and client sessions, agent_health to check runnable agents, " +
+          "ask_agent for A2A agents with skills/HTTP endpoints, and message_client_session for passive client sessions over channels. " +
           "Use reply to respond to incoming channel events.",
       },
     );
@@ -281,10 +281,8 @@ export class McpAgentBridge {
       });
 
       const notification = this.clientProfile.mapChannelMessage(channelMessage);
-      void this.server.server.notification({
-        method: "notifications/claude/channel",
-        params: notification,
-      }).then(() => this.postChannelAck({
+      if (!notification) return;
+      void this.server.server.notification(notification).then(() => this.postChannelAck({
         conversationId: channelMessage.conversationId,
         messageId: channelMessage.messageId,
         state: "displayed_to_client",
@@ -298,10 +296,8 @@ export class McpAgentBridge {
 
     this.channelRuntime.on("legacy.notify", (notify) => {
       const notification = this.clientProfile.mapLegacyNotify(notify);
-      void this.server.server.notification({
-        method: "notifications/claude/channel",
-        params: notification,
-      });
+      if (!notification) return;
+      void this.server.server.notification(notification);
     });
 
     this.channelRuntime.on("agent.message", (agentMsg) => {
@@ -312,10 +308,7 @@ export class McpAgentBridge {
 
         const notification = this.clientProfile.mapTaskRequestMessage(agentMsg);
         if (!notification) return;
-        void this.server.server.notification({
-          method: "notifications/claude/channel",
-          params: notification,
-        });
+        void this.server.server.notification(notification);
       }
 
       if (agentMsg.type === "task.response" && agentMsg.taskId) {
@@ -609,7 +602,7 @@ export class McpAgentBridge {
           "Tries WebSocket relay first for real-time communication, falls back to HTTP. " +
           "Optionally specify a skillId to invoke a specific capability. " +
           "Use this only with runnable agents that expose skills/HTTP endpoints. " +
-          "For Claude client sessions discovered in list_agents, use message_claude_client instead.",
+          "For passive client sessions discovered in list_agents, use message_client_session instead.",
         inputSchema: {
           agentId: z.string().describe("Target agent ID or name (from list_agents)"),
           message: z.string().describe("The message, question, or task to send"),
@@ -629,7 +622,7 @@ export class McpAgentBridge {
             return {
               content: [{
                 type: "text" as const,
-                text: `Target "${entry.name}" is a Claude client session, not a runnable A2A agent. Use message_claude_client with clientId=${entry.agentId}.`,
+                text: `Target "${entry.name}" is a passive client session, not a runnable A2A agent. Use message_client_session with clientId=${entry.agentId}.`,
               }],
               isError: true,
             };
@@ -833,16 +826,16 @@ export class McpAgentBridge {
     );
 
     this.server.registerTool(
-      "message_claude_client",
+      "message_client_session",
       {
         description:
-          "Send a channel message to a specific Claude Code client session. " +
-          "Use this for Claude-to-Claude or agent-to-Claude conversations over channels. " +
+          "Send a channel message to a specific client session. " +
+          "Use this for Codex, Claude, Gemini, or dashboard conversations over channels. " +
           "Do not use ask_agent for passive client entries.",
         inputSchema: {
-          clientId: z.string().optional().describe("Target Claude client agentId"),
-          project: z.string().optional().describe("Project name or path used to resolve the Claude client"),
-          message: z.string().describe("Message to send over the Claude channel"),
+          clientId: z.string().optional().describe("Target client session agentId"),
+          project: z.string().optional().describe("Project name or path used to resolve the target client session"),
+          message: z.string().describe("Message to send over the channel"),
           conversationId: z.string().optional().describe("Conversation ID to continue"),
           replyTo: z.string().optional().describe("Message ID this replies to"),
           taskId: z.string().optional().describe("Optional task ID associated with the channel conversation"),
@@ -850,57 +843,27 @@ export class McpAgentBridge {
           timeoutMs: z.coerce.number().optional().describe("How long the receiver may take to reply before the message expires"),
         },
       },
-      async ({ clientId, project, message, conversationId, replyTo, taskId, expectsResponse = false, timeoutMs }) => {
-        try {
-          const client = await this.resolveClaudeClient({ clientId, project });
-          const snapshot = replyTo || conversationId
-            ? (await this.conversationService.replyAndAcknowledge({
-                agentId: client.agentId,
-                conversationId,
-                replyTo,
-                taskId,
-                message,
-                kind: "chat",
-                requiresAck: true,
-                expectsResponse,
-                expiresAt: expectsResponse ? Date.now() + (timeoutMs ?? 300_000) : undefined,
-                meta: {
-                  targetClientId: client.agentId,
-                  targetProject: client.projectPath,
-                },
-              })).snapshot
-            : await this.conversationService.startConversation({
-                toAgentId: client.agentId,
-                taskId,
-                message,
-                kind: "chat",
-                expectsResponse,
-                requiresAck: true,
-                expiresAt: expectsResponse ? Date.now() + (timeoutMs ?? 300_000) : undefined,
-                meta: {
-                  targetClientId: client.agentId,
-                  targetProject: client.projectPath,
-                },
-              });
-          const channelMessage = snapshot.messages[snapshot.messages.length - 1];
+      async (input) => this.handleMessageClientSession(input)
+    );
 
-          return {
-            content: [{
-              type: "text" as const,
-              text:
-                `Channel message sent to ${client.name}\n` +
-                `clientId=${client.agentId}\n` +
-                `conversationId=${channelMessage.conversationId}\n` +
-                `messageId=${channelMessage.messageId}`,
-            }],
-          };
-        } catch (err) {
-          return {
-            content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
-            isError: true,
-          };
-        }
-      }
+    this.server.registerTool(
+      "message_claude_client",
+      {
+        description:
+          "Compatibility alias for message_client_session. " +
+          "Prefer message_client_session for new integrations.",
+        inputSchema: {
+          clientId: z.string().optional().describe("Target client session agentId"),
+          project: z.string().optional().describe("Project name or path used to resolve the target client session"),
+          message: z.string().describe("Message to send over the channel"),
+          conversationId: z.string().optional().describe("Conversation ID to continue"),
+          replyTo: z.string().optional().describe("Message ID this replies to"),
+          taskId: z.string().optional().describe("Optional task ID associated with the channel conversation"),
+          expectsResponse: z.boolean().optional().describe("Whether the sender expects a reply"),
+          timeoutMs: z.coerce.number().optional().describe("How long the receiver may take to reply before the message expires"),
+        },
+      },
+      async (input) => this.handleMessageClientSession(input)
     );
 
     this.server.registerTool(
@@ -1206,7 +1169,8 @@ export class McpAgentBridge {
               "- **list_agents** — Refresh and list all connected agents",
               "- **agent_health** — Check if a specific agent is alive",
               "- **ask_agent** — Send any message/task to a runnable A2A agent",
-              "- **message_claude_client** — Send a channel message to a Claude client session",
+              "- **message_client_session** — Send a channel message to a passive client session",
+              "- **message_claude_client** — Compatibility alias for Claude-oriented workflows",
               "- **reply** — Reply to an incoming channel event from an agent",
               "- **project_info** — Get project metadata from an agent",
               "- **project_files** — List files in a remote project",
@@ -1281,8 +1245,8 @@ export class McpAgentBridge {
     }
   }
 
-  private async resolveClaudeClient(params: { clientId?: string; project?: string }): Promise<RegistryEntry> {
-    const entry = await this.registry.findClaudeClient({
+  private async resolveClientSession(params: { clientId?: string; project?: string }): Promise<RegistryEntry> {
+    const entry = await this.registry.findClientSession({
       clientId: params.clientId,
       project: params.project,
     });
@@ -1290,16 +1254,81 @@ export class McpAgentBridge {
     if (!entry) {
       throw new Error(
         params.clientId
-          ? `Claude client "${params.clientId}" not found. Use list_agents with includeClients=true.`
-          : `No Claude client found for project "${params.project}". Use list_agents with includeClients=true.`
+          ? `Client session "${params.clientId}" not found. Use list_agents with includeClients=true.`
+          : `No client session found for project "${params.project}". Use list_agents with includeClients=true.`
       );
     }
 
     if (entry.entryType !== "client") {
-      throw new Error(`Target "${entry.name}" is not a Claude client session.`);
+      throw new Error(`Target "${entry.name}" is not a passive client session.`);
     }
 
     return entry;
+  }
+
+  private async handleMessageClientSession(params: {
+    clientId?: string;
+    project?: string;
+    message: string;
+    conversationId?: string;
+    replyTo?: string;
+    taskId?: string;
+    expectsResponse?: boolean;
+    timeoutMs?: number;
+  }): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
+    try {
+      const client = await this.resolveClientSession({ clientId: params.clientId, project: params.project });
+      const expectsResponse = params.expectsResponse ?? false;
+      const expiresAt = expectsResponse ? Date.now() + (params.timeoutMs ?? 300_000) : undefined;
+      const snapshot = params.replyTo || params.conversationId
+        ? (await this.conversationService.replyAndAcknowledge({
+            agentId: client.agentId,
+            conversationId: params.conversationId,
+            replyTo: params.replyTo,
+            taskId: params.taskId,
+            message: params.message,
+            kind: "chat",
+            requiresAck: true,
+            expectsResponse,
+            expiresAt,
+            meta: {
+              targetClientId: client.agentId,
+              targetProject: client.projectPath,
+              targetClientName: client.clientInfo?.clientName,
+            },
+          })).snapshot
+        : await this.conversationService.startConversation({
+            toAgentId: client.agentId,
+            taskId: params.taskId,
+            message: params.message,
+            kind: "chat",
+            expectsResponse,
+            requiresAck: true,
+            expiresAt,
+            meta: {
+              targetClientId: client.agentId,
+              targetProject: client.projectPath,
+              targetClientName: client.clientInfo?.clientName,
+            },
+          });
+      const channelMessage = snapshot.messages[snapshot.messages.length - 1];
+
+      return {
+        content: [{
+          type: "text" as const,
+          text:
+            `Channel message sent to ${client.name}\n` +
+            `clientId=${client.agentId}\n` +
+            `conversationId=${channelMessage.conversationId}\n` +
+            `messageId=${channelMessage.messageId}`,
+        }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
   }
 
   // ── HTTP transport ─────────────────────────────────────────────────────────

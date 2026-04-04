@@ -3,8 +3,8 @@
     <label class="toolbar-label">Send Channel To</label>
     <div class="select-wrap">
       <select class="sig-select" :value="selectedId" @change="onSelect">
-        <option value="">Choose a Claude client session</option>
-        <optgroup v-if="clientAgents.length > 0" label="Claude clients">
+        <option value="">Choose a client session</option>
+        <optgroup v-if="clientAgents.length > 0" label="Passive client sessions">
           <option
             v-for="agent in clientAgents"
             :key="agent.agentId"
@@ -19,7 +19,7 @@
             :key="agent.agentId"
             disabled
           >
-            {{ agent.projectName }} — use ask_agent, not channel chat
+            {{ agent.projectName }} — use ask_agent, not client-session chat
           </option>
         </optgroup>
       </select>

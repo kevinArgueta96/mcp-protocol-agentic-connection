@@ -2,7 +2,7 @@
 
 ## Objetivo
 
-Documentar los cambios realizados para llevar `agent-bridge` desde un flujo de notificacion simple a un MVP de mensajeria conversacional orientado a Claude Channels.
+Documentar los cambios realizados para llevar `agent-bridge` desde un flujo de notificacion simple a un MVP de mensajeria conversacional orientado a clientes MCP, con Codex como capa objetivo de produccion.
 
 ## Estado actual
 
@@ -13,8 +13,9 @@ El sistema ya soporta:
 - `reply` correlacionado
 - tareas que pasan a `input-required`
 - reanudacion de tareas por respuesta de channel
-- separacion entre agentes A2A y clientes Claude
-- tool dedicada para clientes Claude: `message_claude_client`
+- separacion entre agentes A2A y sesiones cliente
+- tool generica para sesiones cliente: `message_client_session`
+- alias de compatibilidad: `message_claude_client`
 - observabilidad basica de channels en el dashboard
 - persistencia local del canal en SQLite
 - vista dedicada `/channels`
@@ -131,7 +132,7 @@ Impacto:
 
 - el registry se estabiliza mejor cuando Claude se reconecta
 
-### 7. Resolucion de clientes Claude
+### 7. Resolucion de sesiones cliente
 
 Archivo:
 
@@ -139,11 +140,11 @@ Archivo:
 
 Se agrego:
 
-- `findClaudeClient()`
+- `findClientSession()`
 
 Impacto:
 
-- `notify-claude` y `message_claude_client` pueden resolver destino por `clientId` o `project`
+- `notify-claude`, `message_client_session` y el alias `message_claude_client` pueden resolver destino por `clientId` o `project`
 
 ### 8. `notify-claude`
 
@@ -219,7 +220,8 @@ Cambios principales:
 Impacto:
 
 - se corrigieron loops y mensajes `unknown`
-- quedó una capa separada para sessions Claude
+- quedó una capa separada para sesiones cliente pasivas
+- la superficie MCP ahora puede evolucionar hacia Codex sin depender del naming Claude
 
 ### 12. Runtime conversacional compartido
 
@@ -237,10 +239,36 @@ Se agrego:
 - runtime de cliente para registro, heartbeat, envio y ACK
 - store conversacional local
 - servicio conversacional para `startConversation`, `replyAndAcknowledge`, snapshots y expiracion local
+- perfiles explicitos para `Claude`, `Codex` y `Gemini`
 
 Impacto:
 
-- la capa node-side ya tiene una base comun para Claude, Codex y futuros clientes
+- la capa node-side ya tiene una base comun para Codex, Claude, Gemini y futuros clientes
+
+### 15. Capa Codex-first en el bridge MCP
+
+Archivos:
+
+- `src/client/profiles/codex-client-profile.ts`
+- `src/client/profiles/gemini-client-profile.ts`
+- `src/client/profiles/claude-client-profile.ts`
+- `src/client/client-profile-resolver.ts`
+- `src/mcp/adapter.ts`
+
+Se cambio:
+
+- `CodexClientProfile` usa `notifications/message` como superficie generica
+- `GeminiClientProfile` sigue el mismo contrato generico
+- `ClaudeClientProfile` conserva `notifications/claude/channel`
+- el resolver ya no cae por defecto a Claude; ahora usa Codex como comportamiento generico seguro
+- la tool principal paso a ser `message_client_session`
+- `message_claude_client` queda como alias de compatibilidad
+
+Impacto:
+
+- el MVP ya no refleja una arquitectura Claude-only
+- Codex queda como capa objetivo de produccion sin romper soporte actual para Claude
+- Gemini puede entrar sobre el mismo seam sin rehacer la mensajeria
 
 ### 13. Pendientes por mensaje y ACK correcto
 

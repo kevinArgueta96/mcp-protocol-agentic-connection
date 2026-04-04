@@ -58,7 +58,9 @@ const CLIENT_LABELS: Record<string, string> = {
   "claude-code": "Claude Code",
   "claude":      "Claude",
   "codex":       "Codex CLI",
+  "codex-cli":   "Codex CLI",
   "gemini-cli":  "Gemini CLI",
+  "gemini":      "Gemini",
   "cursor":      "Cursor",
   "copilot":     "Copilot",
 };

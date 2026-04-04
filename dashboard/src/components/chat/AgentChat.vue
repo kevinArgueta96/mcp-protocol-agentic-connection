@@ -3,7 +3,7 @@
     <div class="panel-header">
       <div class="panel-heading">
         <span class="panel-label">Chat</span>
-        <span class="panel-sublabel">channel composer for Claude client sessions</span>
+        <span class="panel-sublabel">channel composer for passive client sessions</span>
       </div>
       <button v-if="messages.length > 0" class="btn-ghost" @click="chatStore.clearMessages()">
         clear
@@ -16,15 +16,15 @@
 
     <div v-if="!selectedClient" class="empty-state">
       <div class="empty-state__icon">⬡</div>
-      <p class="empty-state__title">Select a Claude client</p>
-      <p class="empty-state__body">This panel is now dedicated to channel messaging. Runnable agents stay in the trace and ask-agent flows, but chat here only targets connected Claude sessions.</p>
+      <p class="empty-state__title">Select a client session</p>
+      <p class="empty-state__body">This panel is dedicated to channel messaging. Runnable agents stay in the trace and `ask_agent` flows, but chat here targets passive client sessions such as Codex, Claude, Gemini, or the dashboard.</p>
     </div>
 
     <div v-else ref="messagesEl" class="scrollable chat-list">
       <div v-if="messages.length === 0" class="empty-state">
         <div class="empty-state__icon">✦</div>
         <p class="empty-state__title">Ready for {{ selectedClient.projectName }}</p>
-        <p class="empty-state__body">Send the first channel message to start a conversation. Replies from that Claude session will stream back here when they arrive through the registry.</p>
+        <p class="empty-state__body">Send the first channel message to start a conversation. Replies from that client session will stream back here when they arrive through the registry.</p>
       </div>
       <ChatMessage v-for="msg in messages" :key="msg.id" :message="msg" />
     </div>
@@ -38,7 +38,7 @@
         <div class="panel-heading chat-compose-heading">
           <span class="field-note">Compose message</span>
           <span class="panel-sublabel chat-compose-subtitle">
-            {{ selectedClient ? `Targeting ${selectedClient.projectName}` : "Pick a Claude client above" }}
+            {{ selectedClient ? `Targeting ${selectedClient.projectName}` : "Pick a client session above" }}
           </span>
         </div>
       </div>
@@ -48,7 +48,7 @@
           v-model="input"
           rows="1"
           class="chat-textarea"
-          placeholder="Write the channel message you want to push to the selected Claude session..."
+          placeholder="Write the channel message you want to push to the selected client session..."
           :disabled="!selectedClient || isStreaming"
           @focus="focused = true"
           @blur="focused = false"
@@ -61,7 +61,7 @@
           <span v-else>↑</span>
         </button>
       </div>
-      <p class="chat-box__hint">Enter to send · Shift+Enter for newline · the panel stays on one conversation thread per selected client</p>
+      <p class="chat-box__hint">Enter to send · Shift+Enter for newline · one active conversation thread is kept per selected client session</p>
     </div>
   </div>
 </template>
