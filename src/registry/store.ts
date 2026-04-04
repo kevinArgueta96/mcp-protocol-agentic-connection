@@ -11,6 +11,30 @@ export class AgentStore {
   constructor(private readonly eventBus?: RegistryEventBus) {}
 
   register(registration: AgentRegistration): RegistryEntry {
+    // Replace stale entries for the same logical runtime.
+    // This keeps the dashboard stable when Claude reconnects for the same project.
+    for (const [existingId, existing] of this.agents.entries()) {
+      const sameClientSession =
+        registration.entryType === "client" &&
+        existing.entryType === "client" &&
+        existing.projectPath === registration.projectPath &&
+        existing.clientInfo?.clientName === registration.clientInfo?.clientName;
+
+      const sameProjectAgent =
+        (registration.entryType ?? "agent") === "agent" &&
+        (existing.entryType ?? "agent") === "agent" &&
+        existing.projectPath === registration.projectPath;
+
+      if ((sameClientSession || sameProjectAgent) && existingId !== registration.agentId) {
+        this.agents.delete(existingId);
+        this.eventBus?.broadcast({
+          type: "agent.deregistered",
+          timestamp: new Date().toISOString(),
+          data: { agentId: existingId },
+        });
+      }
+    }
+
     const entry: RegistryEntry = {
       ...registration,
       lastHeartbeat: Date.now(),

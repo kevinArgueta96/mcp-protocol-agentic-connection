@@ -112,8 +112,11 @@ export const useRegistryStore = defineStore("registry", () => {
 
   // Computed
   const agentList = computed(() => Array.from(agents.value.values()));
-  const agentCount = computed(() => agents.value.size);
-  const healthyCount = computed(() => agentList.value.filter((a) => a.healthy).length);
+  const clientList = computed(() => agentList.value.filter((a) => a.entryType === "client"));
+  const runnableAgentList = computed(() => agentList.value.filter((a) => a.entryType !== "client"));
+  const agentCount = computed(() => runnableAgentList.value.length);
+  const clientCount = computed(() => clientList.value.length);
+  const healthyCount = computed(() => runnableAgentList.value.filter((a) => a.healthy).length);
 
   function getAgent(id: string): RegistryAgent | undefined {
     return agents.value.get(id);
@@ -135,7 +138,10 @@ export const useRegistryStore = defineStore("registry", () => {
   return {
     agents,
     agentList,
+    clientList,
+    runnableAgentList,
     agentCount,
+    clientCount,
     healthyCount,
     status,
     lastEventAt,

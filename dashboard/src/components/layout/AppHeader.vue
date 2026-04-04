@@ -48,6 +48,10 @@
         <span style="color:var(--text-ghost);">/</span>
         <span style="color:var(--text-mid);">{{ agentCount }}</span>
       </div>
+      <div style="display:flex;align-items:center;gap:4px;font-size:10px;">
+        <span style="color:var(--text-dim);">clients</span>
+        <span style="color:var(--indigo);font-weight:700;">{{ clientCount }}</span>
+      </div>
     </div>
   </header>
 </template>
@@ -63,6 +67,7 @@ const store = useRegistryStore();
 const status = computed(() => store.status);
 const agentCount = computed(() => store.agentCount);
 const healthyCount = computed(() => store.healthyCount);
+const clientCount = computed(() => store.clientCount);
 
 const statusLabel = computed(() => ({
   connected: "live",
