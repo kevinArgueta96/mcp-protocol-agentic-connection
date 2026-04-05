@@ -12,8 +12,9 @@
 
 import { McpServer, ResourceTemplate, type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { basename } from "node:path";
+import { basename, resolve } from "node:path";
 import { z } from "zod";
 import { RegistryClient } from "../client/registry-client.js";
 import { ChannelTransport } from "../client/channel-transport.js";
@@ -29,6 +30,8 @@ import { GeminiProxy } from "./proxies/gemini-proxy.js";
 import type { RegistryEntry, AgentMessage, ChannelMessage } from "../types/messages.js";
 import type { Task, Part, Message } from "../types/a2a.js";
 import { WebSocket } from "ws";
+import { clearCurrentCodexSession, readCurrentCodexSession, writeCurrentCodexSession } from "../client/codex-session-files.js";
+import { detectCurrentTmuxBinding } from "../client/codex-tmux.js";
 
 export interface McpAdapterOptions {
   registryUrl?: string;
@@ -42,6 +45,12 @@ export interface McpAdapterOptions {
   useClaudeCode?: boolean;
   /** Optional path to .agent-bridge.mcp.yml */
   configPath?: string;
+  /** Auto-start a detached Codex tmux sidecar when the connected client is Codex */
+  codexSidecar?: boolean;
+  /** Poll interval for the detached Codex tmux sidecar */
+  codexSidecarPollIntervalMs?: number;
+  /** Retry interval for the same pending message in the Codex tmux sidecar */
+  codexSidecarRetryIntervalMs?: number;
 }
 
 function toolPrefix(name: string): string {
@@ -138,6 +147,7 @@ export class McpAgentBridge {
   private inboxPollTimer: NodeJS.Timeout | null = null;
   private surfacedInboxMessageIds = new Set<string>();
   private agentToolMap = new Map<string, RegisteredTool[]>();
+  private codexSidecarProcess: ChildProcess | null = null;
 
   constructor(options: McpAdapterOptions = {}) {
     this.options = {
@@ -147,6 +157,9 @@ export class McpAgentBridge {
       registerSkillTools: false,
       useClaudeCode: false,
       configPath: "",
+      codexSidecar: false,
+      codexSidecarPollIntervalMs: 2_000,
+      codexSidecarRetryIntervalMs: 30_000,
       ...options,
     };
     this.bridgeConfig = loadMcpBridgeConfig(this.options.projectPath, this.options.configPath || undefined);
@@ -715,13 +728,33 @@ export class McpAgentBridge {
         };
 
         await this.channelRuntime.activateClient(registration);
+        if (clientName.toLowerCase().includes("codex")) {
+          const existing = readCurrentCodexSession(realProjectPath);
+          const tmuxBinding = await detectCurrentTmuxBinding();
+          writeCurrentCodexSession(realProjectPath, {
+            clientAgentId: this.clientAgentId,
+            clientName,
+            projectPath: realProjectPath,
+            registeredAt: Date.now(),
+            sidecarPid: existing?.sidecarPid,
+            tmuxPane: tmuxBinding?.pane ?? existing?.tmuxPane,
+            tmuxSessionName: tmuxBinding?.sessionName ?? existing?.tmuxSessionName,
+            tmuxWindowName: tmuxBinding?.windowName ?? existing?.tmuxWindowName,
+            tmuxCurrentCommand: tmuxBinding?.currentCommand ?? existing?.tmuxCurrentCommand,
+          });
+        }
         await this.syncRegistryToLocalStore();
         this.startInboxPolling();
+        this.startCodexSidecarIfNeeded(realProjectPath, clientName);
         console.error(`[MCP] Registered client: ${realProjectName} (${clientName} v${version})`);
 
         const cleanup = async () => {
+          this.stopCodexSidecar();
           this.stopInboxPolling();
           await this.channelRuntime.deactivateClient();
+          if (clientName.toLowerCase().includes("codex")) {
+            clearCurrentCodexSession(realProjectPath, this.clientAgentId ?? undefined);
+          }
           this.clientAgentId = null;
           // Stop embedded agent so it deregisters from registry
           if (this.embeddedAgent) {
@@ -740,6 +773,79 @@ export class McpAgentBridge {
       } catch (err) {
         console.error("[MCP] Failed to register client:", err);
       }
+    };
+  }
+
+  private startCodexSidecarIfNeeded(projectPath: string, clientName: string): void {
+    if (!this.options.codexSidecar) return;
+    const normalized = clientName.toLowerCase();
+    if (!normalized.includes("codex")) return;
+    if (this.codexSidecarProcess || !this.clientAgentId) return;
+
+    const launch = this.buildSidecarLaunch(projectPath);
+    const child = spawn(launch.command, launch.args, {
+      detached: true,
+      stdio: "ignore",
+      cwd: projectPath,
+      env: process.env,
+    });
+    child.unref();
+    this.codexSidecarProcess = child;
+    const existing = readCurrentCodexSession(projectPath);
+    writeCurrentCodexSession(projectPath, {
+      clientAgentId: this.clientAgentId,
+      clientName,
+      projectPath,
+      registeredAt: Date.now(),
+      sidecarPid: child.pid,
+      tmuxPane: existing?.tmuxPane ?? process.env["TMUX_PANE"],
+      tmuxSessionName: existing?.tmuxSessionName,
+      tmuxWindowName: existing?.tmuxWindowName,
+      tmuxCurrentCommand: existing?.tmuxCurrentCommand,
+    });
+    console.error(`[MCP] Detached Codex sidecar started for ${this.clientAgentId} (pid=${child.pid ?? "unknown"})`);
+  }
+
+  private stopCodexSidecar(): void {
+    if (!this.codexSidecarProcess) return;
+    try {
+      this.codexSidecarProcess.kill("SIGTERM");
+    } catch {
+      // ignore
+    }
+    this.codexSidecarProcess = null;
+  }
+
+  private buildSidecarLaunch(projectPath: string): { command: string; args: string[] } {
+    const baseArgs = [
+      "codex",
+      "tmux-sidecar",
+      "--project",
+      projectPath,
+      "--registry-url",
+      this.options.registryUrl,
+      "--poll-interval-ms",
+      String(this.options.codexSidecarPollIntervalMs),
+      "--retry-interval-ms",
+      String(this.options.codexSidecarRetryIntervalMs),
+    ];
+
+    const tmuxPane = process.env["TMUX_PANE"];
+    if (tmuxPane) {
+      baseArgs.push("--tmux-pane", tmuxPane);
+    }
+
+    const entry = process.argv[1] ?? "";
+    if (entry.endsWith(".ts")) {
+      return {
+        command: "pnpm",
+        args: ["exec", "tsx", resolve(entry), ...baseArgs],
+      };
+    }
+
+    return {
+      command: process.execPath,
+      args: [resolve(entry), ...baseArgs],
     };
   }
 
@@ -1472,24 +1578,38 @@ export class McpAgentBridge {
   }
 
   private async resolveClientSession(params: { clientId?: string; project?: string }): Promise<RegistryEntry> {
-    const entry = await this.registry.findClientSession({
-      clientId: params.clientId,
-      project: params.project,
-    });
+    const all = await this.registry.listAgents();
+    const clients = all.filter((entry) => entry.entryType === "client");
 
-    if (!entry) {
+    if (params.clientId) {
+      const clientId = params.clientId;
+      const entry = clients.find((entry) => entry.agentId === clientId || entry.agentId.startsWith(clientId));
+      if (!entry) {
+        throw new Error(`Client session "${params.clientId}" not found. Use list_agents with includeClients=true.`);
+      }
+      return entry;
+    }
+
+    const project = params.project?.toLowerCase();
+    const matches = clients.filter((entry) =>
+      project != null &&
+      (entry.projectPath.toLowerCase().includes(project) || entry.projectName.toLowerCase().includes(project))
+    );
+
+    if (matches.length === 0) {
       throw new Error(
-        params.clientId
-          ? `Client session "${params.clientId}" not found. Use list_agents with includeClients=true.`
-          : `No client session found for project "${params.project}". Use list_agents with includeClients=true.`
+        `No client session found for project "${params.project}". Use list_agents with includeClients=true.`
       );
     }
 
-    if (entry.entryType !== "client") {
-      throw new Error(`Target "${entry.name}" is not a passive client session.`);
+    if (matches.length > 1) {
+      const ids = matches.map((entry) => `${entry.agentId} (${entry.clientInfo?.clientName ?? "unknown"})`).join(", ");
+      throw new Error(
+        `Project "${params.project}" matches multiple client sessions. Use clientId explicitly. Matches: ${ids}`
+      );
     }
 
-    return entry;
+    return matches[0]!;
   }
 
   private async handleMessageClientSession(params: {

@@ -21,6 +21,9 @@ export function registerMcpCommand(program: Command): void {
     .option("--no-auto", "Disable auto-start of registry/agent (require manual setup)")
     .option("--skill-tools", "Also register per-agent skill tools (disabled by default)")
     .option("--claude", "Enable Claude Code AI backend for the auto-started agent")
+    .option("--codex-sidecar", "Auto-start a detached tmux-backed Codex sidecar when the connected client is Codex")
+    .option("--codex-sidecar-poll-interval-ms <number>", "Polling interval for the detached Codex tmux sidecar", "2000")
+    .option("--codex-sidecar-retry-interval-ms <number>", "Retry interval for the same pending message", "30000")
     .action(async (options) => {
       const bridge = new McpAgentBridge({
         registryUrl: options.registryUrl,
@@ -29,6 +32,9 @@ export function registerMcpCommand(program: Command): void {
         configPath: options.config,
         registerSkillTools: options.skillTools === true,
         useClaudeCode: options.claude ?? false,
+        codexSidecar: options.codexSidecar === true,
+        codexSidecarPollIntervalMs: Number(options.codexSidecarPollIntervalMs),
+        codexSidecarRetryIntervalMs: Number(options.codexSidecarRetryIntervalMs),
       });
       await bridge.start("stdio");
     });

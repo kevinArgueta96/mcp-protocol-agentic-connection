@@ -29,7 +29,7 @@ function buildInboxReminder(input: {
     : "";
   const conversation = input.conversationId ? ` Conversation: ${input.conversationId}.` : "";
   const task = input.taskId ? ` Task: ${input.taskId}.` : "";
-  return `New channel message from ${source}.${conversation}${task} Use channel_inbox to inspect it and reply.${preview}`;
+  return `New channel message from ${source}.${conversation}${task} Codex handles channels as inbox-first state. Use channel_inbox to inspect it and reply.${preview}`;
 }
 
 export class CodexClientProfile implements ClientBehaviorProfile {

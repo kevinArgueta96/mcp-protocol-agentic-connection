@@ -116,12 +116,16 @@ Hotspots:
 - `src/mcp/proxies/codex-proxy.ts`
 - `src/mcp/proxies/gemini-proxy.ts`
 - `src/client/channel-client-runtime.ts`
+- `src/client/codex-tmux-bridge-service.ts`
+- `src/client/codex-session-files.ts`
 
 Notas reales:
 
 - la capa MCP no es el núcleo, es un adaptador
 - el comportamiento por cliente ya no es Claude-only
 - Codex se trata como cliente inbox-first por defecto
+- para colaborar entre sesiones Codex, el bridge usa un sidecar separado que apunta al pane `tmux` real de la TUI
+- el proxy de Codex queda como fallback/compatibilidad para notificaciones MCP, no como mecanismo de activación principal
 
 ### 5. Dashboard
 
@@ -175,6 +179,15 @@ Notas reales:
 3. El registry emite `channel.message`.
 4. Un cliente puede responder con `reply` o registrar ACKs.
 5. `POST /channel/acks` actualiza el estado visible de entrega.
+
+### Activación de Codex
+
+1. `channels` sigue siendo transporte + persistencia.
+2. Codex carga MCP desde `.codex/config.toml`.
+3. `mcp start` registra la sesión cliente Codex y escribe `.agent-bridge/current-codex-session.json`.
+4. Si la sesión corre dentro de `tmux`, el marker guarda el `TMUX_PANE` activo.
+5. Un sidecar separado `codex tmux-sidecar` vigila mensajes pendientes para ese `clientId`.
+6. Cuando entra un mensaje pendiente, el sidecar inyecta un follow-up en el pane real de Codex para que esa misma sesión use `channel_inbox` y `reply`.
 
 ## Dónde tocar según el cambio
 
@@ -274,3 +287,4 @@ Leer según necesidad:
 - `docs/cli-and-operations.md` para operación
 - `dashboard/ARCHITECTURE.md` para detalle del frontend
 - `MESSAGING_IMPLEMENTATION.md` si el cambio toca channels o perfiles de cliente
+- `.codex/README.md` y `.codex/config.toml` para la capa Codex

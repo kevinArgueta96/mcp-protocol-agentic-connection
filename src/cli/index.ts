@@ -10,6 +10,7 @@ import { registerDelegateCommand } from "./commands/delegate.js";
 import { registerBroadcastCommand } from "./commands/broadcast.js";
 import { registerMcpCommand } from "./commands/mcp.js";
 import { registerDashboardCommand } from "./commands/dashboard.js";
+import { registerCodexCommand } from "./commands/codex.js";
 
 const program = new Command();
 
@@ -28,5 +29,6 @@ registerDelegateCommand(program);
 registerBroadcastCommand(program);
 registerMcpCommand(program);
 registerDashboardCommand(program);
+registerCodexCommand(program);
 
 program.parse(process.argv);

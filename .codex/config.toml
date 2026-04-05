@@ -1,0 +1,21 @@
+[mcp_servers.agent_bridge]
+command = "node"
+args = [
+    "/home/link-programmer/Documents/DEV_PROJECTS/mcp-protocol-agentic-connection/dist/cli/index.js",
+    "mcp",
+    "start",
+    "--registry-url",
+    "http://localhost:4999",
+    "--no-auto",
+    "--codex-sidecar",
+    "--codex-sidecar-poll-interval-ms",
+    "2000",
+    "--codex-sidecar-retry-interval-ms",
+    "30000",
+    "--project",
+    "/home/link-programmer/Documents/DEV_PROJECTS/mcp-protocol-agentic-connection"
+]
+required = true
+startup_timeout_sec = 20
+tool_timeout_sec = 60
+enabled_tools = ["channel_inbox", "reply", "message_client_session", "list_agents", "agent_health"]

@@ -8,9 +8,9 @@ clientAutomation:
 
   codex:
     autoPollInbox: true
-    pollActiveConversations: true
-    sendReminderNotifications: true
-    repeatReminders: true
+    pollActiveConversations: false
+    sendReminderNotifications: false
+    repeatReminders: false
     pollIntervalMs: 1000
     reminderIntervalMs: 5000
 
