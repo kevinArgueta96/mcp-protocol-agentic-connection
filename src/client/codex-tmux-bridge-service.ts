@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { ChannelAck } from "../types/messages.js";
@@ -220,7 +222,7 @@ export class CodexTmuxBridgeService {
 
   private buildInjectedPrompt(conversation: PendingConversation): string {
     const sender = conversation.fromAgentName ?? conversation.fromAgentId;
-    return `En agent-bridge tienes un mensaje pendiente de ${sender} con conversationId=${conversation.conversationId} y replyTo=${conversation.messageId}; preview=${previewText(conversation.content)}. Revisa channel_inbox y, si es un saludo o coordinación corta, responde con reply en español y de forma breve; si requiere análisis o cambios, déjalo pendiente.`;
+    return `Agent-bridge: mensaje pendiente de ${sender}; conversationId=${conversation.conversationId}; replyTo=${conversation.messageId}; preview=${previewText(conversation.content)}. Revisa channel_inbox y responde solo si es simple.`;
   }
 
   private async injectConversationPrompt(pane: string, conversation: PendingConversation): Promise<void> {
@@ -233,7 +235,24 @@ export class CodexTmuxBridgeService {
 
     this.log(`Injecting conversation ${conversation.conversationId} into tmux pane ${pane}`);
 
-    await execFileAsync("tmux", ["send-keys", "-t", pane, "-l", prompt]);
+    // Write prompt to a temp file and load it as a named buffer to avoid
+    // special-character issues with set-buffer. The -dr flags on paste-buffer
+    // delete the buffer afterwards and paste in raw mode (no trailing newline),
+    // so the Enter we send next is always a clean submit keystroke.
+    const bufferName = `agent-bridge-${process.pid}-${Date.now()}`;
+    const tmpFile = join(tmpdir(), `${bufferName}.txt`);
+    await writeFile(tmpFile, prompt, "utf8");
+    try {
+      await execFileAsync("tmux", ["load-buffer", "-b", bufferName, tmpFile]);
+      await execFileAsync("tmux", ["paste-buffer", "-dr", "-b", bufferName, "-t", pane]);
+    } finally {
+      await rm(tmpFile, { force: true }).catch(() => undefined);
+    }
+
+    // Give the Codex TUI a short window to settle after the paste before
+    // sending Enter — without this delay Enter may land before the input
+    // field has registered the pasted text and only inserts a newline.
+    await new Promise<void>((resolve) => setTimeout(resolve, 80));
     await execFileAsync("tmux", ["send-keys", "-t", pane, "Enter"]);
   }
 
