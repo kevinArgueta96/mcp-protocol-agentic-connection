@@ -31,6 +31,7 @@ import type { RegistryEntry, AgentMessage, ChannelMessage } from "../types/messa
 import type { Task, Part, Message } from "../types/a2a.js";
 import { WebSocket } from "ws";
 import { clearCurrentCodexSession, readCurrentCodexSession, writeCurrentCodexSession } from "../client/codex-session-files.js";
+import { readCurrentGeminiSession, writeCurrentGeminiSession, clearCurrentGeminiSession } from "../client/gemini-session-files.js";
 import { detectCurrentTmuxBinding } from "../client/codex-tmux.js";
 
 export interface McpAdapterOptions {
@@ -51,6 +52,12 @@ export interface McpAdapterOptions {
   codexSidecarPollIntervalMs?: number;
   /** Retry interval for the same pending message in the Codex tmux sidecar */
   codexSidecarRetryIntervalMs?: number;
+  /** Auto-start a detached Gemini tmux sidecar when the connected client is Gemini */
+  geminiSidecar?: boolean;
+  /** Poll interval for the detached Gemini tmux sidecar */
+  geminiSidecarPollIntervalMs?: number;
+  /** Retry interval for the same pending message in the Gemini tmux sidecar */
+  geminiSidecarRetryIntervalMs?: number;
 }
 
 function toolPrefix(name: string): string {
@@ -148,6 +155,7 @@ export class McpAgentBridge {
   private surfacedInboxMessageIds = new Set<string>();
   private agentToolMap = new Map<string, RegisteredTool[]>();
   private codexSidecarProcess: ChildProcess | null = null;
+  private geminiSidecarProcess: ChildProcess | null = null;
 
   constructor(options: McpAdapterOptions = {}) {
     this.options = {
@@ -160,6 +168,9 @@ export class McpAgentBridge {
       codexSidecar: false,
       codexSidecarPollIntervalMs: 2_000,
       codexSidecarRetryIntervalMs: 30_000,
+      geminiSidecar: false,
+      geminiSidecarPollIntervalMs: 2_000,
+      geminiSidecarRetryIntervalMs: 30_000,
       ...options,
     };
     this.bridgeConfig = loadMcpBridgeConfig(this.options.projectPath, this.options.configPath || undefined);
@@ -728,10 +739,24 @@ export class McpAgentBridge {
         };
 
         await this.channelRuntime.activateClient(registration);
+        const tmuxBinding = await detectCurrentTmuxBinding();
         if (clientName.toLowerCase().includes("codex")) {
           const existing = readCurrentCodexSession(realProjectPath);
-          const tmuxBinding = await detectCurrentTmuxBinding();
           writeCurrentCodexSession(realProjectPath, {
+            clientAgentId: this.clientAgentId,
+            clientName,
+            projectPath: realProjectPath,
+            registeredAt: Date.now(),
+            sidecarPid: existing?.sidecarPid,
+            tmuxPane: tmuxBinding?.pane ?? existing?.tmuxPane,
+            tmuxSessionName: tmuxBinding?.sessionName ?? existing?.tmuxSessionName,
+            tmuxWindowName: tmuxBinding?.windowName ?? existing?.tmuxWindowName,
+            tmuxCurrentCommand: tmuxBinding?.currentCommand ?? existing?.tmuxCurrentCommand,
+          });
+        }
+        if (clientName.toLowerCase().includes("gemini")) {
+          const existing = readCurrentGeminiSession(realProjectPath);
+          writeCurrentGeminiSession(realProjectPath, {
             clientAgentId: this.clientAgentId,
             clientName,
             projectPath: realProjectPath,
@@ -746,14 +771,19 @@ export class McpAgentBridge {
         await this.syncRegistryToLocalStore();
         this.startInboxPolling();
         this.startCodexSidecarIfNeeded(realProjectPath, clientName);
+        this.startGeminiSidecarIfNeeded(realProjectPath, clientName);
         console.error(`[MCP] Registered client: ${realProjectName} (${clientName} v${version})`);
 
         const cleanup = async () => {
           this.stopCodexSidecar();
+          this.stopGeminiSidecar();
           this.stopInboxPolling();
           await this.channelRuntime.deactivateClient();
           if (clientName.toLowerCase().includes("codex")) {
             clearCurrentCodexSession(realProjectPath, this.clientAgentId ?? undefined);
+          }
+          if (clientName.toLowerCase().includes("gemini")) {
+            clearCurrentGeminiSession(realProjectPath, this.clientAgentId ?? undefined);
           }
           this.clientAgentId = null;
           // Stop embedded agent so it deregisters from registry
@@ -814,6 +844,78 @@ export class McpAgentBridge {
       // ignore
     }
     this.codexSidecarProcess = null;
+  }
+
+  private startGeminiSidecarIfNeeded(projectPath: string, clientName: string): void {
+    if (!this.options.geminiSidecar) return;
+    if (!clientName.toLowerCase().includes("gemini")) return;
+    if (this.geminiSidecarProcess || !this.clientAgentId) return;
+
+    const launch = this.buildGeminiSidecarLaunch(projectPath);
+    const child = spawn(launch.command, launch.args, {
+      detached: true,
+      stdio: "ignore",
+      cwd: projectPath,
+      env: process.env,
+    });
+    child.unref();
+    this.geminiSidecarProcess = child;
+    const existing = readCurrentGeminiSession(projectPath);
+    writeCurrentGeminiSession(projectPath, {
+      clientAgentId: this.clientAgentId,
+      clientName,
+      projectPath,
+      registeredAt: Date.now(),
+      sidecarPid: child.pid,
+      tmuxPane: existing?.tmuxPane ?? process.env["TMUX_PANE"],
+      tmuxSessionName: existing?.tmuxSessionName,
+      tmuxWindowName: existing?.tmuxWindowName,
+      tmuxCurrentCommand: existing?.tmuxCurrentCommand,
+    });
+    console.error(`[MCP] Detached Gemini sidecar started for ${this.clientAgentId} (pid=${child.pid ?? "unknown"})`);
+  }
+
+  private stopGeminiSidecar(): void {
+    if (!this.geminiSidecarProcess) return;
+    try {
+      this.geminiSidecarProcess.kill("SIGTERM");
+    } catch {
+      // ignore
+    }
+    this.geminiSidecarProcess = null;
+  }
+
+  private buildGeminiSidecarLaunch(projectPath: string): { command: string; args: string[] } {
+    const baseArgs = [
+      "gemini",
+      "tmux-sidecar",
+      "--project",
+      projectPath,
+      "--registry-url",
+      this.options.registryUrl,
+      "--poll-interval-ms",
+      String(this.options.geminiSidecarPollIntervalMs),
+      "--retry-interval-ms",
+      String(this.options.geminiSidecarRetryIntervalMs),
+    ];
+
+    const tmuxPane = process.env["TMUX_PANE"];
+    if (tmuxPane) {
+      baseArgs.push("--tmux-pane", tmuxPane);
+    }
+
+    const entry = process.argv[1] ?? "";
+    if (entry.endsWith(".ts")) {
+      return {
+        command: "pnpm",
+        args: ["exec", "tsx", resolve(entry), ...baseArgs],
+      };
+    }
+
+    return {
+      command: process.execPath,
+      args: [resolve(entry), ...baseArgs],
+    };
   }
 
   private buildSidecarLaunch(projectPath: string): { command: string; args: string[] } {

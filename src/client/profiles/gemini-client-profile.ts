@@ -16,6 +16,22 @@ function buildGeminiPayload(content: string, meta: Record<string, unknown>): Cli
   };
 }
 
+function buildInboxReminder(input: {
+  fromAgentId?: string;
+  fromAgentName?: string;
+  conversationId?: string;
+  content?: string;
+  taskId?: string;
+}): string {
+  const source = input.fromAgentName ?? input.fromAgentId ?? "unknown sender";
+  const preview = input.content?.trim()
+    ? ` Preview: ${input.content.trim().slice(0, 160)}${input.content.trim().length > 160 ? "…" : ""}`
+    : "";
+  const conversation = input.conversationId ? ` Conversation: ${input.conversationId}.` : "";
+  const task = input.taskId ? ` Task: ${input.taskId}.` : "";
+  return `New channel message from ${source}.${conversation}${task} Gemini handles channels as inbox-first state. Use channel_inbox to inspect it and reply.${preview}`;
+}
+
 export class GeminiClientProfile implements ClientBehaviorProfile {
   readonly id = "gemini";
   readonly deliveryMode = "inbox-first" as const;
@@ -25,7 +41,13 @@ export class GeminiClientProfile implements ClientBehaviorProfile {
   }
 
   mapChannelMessage(message: ChannelMessage): ClientNotificationEnvelope {
-    return buildGeminiPayload(message.content, {
+    return buildGeminiPayload(buildInboxReminder({
+      fromAgentId: message.fromAgentId,
+      fromAgentName: message.fromAgentName,
+      conversationId: message.conversationId,
+      content: message.content,
+      taskId: message.taskId,
+    }), {
       fromAgentId: message.fromAgentId,
       fromAgentName: message.fromAgentName,
       conversationId: message.conversationId,
@@ -38,7 +60,12 @@ export class GeminiClientProfile implements ClientBehaviorProfile {
   }
 
   mapLegacyNotify(payload: LegacyNotifyPayload): ClientNotificationEnvelope {
-    return buildGeminiPayload(payload.content, {
+    return buildGeminiPayload(buildInboxReminder({
+      fromAgentId: payload.agentId,
+      fromAgentName: payload.agentName,
+      conversationId: payload.conversationId,
+      content: payload.content,
+    }), {
       fromAgentId: payload.agentId,
       fromAgentName: payload.agentName,
       conversationId: payload.conversationId ?? randomUUID(),
@@ -50,8 +77,12 @@ export class GeminiClientProfile implements ClientBehaviorProfile {
   mapTaskRequestMessage(message: AgentMessage): ClientNotificationEnvelope | null {
     if (message.type !== "task.request") return null;
     const payload = message.payload as { message?: string; skillId?: string } | null;
-    const content = payload?.message ?? JSON.stringify(payload);
-    return buildGeminiPayload(content, {
+    return buildGeminiPayload(buildInboxReminder({
+      fromAgentId: message.fromAgentId,
+      conversationId: message.taskId,
+      content: payload?.message ?? JSON.stringify(payload),
+      taskId: message.taskId,
+    }), {
       fromAgentId: message.fromAgentId,
       taskId: message.taskId,
       skillId: payload?.skillId,

@@ -11,6 +11,7 @@ import { registerBroadcastCommand } from "./commands/broadcast.js";
 import { registerMcpCommand } from "./commands/mcp.js";
 import { registerDashboardCommand } from "./commands/dashboard.js";
 import { registerCodexCommand } from "./commands/codex.js";
+import { registerGeminiCommand } from "./commands/gemini.js";
 
 const program = new Command();
 
@@ -30,5 +31,6 @@ registerBroadcastCommand(program);
 registerMcpCommand(program);
 registerDashboardCommand(program);
 registerCodexCommand(program);
+registerGeminiCommand(program);
 
 program.parse(process.argv);

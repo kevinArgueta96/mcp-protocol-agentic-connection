@@ -24,6 +24,9 @@ export function registerMcpCommand(program: Command): void {
     .option("--codex-sidecar", "Auto-start a detached tmux-backed Codex sidecar when the connected client is Codex")
     .option("--codex-sidecar-poll-interval-ms <number>", "Polling interval for the detached Codex tmux sidecar", "2000")
     .option("--codex-sidecar-retry-interval-ms <number>", "Retry interval for the same pending message", "30000")
+    .option("--gemini-sidecar", "Auto-start a detached tmux-backed Gemini sidecar when the connected client is Gemini")
+    .option("--gemini-sidecar-poll-interval-ms <number>", "Polling interval for the detached Gemini tmux sidecar", "2000")
+    .option("--gemini-sidecar-retry-interval-ms <number>", "Retry interval for the same pending message", "30000")
     .action(async (options) => {
       const bridge = new McpAgentBridge({
         registryUrl: options.registryUrl,
@@ -35,6 +38,9 @@ export function registerMcpCommand(program: Command): void {
         codexSidecar: options.codexSidecar === true,
         codexSidecarPollIntervalMs: Number(options.codexSidecarPollIntervalMs),
         codexSidecarRetryIntervalMs: Number(options.codexSidecarRetryIntervalMs),
+        geminiSidecar: options.geminiSidecar === true,
+        geminiSidecarPollIntervalMs: Number(options.geminiSidecarPollIntervalMs),
+        geminiSidecarRetryIntervalMs: Number(options.geminiSidecarRetryIntervalMs),
       });
       await bridge.start("stdio");
     });
