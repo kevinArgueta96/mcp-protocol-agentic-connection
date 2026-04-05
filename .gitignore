@@ -22,7 +22,7 @@ coverage/
 
 # TypeScript cache
 *.tsbuildinfo
-/dashboard/*
+#/dashboard/*
 
 # Build artifacts
 dist/
