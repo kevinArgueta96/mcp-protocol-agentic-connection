@@ -7,6 +7,12 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const ACTIVE_PANE_COMMANDS = new Set(["codex", "node"]);
 
+function isCodexCommand(command: string | undefined): boolean {
+  if (!command) return false;
+  const normalized = command.toLowerCase();
+  return ACTIVE_PANE_COMMANDS.has(normalized) || normalized.startsWith("codex-");
+}
+
 export interface TmuxPaneInfo {
   sessionName: string;
   windowRef: string;
@@ -95,7 +101,7 @@ export function listCodexSessionFacts(limit = 50): CodexSessionFact[] {
 export async function discoverCodexPaneForProject(projectPath: string): Promise<TmuxPaneInfo | undefined> {
   const panes = await listTmuxPanes();
   const exactProjectPane = panes.find((pane) =>
-    pane.currentPath === projectPath && ACTIVE_PANE_COMMANDS.has(pane.currentCommand.toLowerCase())
+    pane.currentPath === projectPath && isCodexCommand(pane.currentCommand)
   );
   if (exactProjectPane) return exactProjectPane;
 
@@ -110,5 +116,5 @@ export async function discoverCodexPaneForProject(projectPath: string): Promise<
 
 export function isInteractiveCodexPane(pane: TmuxPaneInfo | undefined): boolean {
   if (!pane) return false;
-  return ACTIVE_PANE_COMMANDS.has(pane.currentCommand.toLowerCase());
+  return isCodexCommand(pane.currentCommand);
 }
