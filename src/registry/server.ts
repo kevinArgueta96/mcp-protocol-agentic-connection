@@ -446,6 +446,29 @@ export class RegistryServer {
 
           // Agent identification — agent sends { type: "identify", agentId: "..." }
           if (msg.type === "identify" && msg.agentId) {
+            // Same agent re-identifying on the same socket — just ack, no re-mapping
+            if (identifiedAgentId === msg.agentId && this.agentWsMap.get(msg.agentId) === ws) {
+              ws.send(JSON.stringify({ type: "identified", agentId: msg.agentId }));
+              return;
+            }
+
+            if (identifiedAgentId && identifiedAgentId !== msg.agentId) {
+              const previousWs = this.agentWsMap.get(identifiedAgentId);
+              if (previousWs === ws) {
+                this.agentWsMap.delete(identifiedAgentId);
+              }
+            }
+
+            const existingWs = this.agentWsMap.get(msg.agentId);
+            if (existingWs && existingWs !== ws) {
+              this.agentWsMap.delete(msg.agentId);
+              try {
+                existingWs.close(4001, "Superseded by a newer registry connection");
+              } catch {
+                existingWs.terminate();
+              }
+            }
+
             identifiedAgentId = msg.agentId;
             this.agentWsMap.set(msg.agentId, ws);
             console.error(`[Registry WS] Agent identified: ${msg.agentId}`);
@@ -475,8 +498,11 @@ export class RegistryServer {
         this.wsClients.delete(ws);
         this.eventBus.off("event", onEvent);
         if (identifiedAgentId) {
-          this.agentWsMap.delete(identifiedAgentId);
-          console.error(`[Registry WS] Agent disconnected: ${identifiedAgentId}`);
+          const mappedWs = this.agentWsMap.get(identifiedAgentId);
+          if (mappedWs === ws) {
+            this.agentWsMap.delete(identifiedAgentId);
+            console.error(`[Registry WS] Agent disconnected: ${identifiedAgentId}`);
+          }
         }
       });
 
@@ -485,7 +511,10 @@ export class RegistryServer {
         this.wsClients.delete(ws);
         this.eventBus.off("event", onEvent);
         if (identifiedAgentId) {
-          this.agentWsMap.delete(identifiedAgentId);
+          const mappedWs = this.agentWsMap.get(identifiedAgentId);
+          if (mappedWs === ws) {
+            this.agentWsMap.delete(identifiedAgentId);
+          }
         }
       });
     });

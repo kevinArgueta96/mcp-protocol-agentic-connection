@@ -13,7 +13,7 @@
 import { McpServer, ResourceTemplate, type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { spawn, type ChildProcess } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { basename, resolve } from "node:path";
 import { z } from "zod";
 import { RegistryClient } from "../client/registry-client.js";
@@ -142,6 +142,7 @@ export class McpAgentBridge {
   private inboxFirstConfig: ResolvedInboxFirstClientConfig;
   private options: Required<McpAdapterOptions>;
   private clientAgentId: string | null = null;
+  private clientActivating = false;
   private embeddedAgent: AgentServer | null = null;
   private embeddedRegistry: RegistryServer | null = null;
   private registryWs: WebSocket | null = null;
@@ -257,6 +258,8 @@ export class McpAgentBridge {
     this.channelRuntime.on("ws.open", () => {
       this.registryWs = this.channelRuntime.getWebSocket();
       console.error("[MCP] WebSocket connected to registry");
+      // Refresh local store on every reconnect so channel_inbox stays accurate
+      void this.syncRegistryToLocalStore();
     });
 
     this.channelRuntime.on("ws.close", () => {
@@ -485,44 +488,83 @@ export class McpAgentBridge {
     source: "pending" | "active",
   ): Promise<void> {
     const totalCount = snapshots.length;
+
+    // Collect all unsurfaced messages first, then mark them all at once.
+    // This prevents sending N notifications for N accumulated messages —
+    // instead we send at most ONE notification per poll cycle.
+    const unsurfaced: Array<{
+      snapshot: import("../client/conversation-service.js").ConversationSnapshot;
+      message: ChannelMessage;
+    }> = [];
+
     for (const snapshot of snapshots) {
       const messagesToCheck = source === "pending" ? snapshot.pendingMessages : snapshot.messages;
       for (const message of messagesToCheck) {
         if (message.fromAgentId === this.clientAgentId) continue;
         if (this.surfacedInboxMessageIds.has(message.messageId)) continue;
-        this.surfacedInboxMessageIds.add(message.messageId);
+        unsurfaced.push({ snapshot, message });
+      }
+    }
 
-        const notification = this.buildSurfacedInboxNotification(snapshot, message, totalCount, source)
-          ?? {
-              method: "notifications/message",
-              params: {
-                level: "info",
-                logger: "agent-bridge.channel",
-                data: {
-                  content: source === "pending"
-                    ? totalCount === 1 && snapshot.pendingMessages.length === 1
-                      ? `New pending channel conversation from ${message.fromAgentName ?? message.fromAgentId}. ` +
-                        `Open channel_inbox and reply. Preview: ${message.content.slice(0, 220)}${message.content.length > 220 ? "…" : ""}`
-                      : `You have ${totalCount} pending channel conversation(s). Open channel_inbox to inspect and reply.`
-                    : `New message in active conversation from ${message.fromAgentName ?? message.fromAgentId}. ` +
-                      `Open channel_inbox to view. Preview: ${message.content.slice(0, 220)}${message.content.length > 220 ? "…" : ""}`,
-                  meta: {
-                    type: source === "pending" ? "inbox-poll" : "inbox-poll-active",
-                    conversationId: snapshot.conversation.conversationId,
-                    messageId: message.messageId,
-                    fromAgentId: message.fromAgentId,
-                    fromAgentName: message.fromAgentName,
-                    taskId: message.taskId,
-                    pendingCount: totalCount,
-                  },
+    if (unsurfaced.length === 0) return;
+
+    // Mark ALL as surfaced before sending so future polls don't re-fire them.
+    for (const { message } of unsurfaced) {
+      this.surfacedInboxMessageIds.add(message.messageId);
+    }
+
+    if (unsurfaced.length === 1) {
+      // Single new message: send detailed notification.
+      const { snapshot, message } = unsurfaced[0];
+      const notification = this.buildSurfacedInboxNotification(snapshot, message, totalCount, source)
+        ?? {
+            method: "notifications/message",
+            params: {
+              level: "info",
+              logger: "agent-bridge.channel",
+              data: {
+                content: source === "pending"
+                  ? `New pending channel conversation from ${message.fromAgentName ?? message.fromAgentId}. ` +
+                    `Open channel_inbox and reply. Preview: ${message.content.slice(0, 220)}${message.content.length > 220 ? "…" : ""}`
+                  : `New message in active conversation from ${message.fromAgentName ?? message.fromAgentId}. ` +
+                    `Open channel_inbox to view. Preview: ${message.content.slice(0, 220)}${message.content.length > 220 ? "…" : ""}`,
+                meta: {
+                  type: source === "pending" ? "inbox-poll" : "inbox-poll-active",
+                  conversationId: snapshot.conversation.conversationId,
+                  messageId: message.messageId,
+                  fromAgentId: message.fromAgentId,
+                  fromAgentName: message.fromAgentName,
+                  taskId: message.taskId,
+                  pendingCount: totalCount,
                 },
               },
-            };
-
-        await this.server.server.notification(notification).catch(() => {
-          // Ignore visibility failures; polling continues.
-        });
-      }
+            },
+          };
+      await this.server.server.notification(notification).catch(() => {
+        // Ignore visibility failures; polling continues.
+      });
+    } else {
+      // Multiple new messages: send ONE aggregated notification to avoid flooding the client.
+      const notification = {
+        method: "notifications/message",
+        params: {
+          level: "info",
+          logger: "agent-bridge.channel",
+          data: {
+            content: source === "pending"
+              ? `You have ${totalCount} pending channel conversation(s) (${unsurfaced.length} new). Open channel_inbox to inspect and reply.`
+              : `${unsurfaced.length} new messages across active conversations. Open channel_inbox to view.`,
+            meta: {
+              type: source === "pending" ? "inbox-poll" : "inbox-poll-active",
+              pendingCount: totalCount,
+              newMessageCount: unsurfaced.length,
+            },
+          },
+        },
+      };
+      await this.server.server.notification(notification).catch(() => {
+        // Ignore visibility failures; polling continues.
+      });
     }
   }
 
@@ -686,14 +728,20 @@ export class McpAgentBridge {
 
     innerServer.oninitialized = async () => {
       try {
+        if (this.clientAgentId || this.clientActivating) {
+          console.error(`[MCP] Ignoring duplicate oninitialized`);
+          return;
+        }
+
         const clientVersion = innerServer.getClientVersion?.();
         if (!clientVersion?.name) return;
+
+        this.clientActivating = true;
 
         const clientName: string = clientVersion.name;
         const version: string = clientVersion.version ?? "unknown";
         this.clientProfile = this.profileResolver.resolve({ clientName });
         this.inboxFirstConfig = resolveInboxFirstClientConfig(this.bridgeConfig, this.clientProfile.id);
-        this.clientAgentId = `client-${clientName}-${Date.now()}`;
 
         // Resolve real project path from client's workspace roots (MCP roots protocol)
         let realProjectPath = this.options.projectPath;
@@ -713,6 +761,8 @@ export class McpAgentBridge {
             // fall back to configured projectPath
           }
         }
+
+        this.clientAgentId = this.buildStableClientAgentId(clientName, realProjectPath);
 
         const registration = {
           agentId: this.clientAgentId,
@@ -801,9 +851,18 @@ export class McpAgentBridge {
         process.once("SIGTERM", cleanup);
         process.once("beforeExit", cleanup);
       } catch (err) {
+        this.clientActivating = false;
         console.error("[MCP] Failed to register client:", err);
       }
     };
+  }
+
+  private buildStableClientAgentId(clientName: string, projectPath: string): string {
+    const digest = createHash("sha1")
+      .update(`${clientName}\n${projectPath}`)
+      .digest("hex")
+      .slice(0, 12);
+    return `client-${clientName}-${digest}`;
   }
 
   private startCodexSidecarIfNeeded(projectPath: string, clientName: string): void {
@@ -1200,6 +1259,9 @@ export class McpAgentBridge {
       },
       async ({ expiredOnly = false, pendingOnly = true, limit = 10, includeMessages = true }) => {
         try {
+          // Always sync from registry so inbox shows current state even when WS was interrupted
+          await this.syncRegistryToLocalStore();
+
           const conversations = expiredOnly
             ? this.conversationService.listExpiredSnapshots(limit)
             : pendingOnly
@@ -1686,10 +1748,20 @@ export class McpAgentBridge {
     if (params.clientId) {
       const clientId = params.clientId;
       const entry = clients.find((entry) => entry.agentId === clientId || entry.agentId.startsWith(clientId));
-      if (!entry) {
+      if (entry) return entry;
+
+      // Exact ID not found — client may have restarted with a new ID.
+      // Fall back to matching by client name extracted from the agentId prefix (e.g. "codex" from "client-codex-...").
+      const namePart = clientId.replace(/^client-/, "").replace(/-[^-]+$/, "").toLowerCase();
+      const fallback = clients.find((e) =>
+        e.clientInfo?.clientName?.toLowerCase().includes(namePart) ||
+        e.agentId.toLowerCase().includes(namePart)
+      );
+      if (!fallback) {
         throw new Error(`Client session "${params.clientId}" not found. Use list_agents with includeClients=true.`);
       }
-      return entry;
+      console.error(`[MCP] Client "${params.clientId}" not found; using fallback match: ${fallback.agentId}`);
+      return fallback;
     }
 
     const project = params.project?.toLowerCase();

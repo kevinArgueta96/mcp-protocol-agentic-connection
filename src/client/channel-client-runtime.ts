@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { WebSocket } from "ws";
+import { WebSocket } from "ws";
 import { ChannelTransport } from "./channel-transport.js";
 import { ConversationSessionStore, type ConversationSessionState, type ListedConversationSession, type ResolvedReplyContext } from "./conversation-session-store.js";
 import type { AgentMessage, AgentRegistration, ChannelAck, ChannelDeliveryState, ChannelMessage } from "../types/messages.js";
@@ -89,25 +89,36 @@ export class ChannelClientRuntime {
 
   connect(): void {
     if (this.destroyed) return;
+    if (this.ws && (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)) {
+      return;
+    }
     try {
-      this.ws = this.transport.connectWebSocket({
+      const ws = this.transport.connectWebSocket({
         agentId: this.currentAgentId ?? undefined,
         onOpen: () => {
-          this.reconnectAttempts = 0;
+          if (this.ws !== ws) return;
           this.emitter.emit("ws.open");
         },
         onMessage: (raw) => {
+          if (this.ws !== ws) return;
           this.handleRawMessage(raw);
         },
-        onClose: () => {
+        onClose: (code) => {
+          if (this.ws !== ws) return;
           this.ws = null;
           this.emitter.emit("ws.close");
+          if (code === 4001) {
+            console.error(`[ChannelRuntime] WS superseded (4001), stopping reconnect for ${this.currentAgentId}`);
+            return;
+          }
           this.scheduleReconnect();
         },
         onError: () => {
+          if (this.ws !== ws) return;
           this.ws = null;
         },
       });
+      this.ws = ws;
     } catch {
       this.scheduleReconnect();
     }
@@ -167,6 +178,9 @@ export class ChannelClientRuntime {
   }
 
   async activateClient(registration: AgentRegistration, heartbeatMs = 30_000): Promise<void> {
+    if (this.currentAgentId === registration.agentId && this.activeRegistration) {
+      return;
+    }
     this.activeRegistration = registration;
     this.currentAgentId = registration.agentId;
     await this.transport.registerClient(registration);
@@ -327,7 +341,7 @@ export class ChannelClientRuntime {
         if (this.activeRegistration) {
           try {
             await this.transport.registerClient(this.activeRegistration);
-            this.identify();
+            // No identify() here — the WS open handler sends identify on reconnect
           } catch {
             // Ignore; next heartbeat/reconnect will try again.
           }
@@ -365,6 +379,11 @@ export class ChannelClientRuntime {
     if (!parsed || typeof parsed !== "object") return;
 
     const event = parsed as { type?: string; data?: unknown };
+    if (event.type === "identified") {
+      this.reconnectAttempts = 0;
+      return;
+    }
+
     if (event.type === "channel.message" && event.data) {
       const message = event.data as ChannelMessage;
       const updatedState = this.conversationStore.trackMessage(message);

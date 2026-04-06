@@ -11,7 +11,7 @@ export interface ConnectWebSocketOptions {
   agentId?: string;
   onMessage: (raw: string) => void;
   onOpen?: (ws: WebSocket) => void;
-  onClose?: () => void;
+  onClose?: (code?: number, reason?: string) => void;
   onError?: () => void;
 }
 
@@ -127,8 +127,8 @@ export class ChannelTransport {
       options.onMessage(raw.toString());
     });
 
-    ws.on("close", () => {
-      options.onClose?.();
+    ws.on("close", (code, reason) => {
+      options.onClose?.(code, typeof reason === "string" ? reason : reason?.toString());
     });
 
     ws.on("error", () => {

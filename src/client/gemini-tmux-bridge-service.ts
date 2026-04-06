@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { ChannelAck } from "../types/messages.js";
+import { ChannelTransport } from "./channel-transport.js";
 import { RegistryClient } from "./registry-client.js";
 import { readCurrentGeminiSession } from "./gemini-session-files.js";
 import { discoverGeminiPaneForProject, getTmuxPaneInfo, isInteractiveGeminiPane } from "./gemini-runtime-discovery.js";
@@ -54,6 +55,7 @@ function previewText(value: string, max = 180): string {
 
 export class GeminiTmuxBridgeService {
   private readonly registry: RegistryClient;
+  private readonly channelTransport: ChannelTransport;
   private readonly statePath: string;
   private readonly pollIntervalMs: number;
   private readonly retryIntervalMs: number;
@@ -65,7 +67,9 @@ export class GeminiTmuxBridgeService {
   private stopped = false;
 
   constructor(private readonly options: GeminiTmuxBridgeOptions) {
-    this.registry = new RegistryClient(options.registryUrl ?? "http://localhost:4999");
+    const registryUrl = options.registryUrl ?? "http://localhost:4999";
+    this.registry = new RegistryClient(registryUrl);
+    this.channelTransport = new ChannelTransport({ registryUrl });
     this.statePath = join(options.projectPath, ".agent-bridge", "gemini-tmux-sidecar-state.json");
     this.clientId = options.clientId;
     this.tmuxPane = options.tmuxPane;
@@ -201,7 +205,7 @@ export class GeminiTmuxBridgeService {
         if (!message.expectsResponse) return false;
         if (message.toAgentId && message.toAgentId !== clientId) return false;
         const ack = ackMap.get(message.messageId);
-        return ack?.state !== "answered" && ack?.state !== "failed";
+        return ack?.state !== "displayed_to_client" && ack?.state !== "answered" && ack?.state !== "failed";
       });
 
       if (pendingMessages.length === 0) continue;
@@ -254,6 +258,14 @@ export class GeminiTmuxBridgeService {
     // field has registered the pasted text and only inserts a newline.
     await new Promise<void>((resolve) => setTimeout(resolve, 80));
     await execFileAsync("tmux", ["send-keys", "-t", pane, "Enter"]);
+    await this.channelTransport.postChannelAck({
+      conversationId: conversation.conversationId,
+      messageId: conversation.messageId,
+      state: "displayed_to_client",
+      actorId: this.clientId ?? "gemini-tmux-sidecar",
+      actorType: "client",
+      detail: "Gemini tmux sidecar injected prompt into the active pane",
+    });
   }
 
   private loadState(): SidecarState {
