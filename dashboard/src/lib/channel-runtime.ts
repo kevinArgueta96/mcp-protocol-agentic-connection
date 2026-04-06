@@ -143,7 +143,11 @@ class DashboardChannelRuntime {
     const bucket = this.listeners.get(event);
     if (!bucket) return;
     for (const listener of bucket) {
-      (listener as RuntimeListener<K>)(value);
+      try {
+        (listener as RuntimeListener<K>)(value);
+      } catch (err) {
+        console.error(`[channel-runtime] listener error for "${String(event)}":`, err);
+      }
     }
   }
 
@@ -162,15 +166,17 @@ class DashboardChannelRuntime {
     this.ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data as string) as WsMessage;
-        this.emit("registry", msg);
+        // Emit critical channel events FIRST (chat panel depends on these)
         if (msg.type === "channel.message" && this.clientProfile.acceptsDirectedMessage(msg.data, this.clientId)) {
           this.emit("channelMessage", msg.data);
         }
         if (msg.type === "channel.ack") {
           this.emit("channelAck", msg.data);
         }
+        // Then broadcast to all registry listeners (trace, registryStore, channels)
+        this.emit("registry", msg);
       } catch {
-        // Ignore malformed messages.
+        // Ignore malformed JSON.
       }
     };
 

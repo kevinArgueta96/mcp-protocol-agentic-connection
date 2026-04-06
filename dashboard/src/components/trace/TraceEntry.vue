@@ -1,5 +1,5 @@
 <template>
-  <div class="trace-entry fade-in" :class="borderClass" @click="store.toggleExpanded(event.id)">
+  <div class="trace-entry trace-slide-in" :class="borderClass" @click="store.toggleExpanded(event.id)">
     <div class="trace-entry__head">
       <span class="state-badge" :class="`state-${event.state}`">{{ event.state }}</span>
       <span class="trace-entry__agent">{{ event.agentName }}</span>
@@ -119,6 +119,7 @@ const argsPreview = computed(() => {
 .border-l-indigo { border-left: 6px solid var(--indigo); }
 .border-l-sky { border-left: 6px solid var(--sky); }
 .border-l-violet { border-left: 6px solid var(--violet); }
+.border-l-cyan { border-left: 6px solid var(--sky); }
 .border-l-dim { border-left: 6px solid rgba(72, 55, 46, 0.24); }
 
 .trace-entry__meta--spaced {

@@ -2,9 +2,9 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import { randomUUID } from "@/lib/utils";
+import { dashboardChannelRuntime } from "@/lib/channel-runtime";
 import type { TraceEvent, WsMessage, TaskState, TraceEventKind } from "@/types";
 
-const REGISTRY_WS = import.meta.env.VITE_REGISTRY_WS ?? "ws://localhost:4999/ws";
 const MAX_EVENTS = 500;
 
 function normalizeClientLabel(value?: string): string | undefined {
@@ -30,94 +30,66 @@ export const useTraceStore = defineStore("trace", () => {
   const events = ref<TraceEvent[]>([]);
   const filters = ref<TraceFilters>({});
 
-  let ws: WebSocket | null = null;
-  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  let reconnectDelay = 2_000;
-  let destroyed = false;
+  let unsubscribeRuntime: (() => void) | null = null;
 
-  function connect() {
-    if (destroyed) return;
-    ws = new WebSocket(REGISTRY_WS);
-
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data as string) as WsMessage;
-        if (msg.type === "task.update") {
-          addEvent({
-            id: randomUUID(),
-            timestamp: msg.data.timestamp,
-            agentId: msg.data.agentId,
-            agentName: msg.data.agentName,
-            taskId: msg.data.taskId,
-            state: msg.data.state,
-            skillId: msg.data.skillId,
-            payload: msg.data.payload,
-            clientId: msg.data.clientId,
-            clientName: msg.data.clientName,
-            expanded: false,
-          });
-        } else if (msg.type === "channel.message") {
-          const meta = msg.data.meta ?? {};
-          const targetClientId = typeof meta.targetClientId === "string" ? meta.targetClientId : msg.data.toAgentId;
-          const targetClientName = typeof meta.targetClientName === "string"
-            ? meta.targetClientName
-            : typeof meta.targetClient === "string"
-              ? meta.targetClient
-              : undefined;
-          addEvent({
-            id: randomUUID(),
-            timestamp: new Date(msg.data.createdAt).toISOString(),
-            agentId: msg.data.fromAgentId,
-            agentName: msg.data.fromAgentName ?? msg.data.fromAgentId,
-            taskId: msg.data.taskId ?? msg.data.messageId,
-            state: msg.data.expectsResponse ? "input-required" : "working",
-            payload: msg.data,
-            expanded: false,
-            kind: "channel-message",
-            conversationId: msg.data.conversationId,
-            messageId: msg.data.messageId,
-            replyTo: msg.data.replyTo,
-            direction: msg.data.toAgentId ? "outgoing" : "incoming",
-            clientId: targetClientId,
-            clientName: typeof meta.targetProject === "string" ? meta.targetProject : undefined,
-            clientLabel: normalizeClientLabel(targetClientName),
-          });
-        } else if (msg.type === "channel.ack") {
-          addEvent({
-            id: randomUUID(),
-            timestamp: new Date(msg.data.timestamp).toISOString(),
-            agentId: msg.data.actorId,
-            agentName: msg.data.actorType,
-            taskId: msg.data.messageId,
-            state: msg.data.state === "failed" ? "failed" : msg.data.state === "answered" ? "completed" : "working",
-            payload: msg.data,
-            expanded: false,
-            kind: "channel-ack",
-            conversationId: msg.data.conversationId,
-            messageId: msg.data.messageId,
-            channelState: msg.data.state,
-            clientLabel: normalizeClientLabel(msg.data.actorType === "client" ? msg.data.actorId : undefined),
-          });
-        }
-      } catch {
-        // Ignore
-      }
-    };
-
-    ws.onclose = () => {
-      if (!destroyed) scheduleReconnect();
-    };
-
-    ws.onerror = () => { ws?.close(); };
-  }
-
-  function scheduleReconnect() {
-    if (reconnectTimer || destroyed) return;
-    reconnectTimer = setTimeout(() => {
-      reconnectTimer = null;
-      connect();
-      reconnectDelay = Math.min(reconnectDelay * 2, 30_000);
-    }, reconnectDelay);
+  function handleRegistryMessage(msg: WsMessage) {
+    if (msg.type === "task.update") {
+      addEvent({
+        id: randomUUID(),
+        timestamp: msg.data.timestamp,
+        agentId: msg.data.agentId,
+        agentName: msg.data.agentName,
+        taskId: msg.data.taskId,
+        state: msg.data.state,
+        skillId: msg.data.skillId,
+        payload: msg.data.payload,
+        clientId: msg.data.clientId,
+        clientName: msg.data.clientName,
+        expanded: false,
+      });
+    } else if (msg.type === "channel.message") {
+      const meta = msg.data.meta ?? {};
+      const targetClientId = typeof meta.targetClientId === "string" ? meta.targetClientId : msg.data.toAgentId;
+      const targetClientName = typeof meta.targetClientName === "string"
+        ? meta.targetClientName
+        : typeof meta.targetClient === "string"
+          ? meta.targetClient
+          : undefined;
+      addEvent({
+        id: randomUUID(),
+        timestamp: new Date(msg.data.createdAt).toISOString(),
+        agentId: msg.data.fromAgentId,
+        agentName: msg.data.fromAgentName ?? msg.data.fromAgentId,
+        taskId: msg.data.taskId ?? msg.data.messageId,
+        state: msg.data.expectsResponse ? "input-required" : "working",
+        payload: msg.data,
+        expanded: false,
+        kind: "channel-message",
+        conversationId: msg.data.conversationId,
+        messageId: msg.data.messageId,
+        replyTo: msg.data.replyTo,
+        direction: msg.data.toAgentId ? "outgoing" : "incoming",
+        clientId: targetClientId,
+        clientName: typeof meta.targetProject === "string" ? meta.targetProject : undefined,
+        clientLabel: normalizeClientLabel(targetClientName),
+      });
+    } else if (msg.type === "channel.ack") {
+      addEvent({
+        id: randomUUID(),
+        timestamp: new Date(msg.data.timestamp).toISOString(),
+        agentId: msg.data.actorId,
+        agentName: msg.data.actorType,
+        taskId: msg.data.messageId,
+        state: msg.data.state === "failed" ? "failed" : msg.data.state === "answered" ? "completed" : "working",
+        payload: msg.data,
+        expanded: false,
+        kind: "channel-ack",
+        conversationId: msg.data.conversationId,
+        messageId: msg.data.messageId,
+        channelState: msg.data.state,
+        clientLabel: normalizeClientLabel(msg.data.actorType === "client" ? msg.data.actorId : undefined),
+      });
+    }
   }
 
   function addEvent(event: TraceEvent) {
@@ -197,14 +169,20 @@ export const useTraceStore = defineStore("trace", () => {
   }
 
   function destroy() {
-    destroyed = true;
-    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-    ws?.close();
-    ws = null;
+    if (unsubscribeRuntime) {
+      unsubscribeRuntime();
+      unsubscribeRuntime = null;
+    }
   }
 
-  // Start connection immediately
-  connect();
+  // Subscribe to the shared runtime instead of opening a second WebSocket
+  unsubscribeRuntime = dashboardChannelRuntime.on('registry', (msg) => {
+    try {
+      handleRegistryMessage(msg);
+    } catch (err) {
+      console.warn('[trace-store] Error processing registry message:', err);
+    }
+  });
 
   return {
     events,

@@ -23,6 +23,7 @@
         :class="$route.path === tab.to ? 'nav-tab--active' : ''"
       >
         {{ tab.label }}
+        <span v-if="tab.to === '/channels' && pendingCount > 0" class="pending-badge">{{ pendingCount }}</span>
       </RouterLink>
     </nav>
 
@@ -56,9 +57,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { RouterLink, useRoute } from "vue-router";
 import { useRegistryStore } from "@/stores/registry";
+import { fetchChannelConversations } from "@/lib/registry-client";
 
 const $route = useRoute();
 const store = useRegistryStore();
@@ -79,4 +81,42 @@ const tabs = [
   { to: "/", label: "dashboard" },
   { to: "/channels", label: "channels" },
 ];
+
+const pendingCount = ref(0);
+
+async function refreshPending() {
+  try {
+    const convs = await fetchChannelConversations({ pending: true });
+    pendingCount.value = convs.filter((c: any) => !c.suppressed).length;
+  } catch {}
+}
+
+let pendingInterval: ReturnType<typeof setInterval> | null = null;
+
+onMounted(() => {
+  void refreshPending();
+  pendingInterval = setInterval(() => { void refreshPending(); }, 10_000);
+});
+
+onUnmounted(() => {
+  if (pendingInterval !== null) clearInterval(pendingInterval);
+});
 </script>
+
+<style scoped>
+.pending-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  background: var(--red);
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  border-radius: 999px;
+  margin-left: 4px;
+  font-weight: 700;
+}
+</style>

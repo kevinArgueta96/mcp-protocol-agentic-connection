@@ -1,11 +1,12 @@
 <template>
   <div
     class="sig-card fade-in agent-card"
-    :class="isClient ? 'card-client' : 'card-agent'"
+    :class="[isClient ? 'card-client' : 'card-agent', { 'card--unhealthy': !agent.healthy }]"
     :style="{ '--card-accent': isClient ? 'var(--violet)' : 'var(--emerald)' }"
     @click="expanded = !expanded"
   >
     <div class="agent-card__header">
+      <HealthPulse :healthy="agent.healthy ?? false" />
       <span :title="agent.projectPath" class="agent-card__name">{{ displayName }}</span>
       <span
         class="chip"
@@ -50,6 +51,7 @@ import { ref, computed } from "vue";
 import { RouterLink } from "vue-router";
 import { useTimeAgo } from "@vueuse/core";
 import SkillBadge from "./SkillBadge.vue";
+import HealthPulse from "./HealthPulse.vue";
 import PayloadViewer from "@/components/trace/PayloadViewer.vue";
 import { projectTypeBadge } from "@/lib/utils";
 import type { RegistryAgent } from "@/types";
@@ -112,5 +114,9 @@ const agentJson = computed(() => ({
 }
 .card-client {
   border-color: rgba(196, 161, 255, 0.16);
+}
+.card--unhealthy {
+  opacity: 0.65;
+  border-color: rgba(255, 140, 124, 0.3);
 }
 </style>

@@ -81,49 +81,29 @@
           <p class="empty-state__title">Select a conversation</p>
           <p class="empty-state__body">Choose a thread on the left to inspect the ordered message flow and delivery acknowledgements.</p>
         </div>
-        <div v-else class="scrollable conversation-columns">
-          <section class="sig-card sig-card--soft">
-            <div class="conversation-actions">
-              <button class="btn-ghost" @click="reload">refresh</button>
-              <button class="btn-ghost" @click="handleSuppress" :disabled="conversationActionLoading">suppress</button>
-              <button class="btn-ghost" @click="handleRevive" :disabled="conversationActionLoading">revive</button>
-            </div>
-            <div class="field-note conversation-section-title">Messages</div>
-            <div class="conversation-stack">
-              <div v-for="message in selected.messages" :key="message.messageId" class="message-card">
-                <div class="message-card__head">
-                  <span class="message-card__sender">{{ message.fromAgentName ?? message.fromAgentId }}</span>
-                  <span class="chip chip-violet">{{ message.kind }}</span>
-                  <span v-if="message.toAgentId" class="chip chip-cyan">to {{ message.toAgentId.slice(0, 8) }}…</span>
-                  <span class="message-card__time">{{ formatTime(message.createdAt) }}</span>
+        <div v-else class="scrollable conv-timeline-wrap">
+          <div class="conversation-actions">
+            <button class="btn-ghost" @click="reload">refresh</button>
+            <button class="btn-ghost" @click="handleSuppress" :disabled="conversationActionLoading">suppress</button>
+            <button class="btn-ghost" @click="handleRevive" :disabled="conversationActionLoading">revive</button>
+          </div>
+          <div class="conv-timeline">
+            <div v-for="item in unifiedTimeline" :key="item.type + (item.type === 'message' ? item.messageId : `${item.messageId}-${item.timestamp}-${item.state}`)" >
+              <div v-if="item.type === 'message'" class="conv-msg-card">
+                <div class="conv-msg-header">
+                  <span class="conv-msg-from">{{ item.fromAgentName ?? item.fromAgentId }}</span>
+                  <span class="conv-msg-kind">{{ item.kind }}</span>
+                  <span class="conv-msg-time">{{ formatTimestamp(item.createdAt) }}</span>
                 </div>
-                <div class="message-card__token">
-                  msg {{ message.messageId.slice(0, 8) }}…<span v-if="message.replyTo"> · reply {{ message.replyTo.slice(0, 8) }}…</span>
-                </div>
-                <pre class="message-pre">{{ message.content }}</pre>
+                <pre class="conv-msg-body">{{ item.content }}</pre>
+              </div>
+              <div v-else class="conv-ack-pill">
+                <span class="conv-ack-state" :class="`ack-${item.state}`">{{ item.state }}</span>
+                <span class="conv-ack-actor">{{ item.actorType }}</span>
+                <span class="conv-ack-time">{{ formatRelativeTime(item.timestamp) }}</span>
               </div>
             </div>
-          </section>
-
-          <section class="sig-card sig-card--soft">
-            <div class="field-note conversation-section-title">Acknowledgements</div>
-            <div v-if="selected.acknowledgements.length === 0" class="empty-state conversation-empty">
-              <p class="empty-state__body">No acknowledgements yet.</p>
-            </div>
-            <div v-else class="conversation-stack">
-              <div v-for="ack in selected.acknowledgements" :key="`${ack.messageId}-${ack.timestamp}-${ack.state}`" class="ack-card">
-                <div class="ack-card__head">
-                  <span class="chip" :class="ack.state === 'failed' ? 'chip-red' : ack.state === 'answered' ? 'chip-emerald' : 'chip-cyan'">{{ ack.state }}</span>
-                  <span class="message-card__sender">{{ ack.actorType }}</span>
-                  <span class="message-card__token">{{ ack.actorId }}</span>
-                </div>
-                <div class="ack-card__token">
-                  msg {{ ack.messageId.slice(0, 8) }}… · {{ formatTime(ack.timestamp) }}
-                </div>
-                <div v-if="ack.detail" class="ack-card__detail">{{ ack.detail }}</div>
-              </div>
-            </div>
-          </section>
+          </div>
         </div>
       </div>
     </div>
@@ -131,7 +111,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import AppHeader from "@/components/layout/AppHeader.vue";
 import { dashboardChannelRuntime } from "@/lib/channel-runtime";
 import {
@@ -158,6 +138,32 @@ const refreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
 function formatTime(value: number): string {
   return new Date(value).toLocaleTimeString();
 }
+
+function formatTimestamp(value: number): string {
+  return new Date(value).toLocaleString();
+}
+
+function formatRelativeTime(value: number): string {
+  const diff = Date.now() - value;
+  if (diff < 60_000) return `${Math.round(diff / 1000)}s ago`;
+  if (diff < 3_600_000) return `${Math.round(diff / 60_000)}m ago`;
+  return new Date(value).toLocaleTimeString();
+}
+
+const unifiedTimeline = computed(() => {
+  if (!selected.value) return [];
+  const messages = selected.value.messages.map((msg) => ({
+    type: 'message' as const,
+    time: msg.createdAt,
+    ...msg,
+  }));
+  const acks = selected.value.acknowledgements.map((ack) => ({
+    type: 'ack' as const,
+    time: ack.timestamp,
+    ...ack,
+  }));
+  return [...messages, ...acks].sort((a, b) => a.time - b.time);
+});
 
 function statusClass(status?: string): string {
   if (status === "pending") return "chip-violet";
@@ -402,5 +408,126 @@ onUnmounted(() => {
 
 .conversation-list .conversation-item__preview {
   color: rgba(255, 247, 237, 0.65);
+}
+
+/* Unified timeline */
+.conv-timeline-wrap {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.conv-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.conv-msg-card {
+  background: rgba(221, 186, 154, 0.07);
+  border: 1px solid rgba(221, 186, 154, 0.14);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+
+.conv-msg-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.conv-msg-from {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-ink);
+  font-weight: 600;
+}
+
+.conv-msg-kind {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  padding: 2px 7px;
+  background: rgba(185, 130, 255, 0.18);
+  color: #7c3aed;
+  border-radius: 4px;
+  border: 1px solid rgba(185, 130, 255, 0.3);
+}
+
+.conv-msg-time {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  color: rgba(39, 29, 25, 0.45);
+  margin-left: auto;
+}
+
+.conv-msg-body {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+}
+
+.conv-ack-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  background: rgba(32, 24, 20, 0.5);
+  border-left: 2px solid rgba(221, 186, 154, 0.15);
+  margin-left: 14px;
+  border-radius: 0 4px 4px 0;
+}
+
+.conv-ack-state {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.ack-answered {
+  background: rgba(100, 220, 140, 0.15);
+  color: var(--emerald);
+  border: 1px solid rgba(100, 220, 140, 0.25);
+}
+
+.ack-failed {
+  background: rgba(255, 90, 90, 0.15);
+  color: var(--red);
+  border: 1px solid rgba(255, 90, 90, 0.25);
+}
+
+.ack-displayed_to_client {
+  background: rgba(100, 200, 255, 0.12);
+  color: var(--cyan, #7ec8e3);
+  border: 1px solid rgba(100, 200, 255, 0.2);
+}
+
+.ack-queued,
+.ack-delivered_to_bridge {
+  background: rgba(255, 197, 108, 0.12);
+  color: var(--amber);
+  border: 1px solid rgba(255, 197, 108, 0.2);
+}
+
+.conv-ack-actor {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  color: var(--text-dim);
+}
+
+.conv-ack-time {
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  color: var(--text-dim);
+  margin-left: auto;
+  opacity: 0.7;
 }
 </style>
