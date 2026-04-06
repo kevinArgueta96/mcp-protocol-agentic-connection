@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "agent_bridge": {
+      "command": "node",
+      "args": [
+        "/home/link-programmer/Documents/DEV_PROJECTS/mcp-protocol-agentic-connection/dist/cli/index.js",
+        "mcp",
+        "start",
+        "--registry-url",
+        "http://localhost:4999",
+        "--no-auto",
+        "--gemini-sidecar",
+        "--project",
+        "/home/link-programmer/Documents/DEV_PROJECTS/MINECO/fit-backend"
+      ]
+    }
+  }
+}
