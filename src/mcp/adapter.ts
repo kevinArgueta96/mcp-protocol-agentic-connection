@@ -327,6 +327,7 @@ export class McpAgentBridge {
 
       const notification = this.buildInboundChannelNotification(channelMessage);
       if (!notification) return;
+      this.surfacedInboxMessageIds.add(channelMessage.messageId);
       void this.server.server.notification(notification).then(() => this.postChannelAck({
         conversationId: channelMessage.conversationId,
         messageId: channelMessage.messageId,
@@ -865,6 +866,18 @@ export class McpAgentBridge {
     return `client-${clientName}-${digest}`;
   }
 
+  /**
+   * Generates a deterministic conversation ID for a bilateral session between two agents.
+   * The ID is symmetric (same result regardless of which side initiates) and stable
+   * across restarts, so both agents can always find their shared conversation thread.
+   */
+  private buildDeterministicConversationId(agentIdA: string, agentIdB: string): string {
+    const sorted = [agentIdA, agentIdB].sort().join("\n");
+    const hex = createHash("sha1").update(sorted).digest("hex");
+    // Format as UUID v4-shaped string for compatibility
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+  }
+
   private startCodexSidecarIfNeeded(projectPath: string, clientName: string): void {
     if (!this.options.codexSidecar) return;
     const normalized = clientName.toLowerCase();
@@ -1280,32 +1293,49 @@ export class McpAgentBridge {
             };
           }
 
-          const payload = conversations.map((snapshot) => ({
-            conversationId: snapshot.conversation.conversationId,
-            status: snapshot.status,
-            awaitingReply: snapshot.conversation.awaitingReply,
-            pendingMessageIds: snapshot.conversation.pendingMessageIds,
-            lastMessageId: snapshot.conversation.lastMessageId,
-            lastAckState: snapshot.conversation.lastAckState,
-            lastUpdatedAt: snapshot.lastUpdatedAt,
-            expiresAt: snapshot.lastMessage?.expiresAt,
-            lastMessagePreview: snapshot.lastMessage?.content.slice(0, 160),
-            pendingMessages: snapshot.pendingMessages.map((message) => ({
-              messageId: message.messageId,
-              expiresAt: message.expiresAt,
-              content: message.content,
-            })),
-            messages: includeMessages
-              ? snapshot.messages.map((message) => ({
-                  messageId: message.messageId,
-                  fromAgentId: message.fromAgentId,
-                  toAgentId: message.toAgentId,
-                  replyTo: message.replyTo,
-                  content: message.content,
-                  createdAt: message.createdAt,
-                }))
-              : undefined,
-          }));
+          const payload = conversations.map((snapshot) => {
+            // Find the latest inbound pending message (not from self) to surface reply context
+            const latestInbound = snapshot.pendingMessages
+              .filter((m) => m.fromAgentId !== this.clientAgentId)
+              .at(-1);
+
+            return {
+              conversationId: snapshot.conversation.conversationId,
+              status: snapshot.status,
+              awaitingReply: snapshot.conversation.awaitingReply,
+              lastAckState: snapshot.conversation.lastAckState,
+              lastUpdatedAt: snapshot.lastUpdatedAt,
+              expiresAt: snapshot.lastMessage?.expiresAt,
+              lastMessagePreview: snapshot.lastMessage?.content.slice(0, 160),
+              // Exact parameters to pass to the reply tool — no guesswork needed
+              replyWith: latestInbound
+                ? {
+                    agentId: latestInbound.fromAgentId,
+                    conversationId: snapshot.conversation.conversationId,
+                    replyTo: latestInbound.messageId,
+                  }
+                : undefined,
+              pendingMessages: snapshot.pendingMessages.map((message) => ({
+                messageId: message.messageId,
+                fromAgentId: message.fromAgentId,
+                fromAgentName: message.fromAgentName,
+                toAgentId: message.toAgentId,
+                expiresAt: message.expiresAt,
+                content: message.content,
+              })),
+              messages: includeMessages
+                ? snapshot.messages.map((message) => ({
+                    messageId: message.messageId,
+                    fromAgentId: message.fromAgentId,
+                    fromAgentName: message.fromAgentName,
+                    toAgentId: message.toAgentId,
+                    replyTo: message.replyTo,
+                    content: message.content,
+                    createdAt: message.createdAt,
+                  }))
+                : undefined,
+            };
+          });
 
           return {
             content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }],
@@ -1365,20 +1395,26 @@ export class McpAgentBridge {
       "reply",
       {
         description:
-          "Reply to an incoming channel event from an agent. " +
-          "Use this when you receive a <channel> event and want to respond to the originating agent. " +
-          "This is a shorthand for ask_agent focused on two-way channel communication.",
+          "Reply to a pending channel message from another agent. " +
+          "Always use the exact values from channel_inbox's replyWith field: " +
+          "agentId, conversationId, and replyTo. " +
+          "Do NOT guess or omit these — all three are required for correct routing. " +
+          "Example: if channel_inbox returns replyWith={agentId:'X', conversationId:'Y', replyTo:'Z'}, " +
+          "pass all three exactly as-is.",
         inputSchema: {
-          agentId: z.string().optional().describe("Agent ID from the channel event. Optional when replyTo or conversationId is provided."),
+          agentId: z.string().describe("fromAgentId of the message you are replying to (from channel_inbox replyWith.agentId)"),
           message: z.string().describe("Your reply message"),
-          conversationId: z.string().optional().describe("Conversation ID from the channel event"),
-          replyTo: z.string().optional().describe("Message ID you are replying to"),
-          taskId: z.string().optional().describe("Task ID associated with the conversation"),
+          conversationId: z.string().describe("conversationId from channel_inbox replyWith.conversationId"),
+          replyTo: z.string().describe("messageId of the message you are replying to (from channel_inbox replyWith.replyTo)"),
+          taskId: z.string().optional().describe("Task ID associated with the conversation (optional)"),
           skillId: z.string().optional().describe("Optional fallback skill when using task invocation"),
         },
       },
       async ({ agentId, message, conversationId, replyTo, taskId, skillId }) => {
         try {
+          // Sync store before reply so resolveReplyContext has fresh data
+          await this.syncRegistryToLocalStore();
+
           const replyResult = await this.conversationService.replyAndAcknowledge({
             agentId,
             conversationId,
@@ -1392,26 +1428,39 @@ export class McpAgentBridge {
             acknowledgementState: "answered",
             acknowledgementDetail: "Reply sent from Claude channel",
           });
+
           const resolvedAgentId =
             replyResult.reply.message.toAgentId ??
             agentId ??
             replyResult.reply.resolvedContext?.toAgentId;
+
           if (!resolvedAgentId) {
             return {
               content: [{
                 type: "text" as const,
-                text: "reply needs either agentId or a known replyTo/conversationId from the channel event.",
+                text: "reply needs agentId, conversationId, and replyTo — use the replyWith field from channel_inbox.",
               }],
               isError: true,
             };
           }
-          const entry = await this.resolveAgent(resolvedAgentId);
-          const channelMessage = replyResult.reply.message;
 
+          let recipientName = resolvedAgentId;
+          try {
+            const entry = await this.resolveAgent(resolvedAgentId);
+            recipientName = `${entry.name} (${entry.clientInfo?.clientName ?? resolvedAgentId})`;
+          } catch { /* resolveAgent is best-effort */ }
+
+          const channelMessage = replyResult.reply.message;
           return {
             content: [{
               type: "text" as const,
-              text: `Reply sent to ${entry.name}\nconversationId=${channelMessage.conversationId}\nmessageId=${channelMessage.messageId}`,
+              text: [
+                `Reply sent to: ${recipientName}`,
+                `  toAgentId:      ${resolvedAgentId}`,
+                `  conversationId: ${channelMessage.conversationId}`,
+                `  messageId:      ${channelMessage.messageId}`,
+                `  replyTo:        ${replyTo}`,
+              ].join("\n"),
             }],
           };
         } catch (err) {
@@ -1798,12 +1847,18 @@ export class McpAgentBridge {
   }): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
     try {
       const client = await this.resolveClientSession({ clientId: params.clientId, project: params.project });
-      const expectsResponse = params.expectsResponse ?? false;
+      const expectsResponse = params.expectsResponse ?? true;
       const expiresAt = expectsResponse ? Date.now() + (params.timeoutMs ?? 300_000) : undefined;
+      // Use a deterministic conversationId so both sides always share the same thread.
+      // This lets the recipient reply without needing to look up the conversationId.
+      const fromAgentId = this.clientAgentId ?? "mcp-adapter";
+      const deterministicConversationId = this.buildDeterministicConversationId(fromAgentId, client.agentId);
+      const resolvedConversationId = params.conversationId ?? deterministicConversationId;
+
       const snapshot = params.replyTo || params.conversationId
         ? (await this.conversationService.replyAndAcknowledge({
             agentId: client.agentId,
-            conversationId: params.conversationId,
+            conversationId: resolvedConversationId,
             replyTo: params.replyTo,
             taskId: params.taskId,
             message: params.message,
@@ -1825,6 +1880,7 @@ export class McpAgentBridge {
             expectsResponse,
             requiresAck: true,
             expiresAt,
+            conversationId: resolvedConversationId,
             meta: {
               targetClientId: client.agentId,
               targetProject: client.projectPath,
@@ -1845,15 +1901,16 @@ export class McpAgentBridge {
       return {
         content: [{
           type: "text" as const,
-          text:
-            `Channel message sent to ${client.name}\n` +
-            `clientId=${client.agentId}\n` +
-            `conversationId=${channelMessage.conversationId}\n` +
-            `messageId=${channelMessage.messageId}\n` +
-            `deliveryState=${deliveryState ?? "pending"}`
-            + (inboxFirst
-              ? "\nTarget client is inbox-first. If you are waiting for its reply, refresh with channel_inbox."
-              : ""),
+          text: [
+            `Channel message sent to ${client.name}`,
+            `  toAgentId:      ${client.agentId}`,
+            `  conversationId: ${channelMessage.conversationId}`,
+            `  messageId:      ${channelMessage.messageId}`,
+            `  deliveryState:  ${deliveryState ?? "pending"}`,
+            inboxFirst
+              ? "Target is inbox-first. To check for a reply use channel_inbox — the conversationId above is stable and deterministic for this pair."
+              : "",
+          ].filter(Boolean).join("\n"),
         }],
       };
     } catch (err) {

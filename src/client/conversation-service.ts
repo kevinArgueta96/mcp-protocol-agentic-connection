@@ -14,6 +14,7 @@ export interface ConversationSnapshot {
 }
 
 export interface StartConversationInput {
+  conversationId?: string;
   toAgentId: string;
   message: string;
   taskId?: string;
@@ -117,6 +118,7 @@ export class ConversationService {
 
   async startConversation(input: StartConversationInput): Promise<ConversationSnapshot> {
     const message = await this.runtime.sendMessage({
+      conversationId: input.conversationId,
       toAgentId: input.toAgentId,
       taskId: input.taskId,
       kind: input.kind ?? "chat",
