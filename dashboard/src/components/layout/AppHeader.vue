@@ -57,7 +57,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { RouterLink, useRoute } from "vue-router";
 import { useRegistryStore } from "@/stores/registry";
 import { fetchChannelConversations } from "@/lib/registry-client";
@@ -65,10 +65,27 @@ import { fetchChannelConversations } from "@/lib/registry-client";
 const $route = useRoute();
 const store = useRegistryStore();
 
-const status = computed(() => store.status);
+const rawStatus = computed(() => store.status);
 const agentCount = computed(() => store.agentCount);
 const healthyCount = computed(() => store.healthyCount);
 const clientCount = computed(() => store.clientCount);
+
+// Debounce "offline/error" by 2s to avoid flashing during brief WS reconnections
+const status = ref(store.status);
+let offlineTimer: ReturnType<typeof setTimeout> | null = null;
+
+watch(rawStatus, (next) => {
+  if (next === "connected" || next === "connecting") {
+    if (offlineTimer) { clearTimeout(offlineTimer); offlineTimer = null; }
+    status.value = next;
+  } else {
+    // disconnected or error — wait 2s before showing
+    offlineTimer = setTimeout(() => {
+      status.value = next;
+      offlineTimer = null;
+    }, 2000);
+  }
+});
 
 const statusLabel = computed(() => ({
   connected: "live",

@@ -422,7 +422,23 @@ export class RegistryServer {
     // WebSocket server on /ws path
     const wss = new WebSocketServer({ server: this.httpServer, path: "/ws" });
 
+    // WebSocket keepalive: ping every 25s, terminate if no pong within 10s
+    const wsPingInterval = setInterval(() => {
+      for (const client of wss.clients) {
+        if ((client as any)._isAlive === false) {
+          client.terminate();
+          return;
+        }
+        (client as any)._isAlive = false;
+        client.ping();
+      }
+    }, 25_000);
+
+    wss.on("close", () => clearInterval(wsPingInterval));
+
     wss.on("connection", (ws) => {
+      (ws as any)._isAlive = true;
+      ws.on("pong", () => { (ws as any)._isAlive = true; });
       this.wsClients.add(ws);
       let identifiedAgentId: string | null = null;
 
