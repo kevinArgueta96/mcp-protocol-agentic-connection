@@ -1427,19 +1427,22 @@ export class McpAgentBridge {
       "message_client_session",
       {
         description:
-          "Send a channel message to a specific client session. " +
-          "Use this for Codex, Claude, Gemini, or dashboard conversations over channels. " +
-          "Do not use ask_agent for passive client entries. " +
-          "When the target client is Codex, expect replies to be handled through channel_inbox plus reply rather than automatic push rendering.",
+          "Send a channel message to a specific client session (Claude Code, Codex, Gemini, or dashboard). " +
+          "Resolves target in priority order: (1) exact clientId match, (2) conversationId participant lookup, " +
+          "(3) project name/path match — when multiple sessions share the same project, claude-code is preferred " +
+          "over gemini over codex automatically (use clientType to override). " +
+          "Claude Code receives messages as immediate <channel> push events. " +
+          "Codex/Gemini are inbox-first: use channel_inbox + reply to check for responses.",
         inputSchema: {
-          clientId: z.string().optional().describe("Target client session agentId"),
-          project: z.string().optional().describe("Project name or path used to resolve the target client session"),
+          clientId: z.string().optional().describe("Exact target client session agentId (most specific — skips all other resolution)"),
+          project: z.string().optional().describe("Project name or path to resolve the target session; not required if conversationId is provided"),
+          clientType: z.string().optional().describe("Filter by client type when project matches multiple sessions (e.g. 'claude-code', 'codex', 'gemini'). Ignored when clientId is set."),
           message: z.string().describe("Message to send over the channel"),
-          conversationId: z.string().optional().describe("Conversation ID to continue"),
+          conversationId: z.string().optional().describe("Conversation ID to continue; if neither clientId nor project is given, the target is resolved from this conversation's participants"),
           replyTo: z.string().optional().describe("Message ID this replies to"),
           taskId: z.string().optional().describe("Optional task ID associated with the channel conversation"),
           expectsResponse: z.boolean().optional().describe("Whether the sender expects a reply"),
-          timeoutMs: z.coerce.number().optional().describe("How long the receiver may take to reply before the message expires"),
+          timeoutMs: z.coerce.number().optional().describe("How long the receiver may take to reply before the message expires (ms)"),
         },
       },
       async (input) => this.handleMessageClientSession(input)
@@ -1452,14 +1455,15 @@ export class McpAgentBridge {
           "Compatibility alias for message_client_session. " +
           "Prefer message_client_session for new integrations.",
         inputSchema: {
-          clientId: z.string().optional().describe("Target client session agentId"),
-          project: z.string().optional().describe("Project name or path used to resolve the target client session"),
+          clientId: z.string().optional().describe("Exact target client session agentId (most specific — skips all other resolution)"),
+          project: z.string().optional().describe("Project name or path to resolve the target session; not required if conversationId is provided"),
+          clientType: z.string().optional().describe("Filter by client type when project matches multiple sessions (e.g. 'claude-code', 'codex', 'gemini'). Ignored when clientId is set."),
           message: z.string().describe("Message to send over the channel"),
-          conversationId: z.string().optional().describe("Conversation ID to continue"),
+          conversationId: z.string().optional().describe("Conversation ID to continue; if neither clientId nor project is given, the target is resolved from this conversation's participants"),
           replyTo: z.string().optional().describe("Message ID this replies to"),
           taskId: z.string().optional().describe("Optional task ID associated with the channel conversation"),
           expectsResponse: z.boolean().optional().describe("Whether the sender expects a reply"),
-          timeoutMs: z.coerce.number().optional().describe("How long the receiver may take to reply before the message expires"),
+          timeoutMs: z.coerce.number().optional().describe("How long the receiver may take to reply before the message expires (ms)"),
         },
       },
       async (input) => this.handleMessageClientSession(input)
@@ -1949,6 +1953,7 @@ export class McpAgentBridge {
   private async handleMessageClientSession(params: {
     clientId?: string;
     project?: string;
+    clientType?: string;
     message: string;
     conversationId?: string;
     replyTo?: string;
@@ -1957,7 +1962,12 @@ export class McpAgentBridge {
     timeoutMs?: number;
   }): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
     try {
-      const client = await this.resolveClientSession({ clientId: params.clientId, project: params.project });
+      const client = await this.resolveClientSession({
+        clientId: params.clientId,
+        project: params.project,
+        clientType: params.clientType,
+        conversationId: params.conversationId,
+      });
       const expectsResponse = params.expectsResponse ?? true;
       const expiresAt = expectsResponse ? Date.now() + (params.timeoutMs ?? 300_000) : undefined;
       // Use a deterministic conversationId so both sides always share the same thread.

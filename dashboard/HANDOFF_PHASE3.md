@@ -1,0 +1,1 @@
+- `src/components/chat/DeliveryProgress.vue` — Mini horizontal step indicator for message delivery state. Uses 4-node dot + line layout with amber/emerald/red color coding and pulse animation for active step.
