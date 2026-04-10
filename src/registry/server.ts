@@ -575,6 +575,9 @@ export class RegistryServer {
           const mappedWs = this.agentWsMap.get(identifiedAgentId);
           if (mappedWs === ws) {
             this.agentWsMap.delete(identifiedAgentId);
+            // Mark unhealthy immediately so list_agents reflects the disconnect
+            // instead of waiting up to 3 minutes for the health check.
+            this.store.markUnhealthy(identifiedAgentId);
             console.error(`[Registry WS] Agent disconnected: ${identifiedAgentId}`);
           }
         }
@@ -588,6 +591,7 @@ export class RegistryServer {
           const mappedWs = this.agentWsMap.get(identifiedAgentId);
           if (mappedWs === ws) {
             this.agentWsMap.delete(identifiedAgentId);
+            this.store.markUnhealthy(identifiedAgentId);
           }
         }
       });

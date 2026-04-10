@@ -16,7 +16,10 @@
     "clean": "rm -rf dist",
     "build:dashboard": "cd dashboard && pnpm run build",
     "build:all": "pnpm run build && pnpm run build:dashboard && cp -r dashboard/dist dist/dashboard",
-    "dev:dashboard": "cd dashboard && pnpm run dev"
+    "dev:dashboard": "cd dashboard && pnpm run dev",
+    "test": "vitest run",
+    "lint": "biome check src/",
+    "lint:fix": "biome check src/ --write"
   },
   "dependencies": {
     "@anthropic-ai/claude-code": "^2.1.79",
@@ -32,11 +35,13 @@
     "zod": "^3.25.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.4.11",
     "@types/express": "^5.0.0",
     "@types/node": "^22.0.0",
     "@types/uuid": "^10.0.0",
     "@types/ws": "^8.5.0",
     "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.4"
   }
 }

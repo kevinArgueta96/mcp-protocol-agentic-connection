@@ -12,9 +12,8 @@
 
 import { McpServer, ResourceTemplate, type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { basename, resolve } from "node:path";
+import { basename } from "node:path";
 import { z } from "zod";
 import { RegistryClient } from "../client/registry-client.js";
 import { ChannelTransport } from "../client/channel-transport.js";
@@ -27,6 +26,7 @@ import { RegistryServer } from "../registry/server.js";
 import { AgentServer } from "../agent/server.js";
 import { CodexProxy } from "./proxies/codex-proxy.js";
 import { GeminiProxy } from "./proxies/gemini-proxy.js";
+import { SidecarManager } from "./sidecar-manager.js";
 import type { RegistryEntry, AgentMessage, ChannelMessage } from "../types/messages.js";
 import type { Task, Part, Message } from "../types/a2a.js";
 import { WebSocket } from "ws";
@@ -157,8 +157,7 @@ export class McpAgentBridge {
   private pendingPreInitMessages: ChannelMessage[] = [];
   private syncInFlight = false;
   private agentToolMap = new Map<string, RegisteredTool[]>();
-  private codexSidecarProcess: ChildProcess | null = null;
-  private geminiSidecarProcess: ChildProcess | null = null;
+  private readonly sidecarManager: SidecarManager;
 
   constructor(options: McpAdapterOptions = {}) {
     this.options = {
@@ -187,6 +186,20 @@ export class McpAgentBridge {
     this.conversationService = new ConversationService(this.channelRuntime);
     this.codexProxy = new CodexProxy(this.conversationService);
     this.geminiProxy = new GeminiProxy(this.conversationService);
+    this.sidecarManager = new SidecarManager({
+      codexSidecar: this.options.codexSidecar,
+      geminiSidecar: this.options.geminiSidecar,
+      codex: {
+        registryUrl: this.options.registryUrl,
+        pollIntervalMs: this.options.codexSidecarPollIntervalMs,
+        retryIntervalMs: this.options.codexSidecarRetryIntervalMs,
+      },
+      gemini: {
+        registryUrl: this.options.registryUrl,
+        pollIntervalMs: this.options.geminiSidecarPollIntervalMs,
+        retryIntervalMs: this.options.geminiSidecarRetryIntervalMs,
+      },
+    });
     this.clientProfile = this.profileResolver.resolve({ clientName: "codex" });
     this.inboxFirstConfig = resolveInboxFirstClientConfig(this.bridgeConfig, this.clientProfile.id);
     this.server = new McpServer(
@@ -467,8 +480,8 @@ export class McpAgentBridge {
             },
           },
         },
-      }).catch(() => {
-        // Ignore reminder failures.
+      }).catch((err: unknown) => {
+        console.error("[MCP] inbox reminder push failed:", err instanceof Error ? err.message : err);
       });
     }, this.inboxFirstConfig.reminderIntervalMs);
 
@@ -518,8 +531,8 @@ export class McpAgentBridge {
           console.error(`[MCP] Replayed ${unsurfacedMessages.length} unsurfaced message(s) after sync`);
         }
       }
-    } catch {
-      // Registry may not be ready yet; WebSocket events will populate the store.
+    } catch (err: unknown) {
+      console.error("[MCP] registry sync failed:", err instanceof Error ? err.message : err);
     } finally {
       this.syncInFlight = false;
     }
@@ -614,8 +627,8 @@ export class McpAgentBridge {
               },
             },
           };
-      await this.server.server.notification(notification).catch(() => {
-        // Ignore visibility failures; polling continues.
+      await this.server.server.notification(notification).catch((err: unknown) => {
+        console.error("[MCP] surface snapshot push failed:", err instanceof Error ? err.message : err);
       });
     } else {
       // Multiple new messages: send ONE aggregated notification to avoid flooding the client.
@@ -636,20 +649,21 @@ export class McpAgentBridge {
           },
         },
       };
-      await this.server.server.notification(notification).catch(() => {
-        // Ignore visibility failures; polling continues.
+      await this.server.server.notification(notification).catch((err: unknown) => {
+        console.error("[MCP] aggregated inbox push failed:", err instanceof Error ? err.message : err);
       });
     }
   }
 
+  /** Returns the inbox-first proxy for the current client profile, or null for push-mode clients. */
+  private get activeProxy(): CodexProxy | GeminiProxy | null {
+    if (this.clientProfile.id === "codex") return this.codexProxy;
+    if (this.clientProfile.id === "gemini") return this.geminiProxy;
+    return null;
+  }
+
   private buildInboundChannelNotification(message: ChannelMessage) {
-    if (this.clientProfile.id === "codex") {
-      return this.codexProxy.buildChannelNotification(message);
-    }
-    if (this.clientProfile.id === "gemini") {
-      return this.geminiProxy.buildChannelNotification(message);
-    }
-    return this.clientProfile.mapChannelMessage(message);
+    return this.activeProxy?.buildChannelNotification(message) ?? this.clientProfile.mapChannelMessage(message);
   }
 
   private buildSurfacedInboxNotification(
@@ -658,27 +672,15 @@ export class McpAgentBridge {
     totalCount: number,
     source: "pending" | "active",
   ) {
-    if (this.clientProfile.id === "codex") {
-      return source === "pending"
-        ? this.codexProxy.buildPendingReminder(snapshot, message, totalCount)
-        : this.codexProxy.buildActiveConversationNotification(snapshot, message);
-    }
-    if (this.clientProfile.id === "gemini") {
-      return source === "pending"
-        ? this.geminiProxy.buildPendingReminder(snapshot, message, totalCount)
-        : this.geminiProxy.buildActiveConversationNotification(snapshot, message);
-    }
-    return null;
+    const proxy = this.activeProxy;
+    if (!proxy) return null;
+    return source === "pending"
+      ? proxy.buildPendingReminder(snapshot, message, totalCount)
+      : proxy.buildActiveConversationNotification(snapshot, message);
   }
 
   private buildTaskRequestNotification(message: AgentMessage) {
-    if (this.clientProfile.id === "codex") {
-      return this.codexProxy.buildTaskRequestNotification(message);
-    }
-    if (this.clientProfile.id === "gemini") {
-      return this.geminiProxy.buildTaskRequestNotification(message);
-    }
-    return this.clientProfile.mapTaskRequestMessage(message);
+    return this.activeProxy?.buildTaskRequestNotification(message) ?? this.clientProfile.mapTaskRequestMessage(message);
   }
 
   private async postChannelAck(ack: {
@@ -698,8 +700,8 @@ export class McpAgentBridge {
         actorType: ack.actorType,
         detail: ack.detail,
       });
-    } catch {
-      // Ignore ack failures; conversation can continue without them.
+    } catch (err: unknown) {
+      console.error("[MCP] channel ack failed:", err instanceof Error ? err.message : err);
     }
   }
 
@@ -895,13 +897,14 @@ export class McpAgentBridge {
         await this.syncRegistryToLocalStore();
         this.startInboxPolling();
         this.drainPendingPreInitMessages();
-        this.startCodexSidecarIfNeeded(realProjectPath, clientName);
-        this.startGeminiSidecarIfNeeded(realProjectPath, clientName);
+        if (this.clientAgentId) {
+          this.sidecarManager.startIfNeeded("codex", realProjectPath, clientName, this.clientAgentId);
+          this.sidecarManager.startIfNeeded("gemini", realProjectPath, clientName, this.clientAgentId);
+        }
         console.error(`[MCP] Registered client: ${realProjectName} (${clientName} v${version})`);
 
         const cleanup = async () => {
-          this.stopCodexSidecar();
-          this.stopGeminiSidecar();
+          this.sidecarManager.stopAll();
           this.stopInboxPolling();
           await this.channelRuntime.deactivateClient();
           if (clientName.toLowerCase().includes("codex")) {
@@ -952,155 +955,16 @@ export class McpAgentBridge {
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
   }
 
-  private startCodexSidecarIfNeeded(projectPath: string, clientName: string): void {
-    if (!this.options.codexSidecar) return;
-    const normalized = clientName.toLowerCase();
-    if (!normalized.includes("codex")) return;
-    if (this.codexSidecarProcess || !this.clientAgentId) return;
-
-    const launch = this.buildSidecarLaunch(projectPath);
-    const child = spawn(launch.command, launch.args, {
-      detached: true,
-      stdio: "ignore",
-      cwd: projectPath,
-      env: process.env,
-    });
-    child.unref();
-    this.codexSidecarProcess = child;
-    const existing = readCurrentCodexSession(projectPath);
-    writeCurrentCodexSession(projectPath, {
-      clientAgentId: this.clientAgentId,
-      clientName,
-      projectPath,
-      registeredAt: Date.now(),
-      sidecarPid: child.pid,
-      tmuxPane: existing?.tmuxPane ?? process.env["TMUX_PANE"],
-      tmuxSessionName: existing?.tmuxSessionName,
-      tmuxWindowName: existing?.tmuxWindowName,
-      tmuxCurrentCommand: existing?.tmuxCurrentCommand,
-    });
-    console.error(`[MCP] Detached Codex sidecar started for ${this.clientAgentId} (pid=${child.pid ?? "unknown"})`);
-  }
-
-  private stopCodexSidecar(): void {
-    if (!this.codexSidecarProcess) return;
-    try {
-      this.codexSidecarProcess.kill("SIGTERM");
-    } catch {
-      // ignore
-    }
-    this.codexSidecarProcess = null;
-  }
-
-  private startGeminiSidecarIfNeeded(projectPath: string, clientName: string): void {
-    if (!this.options.geminiSidecar) return;
-    if (!clientName.toLowerCase().includes("gemini")) return;
-    if (this.geminiSidecarProcess || !this.clientAgentId) return;
-
-    const launch = this.buildGeminiSidecarLaunch(projectPath);
-    const child = spawn(launch.command, launch.args, {
-      detached: true,
-      stdio: "ignore",
-      cwd: projectPath,
-      env: process.env,
-    });
-    child.unref();
-    this.geminiSidecarProcess = child;
-    const existing = readCurrentGeminiSession(projectPath);
-    writeCurrentGeminiSession(projectPath, {
-      clientAgentId: this.clientAgentId,
-      clientName,
-      projectPath,
-      registeredAt: Date.now(),
-      sidecarPid: child.pid,
-      tmuxPane: existing?.tmuxPane ?? process.env["TMUX_PANE"],
-      tmuxSessionName: existing?.tmuxSessionName,
-      tmuxWindowName: existing?.tmuxWindowName,
-      tmuxCurrentCommand: existing?.tmuxCurrentCommand,
-    });
-    console.error(`[MCP] Detached Gemini sidecar started for ${this.clientAgentId} (pid=${child.pid ?? "unknown"})`);
-  }
-
-  private stopGeminiSidecar(): void {
-    if (!this.geminiSidecarProcess) return;
-    try {
-      this.geminiSidecarProcess.kill("SIGTERM");
-    } catch {
-      // ignore
-    }
-    this.geminiSidecarProcess = null;
-  }
-
-  private buildGeminiSidecarLaunch(projectPath: string): { command: string; args: string[] } {
-    const baseArgs = [
-      "gemini",
-      "tmux-sidecar",
-      "--project",
-      projectPath,
-      "--registry-url",
-      this.options.registryUrl,
-      "--poll-interval-ms",
-      String(this.options.geminiSidecarPollIntervalMs),
-      "--retry-interval-ms",
-      String(this.options.geminiSidecarRetryIntervalMs),
-    ];
-
-    const tmuxPane = process.env["TMUX_PANE"];
-    if (tmuxPane) {
-      baseArgs.push("--tmux-pane", tmuxPane);
-    }
-
-    const entry = process.argv[1] ?? "";
-    if (entry.endsWith(".ts")) {
-      return {
-        command: "pnpm",
-        args: ["exec", "tsx", resolve(entry), ...baseArgs],
-      };
-    }
-
-    return {
-      command: process.execPath,
-      args: [resolve(entry), ...baseArgs],
-    };
-  }
-
-  private buildSidecarLaunch(projectPath: string): { command: string; args: string[] } {
-    const baseArgs = [
-      "codex",
-      "tmux-sidecar",
-      "--project",
-      projectPath,
-      "--registry-url",
-      this.options.registryUrl,
-      "--poll-interval-ms",
-      String(this.options.codexSidecarPollIntervalMs),
-      "--retry-interval-ms",
-      String(this.options.codexSidecarRetryIntervalMs),
-    ];
-
-    const tmuxPane = process.env["TMUX_PANE"];
-    if (tmuxPane) {
-      baseArgs.push("--tmux-pane", tmuxPane);
-    }
-
-    const entry = process.argv[1] ?? "";
-    if (entry.endsWith(".ts")) {
-      return {
-        command: "pnpm",
-        args: ["exec", "tsx", resolve(entry), ...baseArgs],
-      };
-    }
-
-    return {
-      command: process.execPath,
-      args: [resolve(entry), ...baseArgs],
-    };
-  }
-
   // ── Meta-tools ─────────────────────────────────────────────────────────────
 
   private registerMetaTools(): void {
+    this.registerDiscoveryTools();
+    this.registerConversationManagementTools();
+    this.registerChannelMessagingTools();
+  }
 
+  /** list_agents, agent_health, ask_agent */
+  private registerDiscoveryTools(): void {
     this.server.registerTool(
       "list_agents",
       {
@@ -1257,7 +1121,10 @@ export class McpAgentBridge {
         }
       }
     );
+  }
 
+  /** mark_expired_channel_conversations, delete_channel_conversation, channel_inbox */
+  private registerConversationManagementTools(): void {
     this.server.registerTool(
       "mark_expired_channel_conversations",
       {
@@ -1422,7 +1289,10 @@ export class McpAgentBridge {
         }
       }
     );
+  }
 
+  /** message_client_session, message_claude_client, reply */
+  private registerChannelMessagingTools(): void {
     this.server.registerTool(
       "message_client_session",
       {
@@ -1597,8 +1467,8 @@ export class McpAgentBridge {
                   return { content: [{ type: "text" as const, text: JSON.stringify(artifact.parts[0].data, null, 2) }] };
                 }
                 return { content: [{ type: "text" as const, text: JSON.stringify(task, null, 2) }] };
-              } catch {
-                // WS failed — fallback to HTTP
+              } catch (err: unknown) {
+                console.error("[MCP] WS relay failed for skill tool, falling back to HTTP:", err instanceof Error ? err.message : err);
               }
             }
             // HTTP fallback
