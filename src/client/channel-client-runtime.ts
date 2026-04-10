@@ -65,6 +65,9 @@ export class ChannelClientRuntime {
   private readonly emitter = new EventEmitter();
   private readonly conversationStore: ConversationSessionStore;
 
+  private readonly emittedMessageIds = new Set<string>();
+  private readonly emittedMessageTtlMs: number;
+
   private ws: WebSocket | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectAttempts = 0;
@@ -76,7 +79,8 @@ export class ChannelClientRuntime {
   constructor(options: ChannelClientRuntimeOptions) {
     this.transport = options.transport;
     this.reconnectDelayMs = options.reconnectDelayMs ?? 5_000;
-    this.maxReconnectAttempts = options.maxReconnectAttempts ?? 5;
+    this.maxReconnectAttempts = options.maxReconnectAttempts ?? 10;
+    this.emittedMessageTtlMs = options.recentMessageTtlMs ?? 3_600_000;
     this.conversationStore = new ConversationSessionStore({
       recentMessageTtlMs: options.recentMessageTtlMs,
     });
@@ -91,6 +95,11 @@ export class ChannelClientRuntime {
     if (this.destroyed) return;
     if (this.ws && (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)) {
       return;
+    }
+    // Close any lingering socket (CLOSING state) to prevent phantom connections
+    if (this.ws) {
+      try { this.ws.close(); } catch { /* ignore */ }
+      this.ws = null;
     }
     try {
       const ws = this.transport.connectWebSocket({
@@ -341,7 +350,8 @@ export class ChannelClientRuntime {
         if (this.activeRegistration) {
           try {
             await this.transport.registerClient(this.activeRegistration);
-            // No identify() here — the WS open handler sends identify on reconnect
+            // Re-identify on existing WS so agentWsMap is updated in registry
+            this.identify();
           } catch {
             // Ignore; next heartbeat/reconnect will try again.
           }
@@ -361,10 +371,13 @@ export class ChannelClientRuntime {
     if (this.destroyed || this.reconnectTimer) return;
     if (this.reconnectAttempts >= this.maxReconnectAttempts) return;
     this.reconnectAttempts++;
+    const baseDelay = this.reconnectDelayMs * Math.pow(1.5, this.reconnectAttempts - 1);
+    const jitter = Math.random() * 1_000;
+    const delay = Math.min(baseDelay + jitter, 30_000);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();
-    }, this.reconnectDelayMs);
+    }, delay);
   }
 
   private handleRawMessage(raw: string): void {
@@ -386,8 +399,11 @@ export class ChannelClientRuntime {
 
     if (event.type === "channel.message" && event.data) {
       const message = event.data as ChannelMessage;
+      if (this.emittedMessageIds.has(message.messageId)) return;
       const updatedState = this.conversationStore.trackMessage(message);
       if (!updatedState) return;
+      this.emittedMessageIds.add(message.messageId);
+      setTimeout(() => this.emittedMessageIds.delete(message.messageId), this.emittedMessageTtlMs);
       this.emitConversationUpdate(updatedState);
       this.emitter.emit("channel.message", message);
       return;

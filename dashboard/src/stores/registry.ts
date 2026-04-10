@@ -24,7 +24,24 @@ export const useRegistryStore = defineStore("registry", () => {
       }
       case "agent.registered": {
         const updated = new Map(agents.value);
-        updated.set(msg.data.agentId, msg.data);
+        const newAgent = msg.data;
+        // Remove stale entries for the same logical entity before inserting
+        for (const [id, existing] of updated) {
+          if (id === newAgent.agentId) continue;
+          const sameClient =
+            newAgent.entryType === "client" &&
+            existing.entryType === "client" &&
+            existing.projectPath === newAgent.projectPath &&
+            existing.clientInfo?.clientName === newAgent.clientInfo?.clientName;
+          const sameAgent =
+            newAgent.entryType !== "client" &&
+            existing.entryType !== "client" &&
+            existing.projectPath === newAgent.projectPath;
+          if (sameClient || sameAgent) {
+            updated.delete(id);
+          }
+        }
+        updated.set(newAgent.agentId, newAgent);
         agents.value = updated;
         break;
       }

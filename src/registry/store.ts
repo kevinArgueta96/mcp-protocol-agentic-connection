@@ -3,7 +3,7 @@ import type { AgentRegistration, AgentListFilter, RegistryEntry } from "../types
 import type { RegistryEventBus } from "./events.js";
 
 const UNHEALTHY_THRESHOLD_MS = 90_000;   // 90 seconds
-const REMOVE_THRESHOLD_MS = 300_000;      // 5 minutes
+const REMOVE_THRESHOLD_MS = 120_000;      // 2 minutes
 
 export class AgentStore {
   private agents = new Map<string, RegistryEntry>();
@@ -13,7 +13,11 @@ export class AgentStore {
   register(registration: AgentRegistration): RegistryEntry {
     // Replace stale entries for the same logical runtime.
     // This keeps the dashboard stable when Claude reconnects for the same project.
+    // Collect IDs first, then delete — avoids mutating the map during iteration.
+    const toRemove: string[] = [];
     for (const [existingId, existing] of this.agents.entries()) {
+      if (existingId === registration.agentId) continue;
+
       const sameClientSession =
         registration.entryType === "client" &&
         existing.entryType === "client" &&
@@ -25,14 +29,17 @@ export class AgentStore {
         (existing.entryType ?? "agent") === "agent" &&
         existing.projectPath === registration.projectPath;
 
-      if ((sameClientSession || sameProjectAgent) && existingId !== registration.agentId) {
-        this.agents.delete(existingId);
-        this.eventBus?.broadcast({
-          type: "agent.deregistered",
-          timestamp: new Date().toISOString(),
-          data: { agentId: existingId },
-        });
+      if (sameClientSession || sameProjectAgent) {
+        toRemove.push(existingId);
       }
+    }
+    for (const id of toRemove) {
+      this.agents.delete(id);
+      this.eventBus?.broadcast({
+        type: "agent.deregistered",
+        timestamp: new Date().toISOString(),
+        data: { agentId: id },
+      });
     }
 
     const entry: RegistryEntry = {
@@ -135,6 +142,17 @@ export class AgentStore {
         });
       }
     }
+  }
+
+  markUnhealthy(agentId: string): void {
+    const entry = this.agents.get(agentId);
+    if (!entry || !entry.healthy) return;
+    this.agents.set(agentId, { ...entry, healthy: false });
+    this.eventBus?.broadcast({
+      type: "agent.unhealthy",
+      timestamp: new Date().toISOString(),
+      data: { agentId },
+    });
   }
 
   count(): number {

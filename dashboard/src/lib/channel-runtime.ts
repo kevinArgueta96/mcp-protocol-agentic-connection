@@ -153,6 +153,12 @@ class DashboardChannelRuntime {
 
   private connect(): void {
     if (this.destroyed) return;
+    // Close any lingering socket before creating a new one to prevent phantom connections
+    if (this.ws && this.ws.readyState !== WebSocket.CLOSED) {
+      this.ws.onclose = null; // prevent scheduling another reconnect
+      this.ws.close();
+      this.ws = null;
+    }
     this.emit("status", "connecting");
     this.ws = new WebSocket(REGISTRY_WS);
 
@@ -160,7 +166,10 @@ class DashboardChannelRuntime {
       this.emit("status", "connected");
       this.reconnectDelay = 1_000;
       this.ws?.send(JSON.stringify({ type: "identify", agentId: this.clientId }));
-      void this.ensureRegistered();
+      // Only register via HTTP if not already registered; identify handles WS mapping
+      if (!this.registered) {
+        void this.ensureRegistered();
+      }
     };
 
     this.ws.onmessage = (event) => {

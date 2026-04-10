@@ -154,6 +154,8 @@ export class McpAgentBridge {
   private inboxReminderTimers = new Map<string, NodeJS.Timeout>();
   private inboxPollTimer: NodeJS.Timeout | null = null;
   private surfacedInboxMessageIds = new Set<string>();
+  private pendingPreInitMessages: ChannelMessage[] = [];
+  private syncInFlight = false;
   private agentToolMap = new Map<string, RegisteredTool[]>();
   private codexSidecarProcess: ChildProcess | null = null;
   private geminiSidecarProcess: ChildProcess | null = null;
@@ -314,36 +316,18 @@ export class McpAgentBridge {
     });
 
     this.channelRuntime.on("channel.message", (channelMessage) => {
-      if (!this.clientProfile.acceptsChannelMessage(channelMessage, this.clientAgentId)) return;
-
-      void this.postChannelAck({
-        conversationId: channelMessage.conversationId,
-        messageId: channelMessage.messageId,
-        state: "delivered_to_bridge",
-        actorId: this.clientAgentId ?? "mcp-adapter",
-        actorType: "bridge",
-        detail: "Message received by MCP bridge",
-      });
-
-      const notification = this.buildInboundChannelNotification(channelMessage);
-      if (!notification) return;
-      this.surfacedInboxMessageIds.add(channelMessage.messageId);
-      void this.server.server.notification(notification).then(() => this.postChannelAck({
-        conversationId: channelMessage.conversationId,
-        messageId: channelMessage.messageId,
-        state: "displayed_to_client",
-        actorId: this.clientAgentId ?? "mcp-adapter",
-        actorType: "bridge",
-        detail: this.clientProfile.deliveryMode === "inbox-first"
-          ? "Inbox reminder forwarded to client"
-          : "Message forwarded to client channel",
-      })).catch(() => {
-        // Ignore notification failures; WS relay remains alive.
-      });
-
-      if (this.clientProfile.deliveryMode === "inbox-first" && this.inboxFirstConfig.sendReminderNotifications) {
-        this.scheduleInboxReminder(channelMessage);
+      if (this.clientAgentId === null && channelMessage.toAgentId) {
+        if (this.pendingPreInitMessages.length >= 100) {
+          const dropped = this.pendingPreInitMessages.shift();
+          console.error(`[MCP] Pre-init buffer full, dropping oldest message: ${dropped?.messageId}`);
+        }
+        this.pendingPreInitMessages.push(channelMessage);
+        return;
       }
+      // Broadcast messages (no toAgentId) are accepted by all profiles even with null selfAgentId,
+      // so they flow through immediately. Only targeted messages need buffering.
+      if (!this.clientProfile.acceptsChannelMessage(channelMessage, this.clientAgentId)) return;
+      this.deliverChannelMessage(channelMessage);
     });
 
     this.channelRuntime.on("channel.ack", (ack) => {
@@ -378,6 +362,74 @@ export class McpAgentBridge {
         }
       }
     });
+  }
+
+  private deliverChannelMessage(channelMessage: ChannelMessage): void {
+    void this.postChannelAck({
+      conversationId: channelMessage.conversationId,
+      messageId: channelMessage.messageId,
+      state: "delivered_to_bridge",
+      actorId: this.clientAgentId ?? "mcp-adapter",
+      actorType: "bridge",
+      detail: "Message received by MCP bridge",
+    });
+
+    const notification = this.buildInboundChannelNotification(channelMessage);
+    if (!notification) return;
+    this.surfacedInboxMessageIds.add(channelMessage.messageId);
+
+    void this.tryPushNotification(notification, channelMessage).then((success) => {
+      if (success) {
+        void this.postChannelAck({
+          conversationId: channelMessage.conversationId,
+          messageId: channelMessage.messageId,
+          state: "displayed_to_client",
+          actorId: this.clientAgentId ?? "mcp-adapter",
+          actorType: "bridge",
+          detail: this.clientProfile.deliveryMode === "inbox-first"
+            ? "Inbox reminder forwarded to client"
+            : "Message forwarded to client channel",
+        });
+      }
+    });
+
+    if (this.clientProfile.deliveryMode === "inbox-first" && this.inboxFirstConfig.sendReminderNotifications) {
+      this.scheduleInboxReminder(channelMessage);
+    }
+  }
+
+  private async tryPushNotification(
+    notification: { method: string; params: Record<string, unknown> },
+    channelMessage: ChannelMessage,
+    maxRetries = 2,
+  ): Promise<boolean> {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await this.server.server.notification(notification);
+        return true;
+      } catch (err) {
+        console.error(
+          `[MCP] Notification push failed (attempt ${attempt}/${maxRetries}) for message ${channelMessage.messageId}: ${String(err)}`,
+        );
+        if (attempt < maxRetries) {
+          await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+        }
+      }
+    }
+    console.error(
+      `[MCP] Notification push permanently failed for message ${channelMessage.messageId}. Message available in inbox: ${channelMessage.conversationId}`,
+    );
+    return false;
+  }
+
+  private drainPendingPreInitMessages(): void {
+    const pending = this.pendingPreInitMessages;
+    this.pendingPreInitMessages = [];
+    for (const msg of pending) {
+      if (!this.clientProfile.acceptsChannelMessage(msg, this.clientAgentId)) continue;
+      if (this.surfacedInboxMessageIds.has(msg.messageId)) continue;
+      this.deliverChannelMessage(msg);
+    }
   }
 
   private scheduleInboxReminder(message: ChannelMessage): void {
@@ -436,19 +488,40 @@ export class McpAgentBridge {
   }
 
   /** Fetch all conversations from the registry HTTP endpoint and seed the local store.
-   *  This ensures pre-existing conversations (before Codex connected) are visible to polling. */
+   *  This ensures pre-existing conversations (before Codex connected) are visible to polling.
+   *  Also replays any unsurfaced messages for push-mode clients (e.g. after WS reconnection). */
   private async syncRegistryToLocalStore(): Promise<void> {
+    if (this.syncInFlight) return;
+    this.syncInFlight = true;
     try {
       const entries = await this.registry.listChannelConversations();
+      const unsurfacedMessages: ChannelMessage[] = [];
       for (const entry of entries) {
         const snapshot = await this.registry.getChannelConversation(entry.conversationId);
         if (snapshot) {
           this.channelRuntime.seedFromSnapshot(snapshot.messages);
+          for (const msg of snapshot.messages) {
+            if (msg.fromAgentId === this.clientAgentId) continue;
+            if (this.surfacedInboxMessageIds.has(msg.messageId)) continue;
+            if (!this.clientProfile.acceptsChannelMessage(msg, this.clientAgentId)) continue;
+            if (msg.expiresAt && msg.expiresAt <= Date.now()) continue;
+            unsurfacedMessages.push(msg);
+          }
         }
       }
       console.error(`[MCP] Synced ${entries.length} conversation(s) from registry to local store`);
+      if (this.clientAgentId && this.clientProfile.deliveryMode === "push") {
+        for (const msg of unsurfacedMessages) {
+          this.deliverChannelMessage(msg);
+        }
+        if (unsurfacedMessages.length > 0) {
+          console.error(`[MCP] Replayed ${unsurfacedMessages.length} unsurfaced message(s) after sync`);
+        }
+      }
     } catch {
       // Registry may not be ready yet; WebSocket events will populate the store.
+    } finally {
+      this.syncInFlight = false;
     }
   }
 
@@ -821,6 +894,7 @@ export class McpAgentBridge {
         }
         await this.syncRegistryToLocalStore();
         this.startInboxPolling();
+        this.drainPendingPreInitMessages();
         this.startCodexSidecarIfNeeded(realProjectPath, clientName);
         this.startGeminiSidecarIfNeeded(realProjectPath, clientName);
         console.error(`[MCP] Registered client: ${realProjectName} (${clientName} v${version})`);
@@ -1790,10 +1864,11 @@ export class McpAgentBridge {
     }
   }
 
-  private async resolveClientSession(params: { clientId?: string; project?: string }): Promise<RegistryEntry> {
+  private async resolveClientSession(params: { clientId?: string; project?: string; clientType?: string; conversationId?: string }): Promise<RegistryEntry> {
     const all = await this.registry.listAgents();
     const clients = all.filter((entry) => entry.entryType === "client");
 
+    // 1. Direct clientId lookup (most specific — always wins)
     if (params.clientId) {
       const clientId = params.clientId;
       const entry = clients.find((entry) => entry.agentId === clientId || entry.agentId.startsWith(clientId));
@@ -1813,10 +1888,31 @@ export class McpAgentBridge {
       return fallback;
     }
 
-    const project = params.project?.toLowerCase();
-    const matches = clients.filter((entry) =>
-      project != null &&
-      (entry.projectPath.toLowerCase().includes(project) || entry.projectName.toLowerCase().includes(project))
+    // 2. No clientId/project — try to resolve from an existing conversationId
+    if (!params.project && params.conversationId) {
+      const messages = this.channelRuntime.listConversationMessages(params.conversationId);
+      // Find the other party: a message not from us
+      const otherMsg = messages.find((m) => m.fromAgentId !== this.clientAgentId);
+      if (otherMsg?.fromAgentId) {
+        const match = clients.find((c) => c.agentId === otherMsg.fromAgentId);
+        if (match) return match;
+      }
+      // Or: a message we sent, look at its toAgentId
+      const ourMsg = messages.find((m) => m.fromAgentId === this.clientAgentId && m.toAgentId);
+      if (ourMsg?.toAgentId) {
+        const match = clients.find((c) => c.agentId === ourMsg.toAgentId);
+        if (match) return match;
+      }
+    }
+
+    if (!params.project) {
+      throw new Error("Either clientId or project is required. Use list_agents with includeClients=true to see available clients.");
+    }
+
+    // 3. Project name/path matching
+    const project = params.project.toLowerCase();
+    let matches = clients.filter((entry) =>
+      entry.projectPath.toLowerCase().includes(project) || entry.projectName.toLowerCase().includes(project)
     );
 
     if (matches.length === 0) {
@@ -1825,11 +1921,26 @@ export class McpAgentBridge {
       );
     }
 
-    if (matches.length > 1) {
-      const ids = matches.map((entry) => `${entry.agentId} (${entry.clientInfo?.clientName ?? "unknown"})`).join(", ");
-      throw new Error(
-        `Project "${params.project}" matches multiple client sessions. Use clientId explicitly. Matches: ${ids}`
+    // 4. Optionally filter by clientType (e.g. "claude-code", "codex", "gemini")
+    if (params.clientType) {
+      const typeFiltered = matches.filter((e) =>
+        e.clientInfo?.clientName?.toLowerCase().includes(params.clientType!.toLowerCase())
       );
+      if (typeFiltered.length > 0) matches = typeFiltered;
+    }
+
+    // 5. Multiple matches → prefer by priority instead of throwing an error
+    if (matches.length > 1) {
+      const CLIENT_PRIORITY = ["claude-code", "claude", "gemini-cli", "gemini", "codex-cli", "codex"];
+      const getPriority = (e: RegistryEntry) => {
+        const name = e.clientInfo?.clientName?.toLowerCase() ?? "";
+        const idx = CLIENT_PRIORITY.findIndex((p) => name.includes(p));
+        return idx === -1 ? CLIENT_PRIORITY.length : idx;
+      };
+      matches = [...matches].sort((a, b) => getPriority(a) - getPriority(b));
+      const chosen = matches[0]!;
+      const all_ids = matches.map((e) => `${e.agentId.slice(0, 16)} (${e.clientInfo?.clientName ?? "unknown"})`).join(", ");
+      console.error(`[MCP] Multiple clients match "${params.project}": [${all_ids}]. Using: ${chosen.agentId} (${chosen.clientInfo?.clientName}). Use clientId or clientType to be explicit.`);
     }
 
     return matches[0]!;

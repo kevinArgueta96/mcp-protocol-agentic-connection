@@ -90,6 +90,7 @@ export class RegistryServer {
         skill: req.query.skill as string | undefined,
         project: req.query.project as string | undefined,
         healthy: req.query.healthy === "true" ? true : req.query.healthy === "false" ? false : undefined,
+        entryType: req.query.entryType as "agent" | "client" | undefined,
       };
       res.json(this.store.list(filter));
     });
@@ -234,6 +235,18 @@ export class RegistryServer {
         data: { agentId, agentName, content, meta, conversationId: message.conversationId, messageId: message.messageId },
       });
 
+      // Targeted delivery: if message has a specific recipient, send directly to their WS
+      if (message.toAgentId) {
+        const targetWs = this.agentWsMap.get(message.toAgentId);
+        if (targetWs && targetWs.readyState === WebSocket.OPEN) {
+          targetWs.send(JSON.stringify({
+            type: "channel.message",
+            timestamp: new Date().toISOString(),
+            data: message,
+          }));
+        }
+      }
+
       res.json({ ok: true, conversationId: message.conversationId, messageId: message.messageId });
     });
 
@@ -271,6 +284,18 @@ export class RegistryServer {
         timestamp: new Date().toISOString(),
         data: message,
       });
+
+      // Targeted delivery: if message has a specific recipient, send directly to their WS
+      if (message.toAgentId) {
+        const targetWs = this.agentWsMap.get(message.toAgentId);
+        if (targetWs && targetWs.readyState === WebSocket.OPEN) {
+          targetWs.send(JSON.stringify({
+            type: "channel.message",
+            timestamp: new Date().toISOString(),
+            data: message,
+          }));
+        }
+      }
 
       if (revived) {
         this.eventBus.broadcast({
@@ -371,6 +396,18 @@ export class RegistryServer {
         }),
       });
 
+      // Targeted delivery: if message has a specific recipient, send directly to their WS
+      if (retried.toAgentId) {
+        const targetWs = this.agentWsMap.get(retried.toAgentId);
+        if (targetWs && targetWs.readyState === WebSocket.OPEN) {
+          targetWs.send(JSON.stringify({
+            type: "channel.message",
+            timestamp: new Date().toISOString(),
+            data: retried,
+          }));
+        }
+      }
+
       res.json(retried);
     });
 
@@ -427,7 +464,7 @@ export class RegistryServer {
       for (const client of wss.clients) {
         if ((client as any)._isAlive === false) {
           client.terminate();
-          return;
+          continue;
         }
         (client as any)._isAlive = false;
         client.ping();
@@ -488,6 +525,27 @@ export class RegistryServer {
             identifiedAgentId = msg.agentId;
             this.agentWsMap.set(msg.agentId, ws);
             console.error(`[Registry WS] Agent identified: ${msg.agentId}`);
+
+            // Clean up stale store entries for the same logical client (same projectPath + clientName)
+            const identifiedEntry = this.store.get(msg.agentId);
+            if (identifiedEntry?.entryType === "client" && identifiedEntry.clientInfo?.clientName) {
+              for (const other of this.store.list()) {
+                if (
+                  other.agentId !== msg.agentId &&
+                  other.entryType === "client" &&
+                  other.clientInfo?.clientName === identifiedEntry.clientInfo.clientName &&
+                  other.projectPath === identifiedEntry.projectPath
+                ) {
+                  this.store.deregister(other.agentId);
+                  const otherWs = this.agentWsMap.get(other.agentId);
+                  if (otherWs) {
+                    this.agentWsMap.delete(other.agentId);
+                    try { otherWs.close(4001, "Superseded"); } catch { otherWs.terminate(); }
+                  }
+                }
+              }
+            }
+
             ws.send(JSON.stringify({ type: "identified", agentId: msg.agentId }));
             return;
           }
