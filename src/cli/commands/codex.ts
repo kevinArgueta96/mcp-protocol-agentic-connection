@@ -1,11 +1,157 @@
+import { spawn } from "node:child_process";
+import { createWriteStream } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import type { Command } from "commander";
 import chalk from "chalk";
 import { CodexTmuxBridgeService } from "../../client/codex-tmux-bridge-service.js";
 import { detectCurrentTmuxBinding } from "../../client/codex-tmux.js";
 import { readCurrentCodexSession, writeCurrentCodexSession } from "../../client/codex-session-files.js";
+import { CodexAppServerBridge } from "../../client/codex-app-server-bridge.js";
+import { RegistryServer } from "../../registry/server.js";
+import { RegistryClient } from "../../client/registry-client.js";
 
 export function registerCodexCommand(program: Command): void {
   const codex = program.command("codex").description("Codex-specific utilities");
+
+  // ── codex start — one-command startup ─────────────────────────────────────
+  codex
+    .command("start")
+    .description(
+      "Start Codex with full bidirectional channel bridge in one command. " +
+      "Auto-starts the registry if not running, spawns the app-server bridge " +
+      "(bridge connects directly as a second WS client), then launches the " +
+      "Codex TUI connected directly to the app-server."
+    )
+    .option("--project <path>", "Project path", process.cwd())
+    .option("--app-server-port <number>", "Port for the codex app-server", "4500")
+    .option("--registry-url <url>", "Registry URL", "http://localhost:4999")
+    .action(async (options) => {
+      const projectPath = options.project ?? process.cwd();
+      const appServerPort = Number(options.appServerPort);
+      const registryUrl: string = options.registryUrl;
+      const appServerWsUrl = `ws://127.0.0.1:${appServerPort}`;
+
+      console.log(chalk.bold("\n[agent-bridge] codex start\n"));
+      console.log(`  Project:    ${projectPath}`);
+      console.log(`  Registry:   ${registryUrl}`);
+      console.log(`  App-server: ${appServerWsUrl}`);
+      console.log();
+
+      // 1. Ensure registry is running — embed one if not reachable
+      let embeddedRegistry: RegistryServer | null = null;
+      const registryClient = new RegistryClient(registryUrl);
+      try {
+        await registryClient.health();
+        console.log(chalk.green("✓") + " Registry already running at " + registryUrl);
+      } catch {
+        console.log(chalk.yellow("→") + " Registry not found — starting embedded registry…");
+        const registryPort = Number(new URL(registryUrl).port) || 4999;
+        embeddedRegistry = new RegistryServer(registryPort);
+        await embeddedRegistry.start();
+        console.log(chalk.green("✓") + " Embedded registry started on :" + registryPort);
+      }
+
+      // 2. Start the bridge (spawns app-server, bridge connects directly as second WS client)
+      const bridge = new CodexAppServerBridge({
+        registryUrl,
+        projectPath,
+        appServerPort,
+      });
+
+      try {
+        await bridge.start();
+      } catch (err) {
+        console.error(chalk.red("Failed to start bridge:"), err instanceof Error ? err.message : err);
+        if (embeddedRegistry) await embeddedRegistry.stop();
+        process.exit(1);
+      }
+
+      console.log(chalk.green("✓") + " Bridge ready. Launching Codex TUI…\n");
+
+      // 3. Redirect bridge/registry stderr to a log file so it doesn't pollute the TUI
+      const logFile = join(tmpdir(), `agent-bridge-codex-${process.pid}.log`);
+      const logStream = createWriteStream(logFile, { flags: "a" });
+      const originalStderrWrite = process.stderr.write.bind(process.stderr);
+      process.stderr.write = ((chunk: string | Uint8Array, ...args: unknown[]) => {
+        return logStream.write(chunk, args[0] as BufferEncoding);
+      }) as typeof process.stderr.write;
+      console.log(chalk.dim(`  Logs: ${logFile}\n`));
+
+      // 4. Spawn codex TUI directly to the app-server (no proxy)
+      const tui = spawn("codex", ["--remote", appServerWsUrl], {
+        stdio: "inherit",
+        cwd: projectPath,
+      });
+
+      const cleanup = async () => {
+        process.stderr.write = originalStderrWrite;
+        tui.kill("SIGTERM");
+        await bridge.stop();
+        if (embeddedRegistry) await embeddedRegistry.stop();
+        logStream.end();
+      };
+
+      tui.on("exit", (code) => {
+        process.stderr.write = originalStderrWrite;
+        void bridge.stop()
+          .then(() => embeddedRegistry?.stop())
+          .then(() => { logStream.end(); process.exit(code ?? 0); });
+      });
+
+      process.on("SIGINT", () => void cleanup().then(() => process.exit(0)));
+      process.on("SIGTERM", () => void cleanup().then(() => process.exit(0)));
+    });
+
+  // ── codex app-bridge ───────────────────────────────────────────────────────
+  codex
+    .command("app-bridge")
+    .description(
+      "Start a Codex app-server bridge daemon. Spawns codex app-server and connects " +
+      "the bridge as a direct WS client. Channel messages are injected via turn/start. " +
+      "After starting, launch Codex with: codex --remote ws://127.0.0.1:<app-server-port>"
+    )
+    .option("--registry-url <url>", "Registry URL", "http://localhost:4999")
+    .option("--project <path>", "Project path for client registration (default: cwd)")
+    .option("--app-server-port <number>", "Port for the codex app-server", "4500")
+    .action(async (options) => {
+      const projectPath = options.project ?? process.cwd();
+      const appServerPort = Number(options.appServerPort);
+
+      const bridge = new CodexAppServerBridge({
+        registryUrl: options.registryUrl,
+        projectPath,
+        appServerPort,
+      });
+
+      console.log(chalk.bold("\n[agent-bridge] Codex app-server bridge\n"));
+      console.log(`  Project:    ${projectPath}`);
+      console.log(`  Registry:   ${options.registryUrl}`);
+      console.log(`  App-server: ws://127.0.0.1:${appServerPort}`);
+      console.log();
+
+      try {
+        await bridge.start();
+      } catch (err) {
+        console.error(chalk.red("Failed to start bridge:"), err instanceof Error ? err.message : err);
+        process.exit(1);
+      }
+
+      console.log(chalk.green("✓") + " Bridge running. Start Codex with:");
+      console.log(chalk.cyan(`  codex --remote ws://127.0.0.1:${appServerPort}\n`));
+
+      const shutdown = async () => {
+        console.log("\n[agent-bridge] Shutting down...");
+        await bridge.stop();
+        process.exit(0);
+      };
+
+      process.on("SIGINT", () => void shutdown());
+      process.on("SIGTERM", () => void shutdown());
+
+      // Keep process alive
+      await new Promise<never>(() => undefined);
+    });
 
   codex
     .command("tmux-bind")
