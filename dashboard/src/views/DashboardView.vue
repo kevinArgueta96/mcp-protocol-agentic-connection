@@ -9,7 +9,7 @@
         <TraceTimeline />
       </div>
       <div class="app-column">
-        <AgentChat />
+        <ClientMessagePanel />
       </div>
     </div>
   </div>
@@ -19,5 +19,5 @@
 import AppHeader from "@/components/layout/AppHeader.vue";
 import AgentGrid from "@/components/agents/AgentGrid.vue";
 import TraceTimeline from "@/components/trace/TraceTimeline.vue";
-import AgentChat from "@/components/chat/AgentChat.vue";
+import ClientMessagePanel from "@/components/chat/ClientMessagePanel.vue";
 </script>

@@ -28,9 +28,8 @@
     </nav>
 
     <div class="app-status">
-      <div class="status-pill">
-        <span
-          class="health-dot"
+      <div class="stat-chip registry-chip" :title="registryUrl">
+        <span class="registry-dot"
           :class="{
             'pulse-healthy': status === 'connected',
             'pulse-working': status === 'connecting',
@@ -41,12 +40,9 @@
                         status === 'connecting' ? 'var(--amber)' : 'var(--red)'
           }"
         />
-        <span class="status-label">{{ statusLabel }}</span>
-      </div>
-      <div class="stat-chip">
-        <span class="stat-label">agents</span>
-        <span class="stat-value">{{ healthyCount }}</span>
-        <span class="status-label">/ {{ agentCount }}</span>
+        <span class="stat-label">registry</span>
+        <span class="registry-url">{{ registryUrl }}</span>
+        <span class="registry-status-label">{{ statusLabel }}</span>
       </div>
       <div class="stat-chip">
         <span class="stat-label">clients</span>
@@ -66,9 +62,15 @@ const $route = useRoute();
 const store = useRegistryStore();
 
 const rawStatus = computed(() => store.status);
-const agentCount = computed(() => store.agentCount);
-const healthyCount = computed(() => store.healthyCount);
-const clientCount = computed(() => store.clientCount);
+// Same filters as AgentGrid: exclude dashboard self and bridge daemons
+const clientCount = computed(() =>
+  store.agentList.filter(
+    (a) =>
+      a.entryType === "client" &&
+      a.clientInfo?.clientVersion !== "app-server-bridge" &&
+      a.agentId !== store.dashboardClientId,
+  ).length,
+);
 
 // Debounce "offline/error" by 2s to avoid flashing during brief WS reconnections
 const status = ref(store.status);
@@ -94,9 +96,10 @@ const statusLabel = computed(() => ({
   error: "error",
 }[status.value] ?? status.value));
 
+const registryUrl = computed(() => import.meta.env.VITE_REGISTRY_URL ?? "http://localhost:4999");
 const tabs = [
   { to: "/", label: "dashboard" },
-  { to: "/channels", label: "channels" },
+  { to: "/channels", label: "conversations" },
 ];
 
 const pendingCount = ref(0);
@@ -121,6 +124,33 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.registry-chip {
+  gap: 6px;
+}
+
+.registry-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.registry-url {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-mid);
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.registry-status-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--text-dim);
+}
+
 .pending-badge {
   display: inline-flex;
   align-items: center;

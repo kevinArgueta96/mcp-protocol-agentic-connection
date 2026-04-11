@@ -16,7 +16,7 @@ const routes: RouteRecordRaw[] = [
   {
     path: "/channels",
     name: "channels",
-    component: () => import("@/views/ChannelsView.vue"),
+    component: () => import("@/views/ConversationsView.vue"),
   },
   {
     path: "/:pathMatch(.*)*",

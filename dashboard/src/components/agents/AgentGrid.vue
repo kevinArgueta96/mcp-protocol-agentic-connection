@@ -3,9 +3,9 @@
     <div class="panel-header">
       <div class="panel-heading">
         <span class="panel-label">Agents</span>
-        <span class="panel-sublabel">registry snapshot split between runnable agents and connected passive client sessions</span>
+        <span class="panel-sublabel">registry snapshot — projects and connected agents</span>
       </div>
-      <span class="panel-count">{{ agentList.length }}</span>
+      <span class="panel-count">{{ clientList.length + skillAgentList.length }}</span>
     </div>
 
     <div class="section-frame panel-divider">
@@ -20,13 +20,19 @@
       </div>
 
       <div v-else class="scrollable section-stack">
-        <section v-if="clientList.length > 0">
+        <section v-if="projectGroups.length > 0">
           <div class="section-label-row">
             <span class="section-label section-label--accent">Client Sessions</span>
-            <span class="section-count">{{ clientList.length }}</span>
+            <span class="section-count">{{ clientList.length }} clients · {{ projectGroups.length }} projects</span>
           </div>
           <TransitionGroup tag="div" name="agent-fade" class="conversation-stack">
-            <AgentCard v-for="a in clientList" :key="a.agentId" :agent="a" />
+            <ProjectClientGroup
+              v-for="group in projectGroups"
+              :key="group.projectPath"
+              :project-name="group.projectName"
+              :project-path="group.projectPath"
+              :clients="group.clients"
+            />
           </TransitionGroup>
         </section>
 
@@ -48,11 +54,43 @@
 import { computed, TransitionGroup } from "vue";
 import { useRegistryStore } from "@/stores/registry";
 import AgentCard from "./AgentCard.vue";
+import ProjectClientGroup from "./ProjectClientGroup.vue";
+import type { RegistryAgent } from "@/types";
 
 const store = useRegistryStore();
 const agentList = computed(() => store.agentList);
-const clientList = computed(() => agentList.value.filter((a) => a.entryType === "client"));
+// Filter out: bridge daemons (app-server-bridge) and the dashboard itself
+const clientList = computed(() =>
+  agentList.value.filter(
+    (a) =>
+      a.entryType === "client" &&
+      a.clientInfo?.clientVersion !== "app-server-bridge" &&
+      a.agentId !== store.dashboardClientId,
+  ),
+);
 const skillAgentList = computed(() => agentList.value.filter((a) => a.entryType !== "client"));
+
+interface ProjectGroup {
+  projectPath: string;
+  projectName: string;
+  clients: RegistryAgent[];
+}
+
+const projectGroups = computed<ProjectGroup[]>(() => {
+  const map = new Map<string, ProjectGroup>();
+  for (const client of clientList.value) {
+    const key = client.projectPath || client.agentId;
+    if (!map.has(key)) {
+      map.set(key, {
+        projectPath: client.projectPath,
+        projectName: client.projectName || key,
+        clients: [],
+      });
+    }
+    map.get(key)!.clients.push(client);
+  }
+  return Array.from(map.values()).sort((a, b) => a.projectName.localeCompare(b.projectName));
+});
 </script>
 
 <style scoped>

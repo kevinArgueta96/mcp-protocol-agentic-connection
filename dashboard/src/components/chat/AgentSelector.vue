@@ -39,7 +39,12 @@ const chatStore = useChatStore();
 const healthyAgents = computed(() => registryStore.agentList.filter((a) => a.healthy));
 const skillAgents = computed(() => healthyAgents.value.filter((a) => a.entryType !== "client"));
 const clientAgents = computed(() =>
-  healthyAgents.value.filter((a) => a.entryType === "client" && a.agentId !== registryStore.dashboardClientId),
+  healthyAgents.value.filter(
+    (a) =>
+      a.entryType === "client" &&
+      a.agentId !== registryStore.dashboardClientId &&
+      a.clientInfo?.clientVersion !== "app-server-bridge",
+  ),
 );
 const selectedId = computed(() => chatStore.selectedClient?.agentId ?? "");
 
