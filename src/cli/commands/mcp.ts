@@ -16,31 +16,13 @@ export function registerMcpCommand(program: Command): void {
       "Auto-starts an embedded registry and local agent if none are running."
     )
     .option("--registry-url <url>", "Registry URL", "http://localhost:4999")
-    .option("--project <path>", "Project path for the auto-started agent (default: cwd)")
-    .option("--config <path>", "Path to .agent-bridge.mcp.yml")
-    .option("--no-auto", "Disable auto-start of registry/agent (require manual setup)")
-    .option("--skill-tools", "Also register per-agent skill tools (disabled by default)")
-    .option("--claude", "Enable Claude Code AI backend for the auto-started agent")
-    .option("--codex-sidecar", "Auto-start a detached tmux-backed Codex sidecar when the connected client is Codex")
-    .option("--codex-sidecar-poll-interval-ms <number>", "Polling interval for the detached Codex tmux sidecar", "2000")
-    .option("--codex-sidecar-retry-interval-ms <number>", "Retry interval for the same pending message", "30000")
-    .option("--gemini-sidecar", "Auto-start a detached tmux-backed Gemini sidecar when the connected client is Gemini")
-    .option("--gemini-sidecar-poll-interval-ms <number>", "Polling interval for the detached Gemini tmux sidecar", "2000")
-    .option("--gemini-sidecar-retry-interval-ms <number>", "Retry interval for the same pending message", "30000")
+    .option("--project <path>", "Project path for client registration (default: cwd)")
+    .option("--no-auto", "Disable auto-start of registry (require manual setup)")
     .action(async (options) => {
       const bridge = new McpAgentBridge({
         registryUrl: options.registryUrl,
         auto: options.auto !== false,
         projectPath: options.project ?? process.env["AGENT_BRIDGE_PROJECT"] ?? process.cwd(),
-        configPath: options.config,
-        registerSkillTools: options.skillTools === true,
-        useClaudeCode: options.claude ?? false,
-        codexSidecar: options.codexSidecar === true,
-        codexSidecarPollIntervalMs: Number(options.codexSidecarPollIntervalMs),
-        codexSidecarRetryIntervalMs: Number(options.codexSidecarRetryIntervalMs),
-        geminiSidecar: options.geminiSidecar === true,
-        geminiSidecarPollIntervalMs: Number(options.geminiSidecarPollIntervalMs),
-        geminiSidecarRetryIntervalMs: Number(options.geminiSidecarRetryIntervalMs),
       });
       await bridge.start("stdio");
     });
@@ -54,7 +36,6 @@ export function registerMcpCommand(program: Command): void {
     .action(async (options) => {
       const bridge = new McpAgentBridge({
         registryUrl: options.registryUrl,
-        registerSkillTools: false,
       });
       console.error(chalk.cyan("[MCP Server] Starting HTTP/SSE MCP server..."));
       await bridge.start("http", parseInt(options.port));
@@ -124,34 +105,22 @@ export function registerMcpCommand(program: Command): void {
           return;
         }
 
-        console.log(chalk.bold(`\n${agents.length} agent(s) connected — MCP tools that would be registered:\n`));
+        console.log(chalk.bold(`\n${agents.length} agent(s) connected — MCP tools registered:\n`));
 
-        // Meta-tools
-        const metaTools = ["list_agents", "agent_health", "ask_agent"];
-        console.log(chalk.cyan("  Meta-tools (communication):"));
-        for (const t of metaTools) console.log(`    • ${t}`);
+        const tools = ["list_agents", "message_client_session", "reply", "channel_inbox"];
+        console.log(chalk.cyan("  Channel tools:"));
+        for (const t of tools) console.log(`    • ${t}`);
         console.log();
 
-        // Per-agent tools
         for (const agent of agents) {
-          const prefix = agent.name.replace(/[^a-z0-9]/gi, "_").replace(/_+/g, "_").toLowerCase();
-          console.log(chalk.cyan(`  ${agent.name}`) + chalk.dim(` (${agent.projectPath})`));
+          if (agent.entryType === "client") continue;
+          console.log(chalk.cyan(`  Agent: ${agent.name}`) + chalk.dim(` (${agent.projectPath})`));
           for (const skill of agent.card.skills) {
-            const toolName = `${prefix}__${skill.id.replace(/-/g, "_")}`;
-            console.log(`    • ${toolName}`);
-            console.log(chalk.dim(`        ${skill.description}`));
+            console.log(`    • skill: ${skill.id} — ${skill.description}`);
           }
           console.log();
         }
 
-        // Resources
-        console.log(chalk.cyan("  Resources:"));
-        console.log("    • agents://connected  (list of all agents)");
-        for (const agent of agents) {
-          console.log(`    • agents://${agent.agentId.slice(0, 8)}.../card  (${agent.name} Agent Card)`);
-        }
-
-        console.log();
         console.log(chalk.bold("To connect Claude Code:"));
         console.log(chalk.dim("  agent-bridge mcp config --write  # writes .mcp.json"));
         console.log(chalk.dim("  agent-bridge mcp start           # or run directly"));

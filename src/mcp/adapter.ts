@@ -1,5 +1,5 @@
 /**
- * MCP Adapter — Bridges local A2A agents as MCP tools for Claude Code, Codex, Gemini CLI
+ * MCP Adapter — Bridges the channel system as MCP tools for Claude Code
  *
  * AUTO MODE (default):
  *   If no registry is running at localhost:4999, starts one in-process.
@@ -8,11 +8,17 @@
  *
  * MANUAL MODE:
  *   Run registry + agents separately, then `mcp start` discovers them.
+ *
+ * Exposed tools (4):
+ *   list_agents            — discover connected agents and client sessions
+ *   message_client_session — send a channel message to a client session
+ *   reply                  — reply to an incoming channel message
+ *   channel_inbox          — inspect pending channel conversations
  */
 
-import { McpServer, ResourceTemplate, type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { basename } from "node:path";
 import { z } from "zod";
 import { RegistryClient } from "../client/registry-client.js";
@@ -20,80 +26,15 @@ import { ChannelTransport } from "../client/channel-transport.js";
 import { ChannelClientRuntime } from "../client/channel-client-runtime.js";
 import { ConversationService } from "../client/conversation-service.js";
 import { DefaultClientProfileResolver, type ClientBehaviorProfile } from "../client/client-profile-resolver.js";
-import { loadMcpBridgeConfig, resolveInboxFirstClientConfig, type McpBridgeConfig, type ResolvedInboxFirstClientConfig } from "./config.js";
-import { A2AClient } from "../client/a2a-client.js";
 import { RegistryServer } from "../registry/server.js";
-import { AgentServer } from "../agent/server.js";
-import { CodexProxy } from "./proxies/codex-proxy.js";
-import { GeminiProxy } from "./proxies/gemini-proxy.js";
-import { SidecarManager } from "./sidecar-manager.js";
 import type { RegistryEntry, AgentMessage, ChannelMessage } from "../types/messages.js";
-import type { Task, Part, Message } from "../types/a2a.js";
-import { WebSocket } from "ws";
-import { clearCurrentCodexSession, readCurrentCodexSession, writeCurrentCodexSession } from "../client/codex-session-files.js";
-import { readCurrentGeminiSession, writeCurrentGeminiSession, clearCurrentGeminiSession } from "../client/gemini-session-files.js";
-import { detectCurrentTmuxBinding } from "../client/codex-tmux.js";
 
 export interface McpAdapterOptions {
   registryUrl?: string;
-  /** Auto-start registry + local agent if none found (default: true) */
+  /** Auto-start registry if none found (default: true) */
   auto?: boolean;
-  /** Project path for the auto-started agent (default: cwd) */
+  /** Project path used for client registration (default: cwd) */
   projectPath?: string;
-  /** Register per-agent skill tools in addition to meta-tools (default: false) */
-  registerSkillTools?: boolean;
-  /** Enable Claude Code AI backend for the auto-started embedded agent (default: false) */
-  useClaudeCode?: boolean;
-  /** Optional path to .agent-bridge.mcp.yml */
-  configPath?: string;
-  /** Auto-start a detached Codex tmux sidecar when the connected client is Codex */
-  codexSidecar?: boolean;
-  /** Poll interval for the detached Codex tmux sidecar */
-  codexSidecarPollIntervalMs?: number;
-  /** Retry interval for the same pending message in the Codex tmux sidecar */
-  codexSidecarRetryIntervalMs?: number;
-  /** Auto-start a detached Gemini tmux sidecar when the connected client is Gemini */
-  geminiSidecar?: boolean;
-  /** Poll interval for the detached Gemini tmux sidecar */
-  geminiSidecarPollIntervalMs?: number;
-  /** Retry interval for the same pending message in the Gemini tmux sidecar */
-  geminiSidecarRetryIntervalMs?: number;
-}
-
-function toolPrefix(name: string): string {
-  return name.replace(/[^a-z0-9]/gi, "_").replace(/_+/g, "_").toLowerCase();
-}
-
-/** Extract a human-readable response from an A2A Task object.
- *  Handles text, data, and file parts across all artifacts.
- *  Falls back to status.message parts, then raw JSON. */
-function extractTaskResponse(task: unknown): string {
-  const taskObj = task as Partial<Task>;
-
-  // 1. Artifacts (primary response channel)
-  const artifactParts: Part[] = taskObj?.artifacts?.flatMap((a) => a.parts) ?? [];
-  if (artifactParts.length > 0) {
-    return artifactParts.map((p) => {
-      if (p.type === "text") return p.text;
-      if (p.type === "data") return JSON.stringify(p.data, null, 2);
-      if (p.type === "file") return `[File: ${p.file.name ?? p.file.uri ?? "binary"}]`;
-      return JSON.stringify(p);
-    }).join("\n");
-  }
-
-  // 2. Status message parts (simple skill responses)
-  const statusMsg = taskObj?.status?.message as Message | undefined;
-  const statusParts: Part[] = statusMsg?.parts ?? [];
-  if (statusParts.length > 0) {
-    return statusParts.map((p) => {
-      if (p.type === "text") return p.text;
-      if (p.type === "data") return JSON.stringify(p.data, null, 2);
-      return JSON.stringify(p);
-    }).join("\n");
-  }
-
-  // 3. Fallback: raw JSON
-  return JSON.stringify(task, null, 2);
 }
 
 function formatAgentsSummary(agents: RegistryEntry[]): string {
@@ -135,47 +76,22 @@ export class McpAgentBridge {
   private channelRuntime: ChannelClientRuntime;
   private conversationService: ConversationService;
   private readonly profileResolver = new DefaultClientProfileResolver();
-  private readonly codexProxy: CodexProxy;
-  private readonly geminiProxy: GeminiProxy;
-  private readonly bridgeConfig: McpBridgeConfig;
   private clientProfile: ClientBehaviorProfile;
-  private inboxFirstConfig: ResolvedInboxFirstClientConfig;
   private options: Required<McpAdapterOptions>;
   private clientAgentId: string | null = null;
   private clientActivating = false;
-  private embeddedAgent: AgentServer | null = null;
   private embeddedRegistry: RegistryServer | null = null;
-  private registryWs: WebSocket | null = null;
-  private pendingResponses = new Map<string, {
-    resolve: (value: unknown) => void;
-    reject: (reason: Error) => void;
-    timer: NodeJS.Timeout;
-  }>();
-  private inboxReminderTimers = new Map<string, NodeJS.Timeout>();
-  private inboxPollTimer: NodeJS.Timeout | null = null;
   private surfacedInboxMessageIds = new Set<string>();
   private pendingPreInitMessages: ChannelMessage[] = [];
   private syncInFlight = false;
-  private agentToolMap = new Map<string, RegisteredTool[]>();
-  private readonly sidecarManager: SidecarManager;
 
   constructor(options: McpAdapterOptions = {}) {
     this.options = {
       registryUrl: "http://localhost:4999",
       auto: true,
       projectPath: process.cwd(),
-      registerSkillTools: false,
-      useClaudeCode: false,
-      configPath: "",
-      codexSidecar: false,
-      codexSidecarPollIntervalMs: 2_000,
-      codexSidecarRetryIntervalMs: 30_000,
-      geminiSidecar: false,
-      geminiSidecarPollIntervalMs: 2_000,
-      geminiSidecarRetryIntervalMs: 30_000,
       ...options,
     };
-    this.bridgeConfig = loadMcpBridgeConfig(this.options.projectPath, this.options.configPath || undefined);
     this.registry = new RegistryClient(this.options.registryUrl);
     this.channelTransport = new ChannelTransport({ registryUrl: this.options.registryUrl });
     this.channelRuntime = new ChannelClientRuntime({
@@ -184,50 +100,29 @@ export class McpAgentBridge {
       maxReconnectAttempts: 5,
     });
     this.conversationService = new ConversationService(this.channelRuntime);
-    this.codexProxy = new CodexProxy(this.conversationService);
-    this.geminiProxy = new GeminiProxy(this.conversationService);
-    this.sidecarManager = new SidecarManager({
-      codexSidecar: this.options.codexSidecar,
-      geminiSidecar: this.options.geminiSidecar,
-      codex: {
-        registryUrl: this.options.registryUrl,
-        pollIntervalMs: this.options.codexSidecarPollIntervalMs,
-        retryIntervalMs: this.options.codexSidecarRetryIntervalMs,
-      },
-      gemini: {
-        registryUrl: this.options.registryUrl,
-        pollIntervalMs: this.options.geminiSidecarPollIntervalMs,
-        retryIntervalMs: this.options.geminiSidecarRetryIntervalMs,
-      },
-    });
-    this.clientProfile = this.profileResolver.resolve({ clientName: "codex" });
-    this.inboxFirstConfig = resolveInboxFirstClientConfig(this.bridgeConfig, this.clientProfile.id);
+    // Default to Claude profile until the real client identifies itself
+    this.clientProfile = this.profileResolver.resolve({ clientName: "claude-code" });
     this.server = new McpServer(
       { name: "agent-bridge", version: "0.1.0" },
       {
         capabilities: { experimental: { "claude/channel": {} } },
         instructions:
           "You are connected to agent-bridge, a multi-agent communication hub. " +
-          "Connected agents can send you channel events through your current client profile. " +
-          "Use list_agents to discover available agents and client sessions, agent_health to check runnable agents, " +
-          "ask_agent for A2A agents with skills/HTTP endpoints, and message_client_session for passive client sessions over channels. " +
-          "Use reply to respond to incoming channel events. " +
-          "If your client behaves inbox-first, use channel_inbox to review inbound channel messages before replying.",
+          "Use list_agents to discover connected agents and client sessions. " +
+          "Use message_client_session to send messages to other clients. " +
+          "Use reply to respond to incoming channel messages. " +
+          "Use channel_inbox to inspect pending conversations.",
       },
     );
     this.setupChannelRuntime();
   }
 
   async start(transport: "stdio" | "http" = "stdio", httpPort = 6000): Promise<void> {
-    // ── 1. Ensure registry + at least one agent is running ─────────────────
-    const agents = await this.ensureInfrastructure();
+    // ── 1. Ensure registry is running ─────────────────────────────────────
+    await this.ensureInfrastructure();
 
-    // ── 1b. Register shutdown cleanup for embedded processes ───────────────
+    // ── 1b. Register shutdown cleanup for embedded registry ───────────────
     const shutdownEmbedded = async () => {
-      if (this.embeddedAgent) {
-        try { await this.embeddedAgent.stop(); } catch { /* ignore */ }
-        this.embeddedAgent = null;
-      }
       if (this.embeddedRegistry) {
         try { await this.embeddedRegistry.stop(); } catch { /* ignore */ }
         this.embeddedRegistry = null;
@@ -236,16 +131,11 @@ export class McpAgentBridge {
     process.once("SIGINT", () => void shutdownEmbedded().then(() => process.exit(0)));
     process.once("SIGTERM", () => void shutdownEmbedded().then(() => process.exit(0)));
 
-    // ── 1c. Connect WS to registry for message relay ──────────────────────
-    this.connectRegistryWs();
+    // ── 1c. Connect WS to registry for channel events ─────────────────────
+    this.channelRuntime.connect();
 
-    // ── 2. Register all tools, resources, prompts ──────────────────────────
+    // ── 2. Register tools ─────────────────────────────────────────────────
     this.registerMetaTools();
-    if (this.options.registerSkillTools && agents.length > 0) {
-      this.registerAgentSkillTools(agents);
-    }
-    this.registerResources(agents);
-    this.registerPrompts(agents);
 
     // ── 3. Setup client detection (must be before connect) ─────────────────
     this.setupClientDetection();
@@ -254,78 +144,23 @@ export class McpAgentBridge {
     if (transport === "stdio") {
       const stdioTransport = new StdioServerTransport();
       await this.server.connect(stdioTransport);
-      console.error(`[MCP] agent-bridge ready. ${agents.length} agent(s) connected.`);
-      if (agents.length > 0) {
-        console.error("[MCP] Agents:\n" + agents.map((a) => `  • ${a.name} → ${a.projectPath}`).join("\n"));
-      }
+      console.error("[MCP] agent-bridge ready.");
     } else {
-      await this.startHttpTransport(httpPort, agents);
+      await this.startHttpTransport(httpPort);
     }
   }
 
-  // ── Registry WebSocket connection ──────────────────────────────────────────
-
-  private connectRegistryWs(): void {
-    this.channelRuntime.connect();
-  }
+  // ── Channel runtime event wiring ──────────────────────────────────────────
 
   private setupChannelRuntime(): void {
     this.channelRuntime.on("ws.open", () => {
-      this.registryWs = this.channelRuntime.getWebSocket();
       console.error("[MCP] WebSocket connected to registry");
       // Refresh local store on every reconnect so channel_inbox stays accurate
       void this.syncRegistryToLocalStore();
     });
 
     this.channelRuntime.on("ws.close", () => {
-      this.registryWs = null;
-    });
-
-    this.channelRuntime.on("registry.event", (msg) => {
-      if (!msg || typeof msg !== "object") return;
-      const event = msg as { type?: string; data?: unknown; agents?: unknown };
-
-      if (event.type === "snapshot" && Array.isArray(event.agents)) {
-        const snapshotAgents = event.agents as RegistryEntry[];
-        const snapshotIds = new Set(snapshotAgents.map((a) => a.agentId));
-        for (const trackedId of this.agentToolMap.keys()) {
-          if (!snapshotIds.has(trackedId)) this.removeAgentTools(trackedId);
-        }
-        if (this.options.registerSkillTools) {
-          for (const agent of snapshotAgents) {
-            if (agent.entryType !== "client" && agent.card?.skills?.length > 0) {
-              this.addAgentTools(agent);
-            }
-          }
-        }
-        return;
-      }
-
-      if (event.type === "agent.registered" && event.data) {
-        const entry = event.data as RegistryEntry;
-        if (this.options.registerSkillTools && entry.entryType !== "client" && entry.card?.skills?.length > 0) {
-          this.addAgentTools(entry);
-          console.error(`[MCP] New agent discovered: ${entry.name} (${entry.card.skills.length} skills)`);
-        }
-        return;
-      }
-
-      if (event.type === "agent.deregistered" || event.type === "agent.removed") {
-        const agentId = (event.data as { agentId: string } | undefined)?.agentId;
-        if (agentId) this.removeAgentTools(agentId);
-        return;
-      }
-
-      if (event.type === "agent.unhealthy") {
-        const agentId = (event.data as { agentId: string } | undefined)?.agentId;
-        if (agentId) this.setAgentToolsEnabled(agentId, false);
-        return;
-      }
-
-      if (event.type === "agent.heartbeat") {
-        const agentId = (event.data as { agentId: string } | undefined)?.agentId;
-        if (agentId) this.setAgentToolsEnabled(agentId, true);
-      }
+      // nothing to clear — runtime manages its own WS state
     });
 
     this.channelRuntime.on("channel.message", (channelMessage) => {
@@ -337,16 +172,9 @@ export class McpAgentBridge {
         this.pendingPreInitMessages.push(channelMessage);
         return;
       }
-      // Broadcast messages (no toAgentId) are accepted by all profiles even with null selfAgentId,
-      // so they flow through immediately. Only targeted messages need buffering.
+      // Broadcast messages (no toAgentId) are accepted by all profiles even with null selfAgentId
       if (!this.clientProfile.acceptsChannelMessage(channelMessage, this.clientAgentId)) return;
       this.deliverChannelMessage(channelMessage);
-    });
-
-    this.channelRuntime.on("channel.ack", (ack) => {
-      if (ack.state === "answered" || ack.state === "failed") {
-        this.clearInboxReminder(ack.conversationId, ack.messageId);
-      }
     });
 
     this.channelRuntime.on("legacy.notify", (notify) => {
@@ -357,22 +185,10 @@ export class McpAgentBridge {
 
     this.channelRuntime.on("agent.message", (agentMsg) => {
       if (agentMsg.type === "task.request") {
-        if (!this.clientAgentId || agentMsg.toAgentId !== this.clientAgentId) {
-          return;
-        }
-
-        const notification = this.buildTaskRequestNotification(agentMsg);
+        if (!this.clientAgentId || agentMsg.toAgentId !== this.clientAgentId) return;
+        const notification = this.clientProfile.mapTaskRequestMessage(agentMsg as AgentMessage);
         if (!notification) return;
         void this.server.server.notification(notification);
-      }
-
-      if (agentMsg.type === "task.response" && agentMsg.taskId) {
-        const pending = this.pendingResponses.get(agentMsg.taskId);
-        if (pending) {
-          clearTimeout(pending.timer);
-          this.pendingResponses.delete(agentMsg.taskId);
-          pending.resolve(agentMsg.payload);
-        }
       }
     });
   }
@@ -387,7 +203,7 @@ export class McpAgentBridge {
       detail: "Message received by MCP bridge",
     });
 
-    const notification = this.buildInboundChannelNotification(channelMessage);
+    const notification = this.clientProfile.mapChannelMessage(channelMessage);
     if (!notification) return;
     this.surfacedInboxMessageIds.add(channelMessage.messageId);
 
@@ -399,16 +215,10 @@ export class McpAgentBridge {
           state: "displayed_to_client",
           actorId: this.clientAgentId ?? "mcp-adapter",
           actorType: "bridge",
-          detail: this.clientProfile.deliveryMode === "inbox-first"
-            ? "Inbox reminder forwarded to client"
-            : "Message forwarded to client channel",
+          detail: "Message forwarded to client channel",
         });
       }
     });
-
-    if (this.clientProfile.deliveryMode === "inbox-first" && this.inboxFirstConfig.sendReminderNotifications) {
-      this.scheduleInboxReminder(channelMessage);
-    }
   }
 
   private async tryPushNotification(
@@ -445,64 +255,8 @@ export class McpAgentBridge {
     }
   }
 
-  private scheduleInboxReminder(message: ChannelMessage): void {
-    const key = this.getInboxReminderKey(message.conversationId, message.messageId);
-    this.clearInboxReminder(message.conversationId, message.messageId);
-
-    if (!this.inboxFirstConfig.repeatReminders) {
-      return;
-    }
-
-    const timer = setInterval(() => {
-      const snapshot = this.conversationService.getSnapshot(message.conversationId);
-      const stillPending = snapshot?.pendingMessages.some((pending) => pending.messageId === message.messageId);
-      if (!stillPending) {
-        this.clearInboxReminder(message.conversationId, message.messageId);
-        return;
-      }
-
-      void this.server.server.notification({
-        method: "notifications/message",
-        params: {
-          level: "info",
-          logger: "agent-bridge.channel",
-          data: {
-            content:
-              `Pending channel message from ${message.fromAgentName ?? message.fromAgentId}. ` +
-              `Use channel_inbox to review and reply. Conversation: ${message.conversationId}.`,
-            meta: {
-              conversationId: message.conversationId,
-              messageId: message.messageId,
-              fromAgentId: message.fromAgentId,
-              fromAgentName: message.fromAgentName,
-              taskId: message.taskId,
-              type: "inbox-reminder",
-            },
-          },
-        },
-      }).catch((err: unknown) => {
-        console.error("[MCP] inbox reminder push failed:", err instanceof Error ? err.message : err);
-      });
-    }, this.inboxFirstConfig.reminderIntervalMs);
-
-    this.inboxReminderTimers.set(key, timer);
-  }
-
-  private clearInboxReminder(conversationId: string, messageId: string): void {
-    const key = this.getInboxReminderKey(conversationId, messageId);
-    const timer = this.inboxReminderTimers.get(key);
-    if (!timer) return;
-    clearInterval(timer);
-    this.inboxReminderTimers.delete(key);
-  }
-
-  private getInboxReminderKey(conversationId: string, messageId: string): string {
-    return `${conversationId}:${messageId}`;
-  }
-
   /** Fetch all conversations from the registry HTTP endpoint and seed the local store.
-   *  This ensures pre-existing conversations (before Codex connected) are visible to polling.
-   *  Also replays any unsurfaced messages for push-mode clients (e.g. after WS reconnection). */
+   *  Also replays any unsurfaced messages after WS reconnection. */
   private async syncRegistryToLocalStore(): Promise<void> {
     if (this.syncInFlight) return;
     this.syncInFlight = true;
@@ -538,151 +292,6 @@ export class McpAgentBridge {
     }
   }
 
-  private startInboxPolling(): void {
-    this.stopInboxPolling();
-    if (this.clientProfile.deliveryMode !== "inbox-first") return;
-    if (!this.inboxFirstConfig.autoPollInbox) return;
-
-    this.inboxPollTimer = setInterval(() => {
-      void this.surfacePendingInboxMessages();
-    }, this.inboxFirstConfig.pollIntervalMs);
-  }
-
-  private stopInboxPolling(): void {
-    if (this.inboxPollTimer) {
-      clearInterval(this.inboxPollTimer);
-      this.inboxPollTimer = null;
-    }
-    this.surfacedInboxMessageIds.clear();
-  }
-
-  private async surfacePendingInboxMessages(): Promise<void> {
-    if (this.clientProfile.deliveryMode !== "inbox-first") return;
-
-    const pending = this.conversationService.listPendingSnapshots();
-    await this.surfaceSnapshotMessages(pending, "pending");
-
-    if (this.inboxFirstConfig.pollActiveConversations) {
-      const allUnsurfaced = this.conversationService.listUnsurfacedSnapshots(this.surfacedInboxMessageIds);
-      const pendingIds = new Set(pending.map((s) => s.conversation.conversationId));
-      const activeOnly = allUnsurfaced.filter((s) => !pendingIds.has(s.conversation.conversationId));
-      await this.surfaceSnapshotMessages(activeOnly, "active");
-    }
-  }
-
-  private async surfaceSnapshotMessages(
-    snapshots: import("../client/conversation-service.js").ConversationSnapshot[],
-    source: "pending" | "active",
-  ): Promise<void> {
-    const totalCount = snapshots.length;
-
-    // Collect all unsurfaced messages first, then mark them all at once.
-    // This prevents sending N notifications for N accumulated messages —
-    // instead we send at most ONE notification per poll cycle.
-    const unsurfaced: Array<{
-      snapshot: import("../client/conversation-service.js").ConversationSnapshot;
-      message: ChannelMessage;
-    }> = [];
-
-    for (const snapshot of snapshots) {
-      const messagesToCheck = source === "pending" ? snapshot.pendingMessages : snapshot.messages;
-      for (const message of messagesToCheck) {
-        if (message.fromAgentId === this.clientAgentId) continue;
-        if (this.surfacedInboxMessageIds.has(message.messageId)) continue;
-        unsurfaced.push({ snapshot, message });
-      }
-    }
-
-    if (unsurfaced.length === 0) return;
-
-    // Mark ALL as surfaced before sending so future polls don't re-fire them.
-    for (const { message } of unsurfaced) {
-      this.surfacedInboxMessageIds.add(message.messageId);
-    }
-
-    if (unsurfaced.length === 1) {
-      // Single new message: send detailed notification.
-      const { snapshot, message } = unsurfaced[0];
-      const notification = this.buildSurfacedInboxNotification(snapshot, message, totalCount, source)
-        ?? {
-            method: "notifications/message",
-            params: {
-              level: "info",
-              logger: "agent-bridge.channel",
-              data: {
-                content: source === "pending"
-                  ? `New pending channel conversation from ${message.fromAgentName ?? message.fromAgentId}. ` +
-                    `Open channel_inbox and reply. Preview: ${message.content.slice(0, 220)}${message.content.length > 220 ? "…" : ""}`
-                  : `New message in active conversation from ${message.fromAgentName ?? message.fromAgentId}. ` +
-                    `Open channel_inbox to view. Preview: ${message.content.slice(0, 220)}${message.content.length > 220 ? "…" : ""}`,
-                meta: {
-                  type: source === "pending" ? "inbox-poll" : "inbox-poll-active",
-                  conversationId: snapshot.conversation.conversationId,
-                  messageId: message.messageId,
-                  fromAgentId: message.fromAgentId,
-                  fromAgentName: message.fromAgentName,
-                  taskId: message.taskId,
-                  pendingCount: totalCount,
-                },
-              },
-            },
-          };
-      await this.server.server.notification(notification).catch((err: unknown) => {
-        console.error("[MCP] surface snapshot push failed:", err instanceof Error ? err.message : err);
-      });
-    } else {
-      // Multiple new messages: send ONE aggregated notification to avoid flooding the client.
-      const notification = {
-        method: "notifications/message",
-        params: {
-          level: "info",
-          logger: "agent-bridge.channel",
-          data: {
-            content: source === "pending"
-              ? `You have ${totalCount} pending channel conversation(s) (${unsurfaced.length} new). Open channel_inbox to inspect and reply.`
-              : `${unsurfaced.length} new messages across active conversations. Open channel_inbox to view.`,
-            meta: {
-              type: source === "pending" ? "inbox-poll" : "inbox-poll-active",
-              pendingCount: totalCount,
-              newMessageCount: unsurfaced.length,
-            },
-          },
-        },
-      };
-      await this.server.server.notification(notification).catch((err: unknown) => {
-        console.error("[MCP] aggregated inbox push failed:", err instanceof Error ? err.message : err);
-      });
-    }
-  }
-
-  /** Returns the inbox-first proxy for the current client profile, or null for push-mode clients. */
-  private get activeProxy(): CodexProxy | GeminiProxy | null {
-    if (this.clientProfile.id === "codex") return this.codexProxy;
-    if (this.clientProfile.id === "gemini") return this.geminiProxy;
-    return null;
-  }
-
-  private buildInboundChannelNotification(message: ChannelMessage) {
-    return this.activeProxy?.buildChannelNotification(message) ?? this.clientProfile.mapChannelMessage(message);
-  }
-
-  private buildSurfacedInboxNotification(
-    snapshot: import("../client/conversation-service.js").ConversationSnapshot,
-    message: ChannelMessage,
-    totalCount: number,
-    source: "pending" | "active",
-  ) {
-    const proxy = this.activeProxy;
-    if (!proxy) return null;
-    return source === "pending"
-      ? proxy.buildPendingReminder(snapshot, message, totalCount)
-      : proxy.buildActiveConversationNotification(snapshot, message);
-  }
-
-  private buildTaskRequestNotification(message: AgentMessage) {
-    return this.activeProxy?.buildTaskRequestNotification(message) ?? this.clientProfile.mapTaskRequestMessage(message);
-  }
-
   private async postChannelAck(ack: {
     conversationId: string;
     messageId: string;
@@ -705,58 +314,15 @@ export class McpAgentBridge {
     }
   }
 
-  /** Send a message via WS relay and wait for response */
-  private sendMessageViaWs(targetAgentId: string, message: string, options?: {
-    skillId?: string;
-    input?: Record<string, unknown>;
-    timeoutMs?: number;
-  }): Promise<unknown> {
-    return new Promise((resolve, reject) => {
-      if (!this.registryWs || this.registryWs.readyState !== WebSocket.OPEN) {
-        reject(new Error("No WebSocket connection to registry"));
-        return;
-      }
-
-      const taskId = randomUUID();
-      const timeoutMs = options?.timeoutMs ?? 60_000;
-
-      const timer = setTimeout(() => {
-        this.pendingResponses.delete(taskId);
-        reject(new Error(`WS message timeout after ${timeoutMs}ms`));
-      }, timeoutMs);
-
-      this.pendingResponses.set(taskId, { resolve, reject, timer });
-
-      const agentMessage: AgentMessage = {
-        fromAgentId: this.clientAgentId ?? "mcp-adapter",
-        toAgentId: targetAgentId,
-        taskId,
-        type: "task.request",
-        payload: {
-          message,
-          skillId: options?.skillId,
-          input: options?.input,
-        },
-        timestamp: Date.now(),
-      };
-
-      this.registryWs.send(JSON.stringify({
-        type: "agent.message",
-        timestamp: new Date().toISOString(),
-        data: agentMessage,
-      }));
-    });
-  }
-
   // ── Infrastructure bootstrap ───────────────────────────────────────────────
 
-  private async ensureInfrastructure(): Promise<RegistryEntry[]> {
+  private async ensureInfrastructure(): Promise<void> {
     const registryAvailable = await this.registry.isAvailable();
 
     if (!registryAvailable) {
       if (!this.options.auto) {
         console.error("[MCP] Registry not available. Start with: agent-bridge registry start");
-        return [];
+        return;
       }
 
       // Auto-start embedded registry
@@ -764,34 +330,6 @@ export class McpAgentBridge {
       this.embeddedRegistry = new RegistryServer();
       await this.embeddedRegistry.start();
     }
-
-    // Check if any agents are registered
-    let agents = await this.registry.listAgents({ healthy: true });
-
-    // Check if there's already an agent for THIS project specifically
-    const hasAgentForThisProject = agents.some(
-      (a) => a.entryType !== "client" && a.projectPath === this.options.projectPath
-    );
-
-    if (!hasAgentForThisProject && this.options.auto) {
-      // Auto-start a local agent for the current project
-      console.error(`[MCP] No agent for ${this.options.projectPath} — starting one`);
-      this.embeddedAgent = new AgentServer({
-        projectPath: this.options.projectPath,
-        registryUrl: this.options.registryUrl,
-        useClaudeCode: this.options.useClaudeCode,
-      });
-      await this.embeddedAgent.start();
-
-      // Poll until an agent with skills registers (max 5s)
-      for (let attempt = 0; attempt < 10; attempt++) {
-        await new Promise((r) => setTimeout(r, 500));
-        agents = await this.registry.listAgents({ healthy: true });
-        if (agents.some(a => a.entryType !== "client")) break;
-      }
-    }
-
-    return agents;
   }
 
   // ── Client detection ───────────────────────────────────────────────────────
@@ -817,7 +355,6 @@ export class McpAgentBridge {
         const clientName: string = clientVersion.name;
         const version: string = clientVersion.version ?? "unknown";
         this.clientProfile = this.profileResolver.resolve({ clientName });
-        this.inboxFirstConfig = resolveInboxFirstClientConfig(this.bridgeConfig, this.clientProfile.id);
 
         // Resolve real project path from client's workspace roots (MCP roots protocol)
         let realProjectPath = this.options.projectPath;
@@ -865,60 +402,14 @@ export class McpAgentBridge {
         };
 
         await this.channelRuntime.activateClient(registration);
-        const tmuxBinding = await detectCurrentTmuxBinding();
-        if (clientName.toLowerCase().includes("codex")) {
-          const existing = readCurrentCodexSession(realProjectPath);
-          writeCurrentCodexSession(realProjectPath, {
-            clientAgentId: this.clientAgentId,
-            clientName,
-            projectPath: realProjectPath,
-            registeredAt: Date.now(),
-            sidecarPid: existing?.sidecarPid,
-            tmuxPane: tmuxBinding?.pane ?? existing?.tmuxPane,
-            tmuxSessionName: tmuxBinding?.sessionName ?? existing?.tmuxSessionName,
-            tmuxWindowName: tmuxBinding?.windowName ?? existing?.tmuxWindowName,
-            tmuxCurrentCommand: tmuxBinding?.currentCommand ?? existing?.tmuxCurrentCommand,
-          });
-        }
-        if (clientName.toLowerCase().includes("gemini")) {
-          const existing = readCurrentGeminiSession(realProjectPath);
-          writeCurrentGeminiSession(realProjectPath, {
-            clientAgentId: this.clientAgentId,
-            clientName,
-            projectPath: realProjectPath,
-            registeredAt: Date.now(),
-            sidecarPid: existing?.sidecarPid,
-            tmuxPane: tmuxBinding?.pane ?? existing?.tmuxPane,
-            tmuxSessionName: tmuxBinding?.sessionName ?? existing?.tmuxSessionName,
-            tmuxWindowName: tmuxBinding?.windowName ?? existing?.tmuxWindowName,
-            tmuxCurrentCommand: tmuxBinding?.currentCommand ?? existing?.tmuxCurrentCommand,
-          });
-        }
         await this.syncRegistryToLocalStore();
-        this.startInboxPolling();
         this.drainPendingPreInitMessages();
-        if (this.clientAgentId) {
-          this.sidecarManager.startIfNeeded("codex", realProjectPath, clientName, this.clientAgentId);
-          this.sidecarManager.startIfNeeded("gemini", realProjectPath, clientName, this.clientAgentId);
-        }
         console.error(`[MCP] Registered client: ${realProjectName} (${clientName} v${version})`);
 
         const cleanup = async () => {
-          this.sidecarManager.stopAll();
-          this.stopInboxPolling();
+          this.surfacedInboxMessageIds.clear();
           await this.channelRuntime.deactivateClient();
-          if (clientName.toLowerCase().includes("codex")) {
-            clearCurrentCodexSession(realProjectPath, this.clientAgentId ?? undefined);
-          }
-          if (clientName.toLowerCase().includes("gemini")) {
-            clearCurrentGeminiSession(realProjectPath, this.clientAgentId ?? undefined);
-          }
           this.clientAgentId = null;
-          // Stop embedded agent so it deregisters from registry
-          if (this.embeddedAgent) {
-            try { await this.embeddedAgent.stop(); } catch { /* ignore */ }
-            this.embeddedAgent = null;
-          }
           if (this.embeddedRegistry) {
             try { await this.embeddedRegistry.stop(); } catch { /* ignore */ }
             this.embeddedRegistry = null;
@@ -963,7 +454,7 @@ export class McpAgentBridge {
     this.registerChannelMessagingTools();
   }
 
-  /** list_agents, agent_health, ask_agent */
+  /** list_agents */
   private registerDiscoveryTools(): void {
     this.server.registerTool(
       "list_agents",
@@ -998,212 +489,17 @@ export class McpAgentBridge {
         }
       }
     );
-
-    this.server.registerTool(
-      "agent_health",
-      {
-        description: "Check if a specific agent is alive and responding. Returns status, project info, and available skills.",
-        inputSchema: {
-          agentId: z.string().describe("Agent ID (from list_agents) or agent name"),
-        },
-      },
-      async ({ agentId }) => {
-        try {
-          const entry = await this.resolveAgent(agentId);
-          const client = new A2AClient(entry.url);
-          const health = await client.health();
-          return {
-            content: [{
-              type: "text" as const,
-              text: JSON.stringify({
-                agent: entry.name,
-                agentId: entry.agentId,
-                status: health.status ?? "alive",
-                projectPath: entry.projectPath,
-                projectType: entry.projectType,
-                skills: entry.card.skills.map((s) => s.id),
-                url: entry.url,
-              }, null, 2),
-            }],
-          };
-        } catch (err) {
-          return {
-            content: [{ type: "text" as const, text: `Agent unreachable: ${err instanceof Error ? err.message : String(err)}` }],
-            isError: true,
-          };
-        }
-      }
-    );
-
-    this.server.registerTool(
-      "ask_agent",
-      {
-        description:
-          "Send a message or task to any connected agent. " +
-          "Tries WebSocket relay first for real-time communication, falls back to HTTP. " +
-          "Optionally specify a skillId to invoke a specific capability. " +
-          "Use this only with runnable agents that expose skills/HTTP endpoints. " +
-          "For passive client sessions discovered in list_agents, use message_client_session instead.",
-        inputSchema: {
-          agentId: z.string().describe("Target agent ID or name (from list_agents)"),
-          message: z.string().describe("The message, question, or task to send"),
-          skillId: z.string().optional().describe("Skill to invoke on the target agent (e.g. 'claude-execute')"),
-          input: z.preprocess(
-            (v) => (typeof v === "string" ? JSON.parse(v) : v),
-            z.record(z.unknown()).optional()
-          ).describe("Direct skill input as JSON (overrides message parsing)"),
-          timeout: z.coerce.number().optional().describe("Timeout in ms (default: 60000, max: 300000)"),
-          waitForResponse: z.boolean().optional().describe("Wait for response via WS (default: true)"),
-        },
-      },
-      async ({ agentId, message, skillId, input, timeout, waitForResponse = true }) => {
-        try {
-          const entry = await this.resolveAgent(agentId);
-          if (entry.entryType === "client" && entry.card.skills.length === 0) {
-            return {
-              content: [{
-                type: "text" as const,
-                text: `Target "${entry.name}" is a passive client session, not a runnable A2A agent. Use message_client_session with clientId=${entry.agentId}.`,
-              }],
-              isError: true,
-            };
-          }
-          const taskId = randomUUID();
-          await this.emitTraceEvent({ agentId: entry.agentId, agentName: entry.name, taskId, state: "submitted", skillId });
-
-          // Resolve timeout: explicit > skill-based default > standard default
-          const wsTimeoutMs = timeout ?? (skillId === "claude-execute" ? 300_000 : 60_000);
-
-          // Try WS relay first for real-time terminal-to-terminal communication
-          if (waitForResponse && this.registryWs?.readyState === WebSocket.OPEN) {
-            try {
-              const result = await this.sendMessageViaWs(entry.agentId, message, { skillId, input, timeoutMs: wsTimeoutMs });
-              await this.emitTraceEvent({ agentId: entry.agentId, agentName: entry.name, taskId, state: "completed", skillId });
-              const rpcResult = result as { result?: unknown; error?: { message: string } };
-              if (rpcResult?.error) {
-                return { content: [{ type: "text" as const, text: `Agent error: ${rpcResult.error.message}` }], isError: true };
-              }
-              const task = rpcResult?.result ?? result;
-              return { content: [{ type: "text" as const, text: extractTaskResponse(task) }] };
-            } catch {
-              console.error("[MCP] WS relay failed for ask_agent, falling back to HTTP");
-            }
-          }
-
-          // Guard: no URL means client entry with no HTTP server
-          if (!entry.url) {
-            return {
-              content: [{
-                type: "text" as const,
-                text: `Agent "${entry.name}" has no HTTP endpoint (it's a client entry). ` +
-                      `WS relay unavailable or timed out. Target an agent with skills instead.`,
-              }],
-              isError: true,
-            };
-          }
-
-          // Fallback: HTTP direct
-          const client = new A2AClient(entry.url);
-          const task = await client.sendTask({
-            message: { role: "user", parts: [{ type: "text", text: message }] },
-            metadata: {
-              ...(skillId ? { skillId } : {}),
-              ...(input ? { input } : {}),
-            },
-          });
-          await this.emitTraceEvent({ agentId: entry.agentId, agentName: entry.name, taskId, state: "completed", skillId });
-          return { content: [{ type: "text" as const, text: extractTaskResponse(task) }] };
-        } catch (err) {
-          return {
-            content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
-            isError: true,
-          };
-        }
-      }
-    );
   }
 
-  /** mark_expired_channel_conversations, delete_channel_conversation, channel_inbox */
+  /** channel_inbox */
   private registerConversationManagementTools(): void {
-    this.server.registerTool(
-      "mark_expired_channel_conversations",
-      {
-        description:
-          "Mark locally expired channel conversations as failed. " +
-          "This updates the local conversation layer and emits failed acknowledgements for the expired last messages.",
-        inputSchema: {
-          limit: z.coerce.number().optional().describe("Maximum number of expired conversations to mark (default: 10)"),
-        },
-      },
-      async ({ limit = 10 }) => {
-        try {
-          const updated = await this.conversationService.markExpiredAsFailed(limit);
-          if (updated.length === 0) {
-            return {
-              content: [{ type: "text" as const, text: "No expired channel conversations were marked as failed." }],
-            };
-          }
-
-          return {
-            content: [{
-              type: "text" as const,
-              text: JSON.stringify(updated.map((snapshot) => ({
-                conversationId: snapshot.conversation.conversationId,
-                status: snapshot.status,
-                lastAckState: snapshot.conversation.lastAckState,
-                lastMessageId: snapshot.conversation.lastMessageId,
-              })), null, 2),
-            }],
-          };
-        } catch (err) {
-          return {
-            content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
-            isError: true,
-          };
-        }
-      }
-    );
-
-    this.server.registerTool(
-      "delete_channel_conversation",
-      {
-        description:
-          "Suppress a channel conversation through the registry so every client sees the same result. " +
-          "This also removes it from the local runtime store.",
-        inputSchema: {
-          conversationId: z.string().describe("Conversation ID to suppress"),
-        },
-      },
-      async ({ conversationId }) => {
-        try {
-          const deleted = await this.registry.suppressChannelConversation(conversationId);
-          if (deleted) {
-            this.conversationService.deleteConversation(conversationId);
-          }
-          return {
-            content: [{
-              type: "text" as const,
-              text: deleted
-                ? `Suppressed conversation ${conversationId} in the registry and local runtime`
-                : `Conversation ${conversationId} was not found in the registry.`,
-            }],
-          };
-        } catch (err) {
-          return {
-            content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
-            isError: true,
-          };
-        }
-      }
-    );
-
     this.server.registerTool(
       "channel_inbox",
       {
         description:
           "Inspect the current client's channel conversations. " +
-          "Useful for debugging the channel MVP and seeing pending or recent conversations tracked locally by the runtime. " +
-          "For Codex and other inbox-first clients, this is the primary way to review inbound channel messages.",
+          "Useful for reviewing pending messages and conversations tracked locally by the runtime. " +
+          "Always sync from registry before inspecting so the view is current.",
         inputSchema: {
           expiredOnly: z.boolean().optional().describe("Show only locally expired conversations awaiting reply"),
           pendingOnly: z.boolean().optional().describe("Show only conversations awaiting reply (default: true)"),
@@ -1291,7 +587,7 @@ export class McpAgentBridge {
     );
   }
 
-  /** message_client_session, message_claude_client, reply */
+  /** message_client_session, reply */
   private registerChannelMessagingTools(): void {
     this.server.registerTool(
       "message_client_session",
@@ -1301,29 +597,7 @@ export class McpAgentBridge {
           "Resolves target in priority order: (1) exact clientId match, (2) conversationId participant lookup, " +
           "(3) project name/path match — when multiple sessions share the same project, claude-code is preferred " +
           "over gemini over codex automatically (use clientType to override). " +
-          "Claude Code receives messages as immediate <channel> push events. " +
-          "Codex/Gemini are inbox-first: use channel_inbox + reply to check for responses.",
-        inputSchema: {
-          clientId: z.string().optional().describe("Exact target client session agentId (most specific — skips all other resolution)"),
-          project: z.string().optional().describe("Project name or path to resolve the target session; not required if conversationId is provided"),
-          clientType: z.string().optional().describe("Filter by client type when project matches multiple sessions (e.g. 'claude-code', 'codex', 'gemini'). Ignored when clientId is set."),
-          message: z.string().describe("Message to send over the channel"),
-          conversationId: z.string().optional().describe("Conversation ID to continue; if neither clientId nor project is given, the target is resolved from this conversation's participants"),
-          replyTo: z.string().optional().describe("Message ID this replies to"),
-          taskId: z.string().optional().describe("Optional task ID associated with the channel conversation"),
-          expectsResponse: z.boolean().optional().describe("Whether the sender expects a reply"),
-          timeoutMs: z.coerce.number().optional().describe("How long the receiver may take to reply before the message expires (ms)"),
-        },
-      },
-      async (input) => this.handleMessageClientSession(input)
-    );
-
-    this.server.registerTool(
-      "message_claude_client",
-      {
-        description:
-          "Compatibility alias for message_client_session. " +
-          "Prefer message_client_session for new integrations.",
+          "Claude Code receives messages as immediate <channel> push events.",
         inputSchema: {
           clientId: z.string().optional().describe("Exact target client session agentId (most specific — skips all other resolution)"),
           project: z.string().optional().describe("Project name or path to resolve the target session; not required if conversationId is provided"),
@@ -1419,295 +693,6 @@ export class McpAgentBridge {
         }
       }
     );
-
-  }
-
-  // ── Per-agent skill tools ──────────────────────────────────────────────────
-
-  private registerAgentSkillTools(agents: RegistryEntry[]): void {
-    for (const agent of agents) {
-      if (this.agentToolMap.has(agent.agentId)) continue;
-      this.addAgentTools(agent);
-    }
-  }
-
-  private addAgentTools(agent: RegistryEntry): void {
-    if (this.agentToolMap.has(agent.agentId)) return;
-    if (agent.entryType === "client" || agent.card.skills.length === 0) return;
-
-    // Use agentId suffix to avoid name collisions between agents with same name
-    const prefix = `${toolPrefix(agent.name)}_${agent.agentId.slice(0, 4)}`;
-    const tools: RegisteredTool[] = [];
-
-    for (const skill of agent.card.skills) {
-      const toolName = `${prefix}__${skill.id.replace(/-/g, "_")}`;
-      const registeredTool = this.server.registerTool(
-        toolName,
-        {
-          description:
-            `[${agent.name}] ${skill.description}\n` +
-            `Project: ${agent.projectPath} (${agent.projectType})`,
-          inputSchema: this.getSkillInputSchema(skill.id),
-        },
-        async (input) => {
-          try {
-            // Try WS relay first for real-time communication
-            const skillWsTimeoutMs = skill.id === "claude-execute" ? 300_000 : 60_000;
-            if (this.registryWs?.readyState === WebSocket.OPEN) {
-              try {
-                const result = await this.sendMessageViaWs(agent.agentId, JSON.stringify(input), { skillId: skill.id, input: input as Record<string, unknown>, timeoutMs: skillWsTimeoutMs });
-                const rpcResult = result as { result?: unknown; error?: { message: string } };
-                if (rpcResult?.error) {
-                  return { content: [{ type: "text" as const, text: `Agent error: ${rpcResult.error.message}` }], isError: true };
-                }
-                const task = rpcResult?.result ?? result;
-                const taskObj = task as { artifacts?: Array<{ parts: Array<{ type: string; data?: unknown }> }> };
-                const artifact = taskObj?.artifacts?.[0];
-                if (artifact?.parts[0]?.type === "data") {
-                  return { content: [{ type: "text" as const, text: JSON.stringify(artifact.parts[0].data, null, 2) }] };
-                }
-                return { content: [{ type: "text" as const, text: JSON.stringify(task, null, 2) }] };
-              } catch (err: unknown) {
-                console.error("[MCP] WS relay failed for skill tool, falling back to HTTP:", err instanceof Error ? err.message : err);
-              }
-            }
-            // HTTP fallback
-            const client = new A2AClient(agent.url);
-            const taskId = randomUUID();
-            await this.emitTraceEvent({ agentId: agent.agentId, agentName: agent.name, taskId, state: "submitted", skillId: skill.id });
-            const task = await client.sendTask({
-              message: { role: "user", parts: [{ type: "text", text: JSON.stringify(input) }] },
-              metadata: { skillId: skill.id, input },
-            });
-            await this.emitTraceEvent({ agentId: agent.agentId, agentName: agent.name, taskId, state: "completed", skillId: skill.id });
-            const artifact = task.artifacts[0];
-            const data = artifact?.parts[0];
-            if (data?.type === "data") {
-              return { content: [{ type: "text" as const, text: JSON.stringify(data.data, null, 2) }] };
-            }
-            return { content: [{ type: "text" as const, text: JSON.stringify(task.status) }] };
-          } catch (err) {
-            return {
-              content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
-              isError: true,
-            };
-          }
-        }
-      );
-      tools.push(registeredTool);
-    }
-
-    this.agentToolMap.set(agent.agentId, tools);
-    console.error(`[MCP] Added tools for agent: ${agent.name} (${tools.length} tools)`);
-  }
-
-  private removeAgentTools(agentId: string): void {
-    const tools = this.agentToolMap.get(agentId);
-    if (!tools) return;
-    for (const tool of tools) {
-      try { tool.remove(); } catch { /* ignore if already removed */ }
-    }
-    this.agentToolMap.delete(agentId);
-    console.error(`[MCP] Removed tools for agent: ${agentId}`);
-  }
-
-  private setAgentToolsEnabled(agentId: string, enabled: boolean): void {
-    const tools = this.agentToolMap.get(agentId);
-    if (!tools) return;
-    for (const tool of tools) {
-      try { enabled ? tool.enable() : tool.disable(); } catch { /* ignore */ }
-    }
-  }
-
-  private getSkillInputSchema(skillId: string): Record<string, z.ZodTypeAny> {
-    switch (skillId) {
-      case "file-search":
-        return {
-          pattern: z.string().describe("Glob pattern (e.g. '**/*.ts', 'src/**/*.json')"),
-          rootDir: z.string().optional().describe("Root directory (defaults to project root)"),
-          ignore: z.array(z.string()).optional().describe("Patterns to ignore"),
-          limit: z.number().optional().describe("Max number of results (default: 100)"),
-        };
-      case "endpoint-find":
-        return {
-          rootDir: z.string().optional().describe("Root directory to scan"),
-          framework: z
-            .enum(["auto", "express", "nestjs", "fastapi", "spring", "hono", "fastify"])
-            .optional()
-            .describe("Framework hint (default: auto)"),
-          query: z.string().optional().describe("Filter endpoints by path/method keyword"),
-        };
-      case "code-query":
-        return {
-          query: z.string().describe("Text or regex pattern to search"),
-          fileGlob: z.string().optional().describe("Limit search to files matching this glob"),
-          rootDir: z.string().optional().describe("Root directory to search"),
-          maxResults: z.number().optional().describe("Maximum number of results (default: 50)"),
-          caseSensitive: z.boolean().optional().describe("Case-sensitive search (default: false)"),
-        };
-      case "prompt-execute":
-        return {
-          template: z.string().describe("Prompt template with {{variable}} placeholders"),
-          variables: z.record(z.string()).optional().describe("Variables to inject"),
-          context: z.string().optional().describe("Additional context to prepend"),
-          instruction: z.string().optional().describe("What the agent receiving this prompt should do with it"),
-        };
-      case "claude-execute":
-        return {
-          prompt: z.string().describe("The task or question for Claude"),
-          allowedTools: z.array(z.string()).optional()
-            .describe("Allowed tools: Read, Glob, Grep (default: all three)"),
-        };
-      case "shell-execute":
-        return {
-          command: z.string().describe("Shell command to execute"),
-          timeout: z.number().optional().describe("Timeout in ms (default: 30000, max: 120000)"),
-          cwd: z.string().optional().describe("Working directory relative to project root"),
-        };
-      case "notify-claude":
-        return {
-          content: z.string().describe("Message content to push to the Claude terminal"),
-          targetClientId: z.string().optional().describe("Target Claude client agentId"),
-          targetProject: z.string().optional().describe("Project path or name used to resolve the target Claude client"),
-          conversationId: z.string().optional().describe("Conversation ID to continue"),
-          replyTo: z.string().optional().describe("Message ID this message replies to"),
-          requiresAck: z.boolean().optional().describe("Whether to request delivery acknowledgements"),
-          expectsResponse: z.boolean().optional().describe("Whether this message expects a reply"),
-          responseTimeoutMs: z.number().optional().describe("How long to wait for a reply before expiring"),
-          meta: z.record(z.unknown()).optional().describe("Optional metadata to attach"),
-        };
-      case "code-review":
-      case "run-tests":
-      case "run-script":
-      case "docker-build":
-        return {
-          query: z.string().describe("What to do or ask"),
-        };
-      default:
-        return {
-          message: z.string().describe("Input message for the skill"),
-        };
-    }
-  }
-
-  // ── Resources ──────────────────────────────────────────────────────────────
-
-  private registerResources(_agents: RegistryEntry[]): void {
-    this.server.registerResource(
-      "connected-agents",
-      "agents://connected",
-      {
-        description: "All agents connected to agent-bridge with their capabilities",
-        mimeType: "application/json",
-      },
-      async () => {
-        const liveAgents = await this.registry.listAgents({ healthy: true });
-        return {
-          contents: [{
-            uri: "agents://connected",
-            mimeType: "application/json",
-            text: JSON.stringify(
-              liveAgents.map((a) => ({
-                agentId: a.agentId,
-                name: a.name,
-                projectPath: a.projectPath,
-                projectType: a.projectType,
-                port: a.port,
-                healthy: a.healthy,
-                skills: a.card.skills.map((s) => ({ id: s.id, description: s.description })),
-              })),
-              null,
-              2
-            ),
-          }],
-        };
-      }
-    );
-
-    const template = new ResourceTemplate("agents://{agentId}/card", { list: undefined });
-    this.server.registerResource(
-      "agent-card",
-      template,
-      { description: "A2A Agent Card for a connected agent", mimeType: "application/json" },
-      async (uri, { agentId }) => {
-        const all = await this.registry.listAgents();
-        const agent = all.find((a) => a.agentId === agentId || a.name === agentId);
-        if (!agent) throw new Error(`Agent "${agentId}" not found`);
-        return {
-          contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(agent.card, null, 2) }],
-        };
-      }
-    );
-  }
-
-  // ── Prompts ────────────────────────────────────────────────────────────────
-
-  private registerPrompts(agents: RegistryEntry[]): void {
-    this.server.registerPrompt(
-      "agent_bridge_status",
-      {
-        description: "Shows which agents are connected and what each can do. Run this first.",
-        argsSchema: {},
-      },
-      async () => ({
-        messages: [{
-          role: "user",
-          content: {
-            type: "text",
-            text: [
-              "## agent-bridge — Connected Agents\n",
-              formatAgentsSummary(agents),
-              "\n## Available MCP Tools\n",
-              "- **list_agents** — Refresh and list all connected agents",
-              "- **agent_health** — Check if a specific agent is alive",
-              "- **ask_agent** — Send any message/task to a runnable A2A agent",
-              "- **message_client_session** — Send a channel message to a passive client session",
-              "- **message_claude_client** — Compatibility alias for Claude-oriented workflows",
-              "- **channel_inbox** — Refresh your local inbox of pending or recent channel conversations",
-              "- **reply** — Reply to an incoming channel event from an agent",
-              "- **project_info** — Get project metadata from an agent",
-              "- **project_files** — List files in a remote project",
-              agents.length > 0
-                ? `\n## Per-Agent Tools\n${agents.flatMap((a) =>
-                    a.card.skills.map((s) => `- **${toolPrefix(a.name)}_${a.agentId.slice(0, 4)}__${s.id.replace(/-/g, "_")}** — ${s.description}`)
-                  ).join("\n")}`
-                : "",
-            ].filter(Boolean).join("\n"),
-          },
-        }],
-      })
-    );
-  }
-
-  // ── Trace helpers ──────────────────────────────────────────────────────────
-
-  private getClientDisplayName(): string {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const innerServer = (this.server as unknown as { server: any }).server;
-    return innerServer?.getClientVersion?.()?.name ?? "unknown";
-  }
-
-  private async emitTraceEvent(params: {
-    agentId: string;
-    agentName: string;
-    taskId: string;
-    state: string;
-    skillId?: string;
-  }): Promise<void> {
-    if (!this.clientAgentId) return;
-    const clientName = this.getClientDisplayName();
-    try {
-      await fetch(`${this.options.registryUrl}/events`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...params,
-          timestamp: new Date().toISOString(),
-          clientId: this.clientAgentId,
-          clientName,
-        }),
-      });
-    } catch { /* ignore */ }
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────────
@@ -1883,11 +868,6 @@ export class McpAgentBridge {
         channelMessage.conversationId,
         channelMessage.messageId,
       );
-      const targetClientName = client.clientInfo?.clientName?.toLowerCase();
-      const inboxFirst = targetClientName === "codex"
-        || targetClientName === "codex-cli"
-        || targetClientName === "gemini"
-        || targetClientName === "gemini-cli";
 
       return {
         content: [{
@@ -1898,10 +878,7 @@ export class McpAgentBridge {
             `  conversationId: ${channelMessage.conversationId}`,
             `  messageId:      ${channelMessage.messageId}`,
             `  deliveryState:  ${deliveryState ?? "pending"}`,
-            inboxFirst
-              ? "Target is inbox-first. To check for a reply use channel_inbox — the conversationId above is stable and deterministic for this pair."
-              : "",
-          ].filter(Boolean).join("\n"),
+          ].join("\n"),
         }],
       };
     } catch (err) {
@@ -1914,7 +891,7 @@ export class McpAgentBridge {
 
   // ── HTTP transport ─────────────────────────────────────────────────────────
 
-  private async startHttpTransport(port: number, agents: RegistryEntry[]): Promise<void> {
+  private async startHttpTransport(port: number): Promise<void> {
     const { default: express } = await import("express");
     const { SSEServerTransport } = await import("@modelcontextprotocol/sdk/server/sse.js");
 
@@ -1936,7 +913,6 @@ export class McpAgentBridge {
     app.get("/", (_req, res) => {
       res.json({
         server: "agent-bridge MCP",
-        agents: agents.length,
         endpoints: { sse: "/mcp", message: "/mcp/message" },
       });
     });
