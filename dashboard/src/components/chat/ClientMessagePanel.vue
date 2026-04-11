@@ -82,7 +82,7 @@
               v-if="chatStore.messages.length > 0"
               class="btn-ghost btn-ghost--sm"
               :disabled="chatStore.isStreaming"
-              @click="chatStore.sendReminder()"
+              @click="sendReminder()"
             >
               remind
             </button>
@@ -116,6 +116,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useChatStore } from "@/stores/chat";
+import { useRegistryStore } from "@/stores/registry";
 import { dashboardChannelRuntime } from "@/lib/channel-runtime";
 import { fetchChannelConversations } from "@/lib/registry-client";
 import AgentSelector from "./AgentSelector.vue";
@@ -123,6 +124,7 @@ import ChatMessage from "./ChatMessage.vue";
 import type { ChannelConversationListEntry, WsMessage } from "@/types";
 
 const chatStore = useChatStore();
+const registryStore = useRegistryStore();
 
 const input = ref("");
 const inputEl = ref<HTMLTextAreaElement | null>(null);
@@ -133,6 +135,19 @@ const historyLoading = ref(false);
 const clientConversations = ref<ChannelConversationListEntry[]>([]);
 
 const selectedClient = computed(() => chatStore.selectedClient);
+
+// If the selected client's project has a bridge daemon, route messages through it instead.
+const effectiveTargetId = computed<string | undefined>(() => {
+  const client = selectedClient.value;
+  if (!client) return undefined;
+  const bridge = registryStore.agentList.find(
+    (a) =>
+      a.entryType === "client" &&
+      a.clientInfo?.clientVersion === "app-server-bridge" &&
+      a.projectPath === client.projectPath,
+  );
+  return bridge?.agentId ?? undefined;
+});
 const canSend = computed(
   () => !!selectedClient.value && !chatStore.isStreaming && input.value.trim().length > 0,
 );
@@ -182,7 +197,11 @@ async function submit(): Promise<void> {
   input.value = "";
   await nextTick();
   autoResize();
-  await chatStore.sendMessage(text);
+  await chatStore.sendMessage(text, effectiveTargetId.value);
+}
+
+async function sendReminder(): Promise<void> {
+  await chatStore.sendReminder(effectiveTargetId.value);
 }
 
 function autoResize(): void {

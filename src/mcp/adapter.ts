@@ -42,7 +42,16 @@ function formatAgentsSummary(agents: RegistryEntry[]): string {
     return "No agents currently connected. Start one with: agent-bridge start <project-path>";
   }
   const runnableAgents = agents.filter((a) => a.entryType !== "client" || a.card.skills.length > 0);
-  const clients = agents.filter((a) => a.entryType === "client" && a.card.skills.length === 0);
+  // Exclude internal infrastructure from the visible client list:
+  //   - dashboard UI (agentId: client-dashboard-ui)
+  //   - bridge daemons (clientVersion: app-server-bridge) — implementation detail, not a send target
+  const clients = agents.filter(
+    (a) =>
+      a.entryType === "client" &&
+      a.card.skills.length === 0 &&
+      a.agentId !== "client-dashboard-ui" &&
+      a.clientInfo?.clientVersion !== "app-server-bridge",
+  );
 
   return [
     `${agents.length} entry(ies) connected via agent-bridge:\n`,
@@ -725,7 +734,13 @@ export class McpAgentBridge {
 
   private async resolveClientSession(params: { clientId?: string; project?: string; clientType?: string; conversationId?: string }): Promise<RegistryEntry> {
     const all = await this.registry.listAgents();
-    const clients = all.filter((entry) => entry.entryType === "client");
+    // Exclude infrastructure entries: dashboard UI and bridge daemons are never valid send targets
+    // (bridges are preferred internally via getPriority, but the dashboard should never receive channel messages)
+    const clients = all.filter(
+      (entry) =>
+        entry.entryType === "client" &&
+        entry.agentId !== "client-dashboard-ui",
+    );
 
     // 1. Direct clientId lookup (most specific — always wins)
     if (params.clientId) {

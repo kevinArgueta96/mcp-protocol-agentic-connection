@@ -38,7 +38,7 @@ export class ChannelChatSession {
     this.isStreaming.value = false;
   }
 
-  async sendMessage(text: string): Promise<void> {
+  async sendMessage(text: string, toAgentIdOverride?: string): Promise<void> {
     if (!this.selectedClient.value || this.isStreaming.value || !text.trim()) return;
 
     this.isStreaming.value = true;
@@ -46,18 +46,20 @@ export class ChannelChatSession {
 
     const latestMessage = this.messages.value.at(-1);
     const replyTo = latestMessage?.messageId;
+    // Allow callers to redirect to a bridge daemon when the displayed client has one
+    const toAgentId = toAgentIdOverride ?? this.selectedClient.value.agentId;
 
     try {
       const message = await dashboardChannelRuntime.sendMessage({
         conversationId: this.activeConversationId.value ?? undefined,
         replyTo,
-        toAgentId: this.selectedClient.value.agentId,
+        toAgentId,
         content: text.trim(),
         expectsResponse: true,
         requiresAck: true,
         expiresAt: Date.now() + 300_000,
         meta: {
-          targetClientId: this.selectedClient.value.agentId,
+          targetClientId: toAgentId,
           targetProject: this.selectedClient.value.projectPath,
           source: "dashboard-chat",
         },
@@ -83,7 +85,7 @@ export class ChannelChatSession {
     }
   }
 
-  async sendReminder(): Promise<void> {
+  async sendReminder(toAgentIdOverride?: string): Promise<void> {
     if (!this.selectedClient.value || this.isStreaming.value || !this.activeConversationId.value) return;
 
     const latestMessage = this.messages.value.at(-1);
@@ -93,6 +95,7 @@ export class ChannelChatSession {
     const reminderText =
       `Reminder for ${clientLabel}: you have a pending channel conversation. ` +
       "Review the latest message and reply in the same thread to continue.";
+    const toAgentId = toAgentIdOverride ?? this.selectedClient.value.agentId;
 
     this.isStreaming.value = true;
     this.error.value = null;
@@ -101,13 +104,13 @@ export class ChannelChatSession {
       const message = await dashboardChannelRuntime.sendMessage({
         conversationId: this.activeConversationId.value,
         replyTo,
-        toAgentId: this.selectedClient.value.agentId,
+        toAgentId,
         content: reminderText,
         expectsResponse: true,
         requiresAck: true,
         expiresAt: Date.now() + 300_000,
         meta: {
-          targetClientId: this.selectedClient.value.agentId,
+          targetClientId: toAgentId,
           targetProject: this.selectedClient.value.projectPath,
           source: "dashboard-chat-reminder",
           reminder: true,
