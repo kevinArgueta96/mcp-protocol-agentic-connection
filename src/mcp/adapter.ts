@@ -792,6 +792,10 @@ export class McpAgentBridge {
     if (matches.length > 1) {
       const CLIENT_PRIORITY = ["claude-code", "claude", "gemini-cli", "gemini", "codex-cli", "codex"];
       const getPriority = (e: RegistryEntry) => {
+        // App-server bridge daemons always win — they inject messages as turns into the
+        // running app-server, which is exactly what we want when multiple Codex sessions
+        // coexist (e.g. bridge + TUI MCP client both registered for the same project).
+        if (e.clientInfo?.clientVersion === "app-server-bridge") return -1;
         const name = e.clientInfo?.clientName?.toLowerCase() ?? "";
         const idx = CLIENT_PRIORITY.findIndex((p) => name.includes(p));
         return idx === -1 ? CLIENT_PRIORITY.length : idx;

@@ -189,8 +189,8 @@ class DashboardChannelRuntime {
       }
     };
 
-    this.ws.onclose = () => {
-      if (!this.destroyed) {
+    this.ws.onclose = (event: CloseEvent) => {
+      if (!this.destroyed && event.code !== 4001) {
         this.emit("status", "disconnected");
         this.scheduleReconnect();
       }
