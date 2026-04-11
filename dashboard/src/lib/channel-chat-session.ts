@@ -150,13 +150,15 @@ export class ChannelChatSession {
 
   private handleChannelMessage(message: ChannelMessagePayload): void {
     if (!this.selectedClient.value) return;
-    if (!this.clientProfile.matchesClientConversation(message, DASHBOARD_AGENT_ID, this.selectedClient.value.agentId)) return;
 
-    if (this.activeConversationId.value && message.conversationId !== this.activeConversationId.value) {
-      return;
-    }
-
-    if (!this.activeConversationId.value) {
+    // When an active conversation exists, match by conversationId + recipient only.
+    // This handles bridge-routed replies where fromAgentId may differ from selectedClient.
+    if (this.activeConversationId.value) {
+      if (message.conversationId !== this.activeConversationId.value) return;
+      if (message.toAgentId !== DASHBOARD_AGENT_ID) return;
+    } else {
+      // No active conversation yet — use full party check to establish one.
+      if (!this.clientProfile.matchesClientConversation(message, DASHBOARD_AGENT_ID, this.selectedClient.value.agentId)) return;
       this.activeConversationId.value = message.conversationId;
     }
 
