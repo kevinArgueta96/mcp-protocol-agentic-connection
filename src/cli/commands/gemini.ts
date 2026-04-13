@@ -1,8 +1,11 @@
 import type { Command } from "commander";
 import chalk from "chalk";
 import { GeminiTmuxBridgeService } from "../../client/gemini-tmux-bridge-service.js";
+import { GeminiAcpBridge } from "../../client/gemini-acp-bridge.js";
 import { detectCurrentTmuxBinding } from "../../client/codex-tmux.js";
 import { readCurrentGeminiSession, writeCurrentGeminiSession } from "../../client/gemini-session-files.js";
+import { RegistryServer } from "../../registry/server.js";
+import { RegistryClient } from "../../client/registry-client.js";
 
 export function registerGeminiCommand(program: Command): void {
   const gemini = program.command("gemini").description("Gemini CLI-specific utilities");
@@ -93,5 +96,120 @@ export function registerGeminiCommand(program: Command): void {
         service.stop();
         process.exit(0);
       });
+    });
+
+  // ── gemini app-bridge ──────────────────────────────────────────────────────
+  gemini
+    .command("app-bridge")
+    .description(
+      "Start a Gemini ACP bridge daemon. Spawns `gemini --acp` and connects it to " +
+      "the registry. Incoming channel messages are delivered as ACP session/prompt " +
+      "calls and Gemini's responses are relayed back to the channel.",
+    )
+    .option("--registry-url <url>", "Registry URL", "http://localhost:4999")
+    .option("--project <path>", "Project path for client registration (default: cwd)")
+    .option("--gemini-command <cmd>", "Gemini CLI executable name or path", "gemini")
+    .option("--debug", "Enable ACP debug logging")
+    .action(async (options) => {
+      const projectPath = options.project ?? process.cwd();
+
+      const bridge = new GeminiAcpBridge({
+        registryUrl: options.registryUrl,
+        projectPath,
+        geminiCommand: options.geminiCommand,
+        debug: options.debug === true,
+      });
+
+      console.log(chalk.bold("\n[agent-bridge] Gemini ACP bridge\n"));
+      console.log(`  Project:  ${projectPath}`);
+      console.log(`  Registry: ${options.registryUrl}`);
+      console.log(`  Command:  ${options.geminiCommand}`);
+      console.log();
+
+      try {
+        await bridge.start();
+      } catch (err) {
+        console.error(chalk.red("Failed to start bridge:"), err instanceof Error ? err.message : err);
+        process.exit(1);
+      }
+
+      console.log(chalk.green("✓") + " Gemini ACP bridge running\n");
+
+      const shutdown = async () => {
+        console.log("\n[agent-bridge] Shutting down…");
+        await bridge.stop();
+        process.exit(0);
+      };
+
+      process.on("SIGINT", () => void shutdown());
+      process.on("SIGTERM", () => void shutdown());
+
+      // Keep process alive
+      await new Promise<never>(() => undefined);
+    });
+
+  // ── gemini start ───────────────────────────────────────────────────────────
+  gemini
+    .command("start")
+    .description(
+      "Start Gemini with full ACP bridge in one command. Auto-starts the registry " +
+      "if not running, then spawns the ACP bridge (which drives `gemini --acp`).",
+    )
+    .option("--project <path>", "Project path", process.cwd())
+    .option("--registry-url <url>", "Registry URL", "http://localhost:4999")
+    .option("--gemini-command <cmd>", "Gemini CLI executable name or path", "gemini")
+    .option("--debug", "Enable ACP debug logging")
+    .action(async (options) => {
+      const projectPath = options.project ?? process.cwd();
+      const registryUrl: string = options.registryUrl;
+
+      console.log(chalk.bold("\n[agent-bridge] gemini start\n"));
+      console.log(`  Project:  ${projectPath}`);
+      console.log(`  Registry: ${registryUrl}`);
+      console.log(`  Command:  ${options.geminiCommand}`);
+      console.log();
+
+      // 1. Ensure registry is running — embed one if not reachable
+      let embeddedRegistry: RegistryServer | null = null;
+      const registryClient = new RegistryClient(registryUrl);
+      try {
+        await registryClient.health();
+        console.log(chalk.green("✓") + " Registry already running at " + registryUrl);
+      } catch {
+        console.log(chalk.yellow("→") + " Registry not found — starting embedded registry…");
+        const registryPort = Number(new URL(registryUrl).port) || 4999;
+        embeddedRegistry = new RegistryServer(registryPort);
+        await embeddedRegistry.start();
+        console.log(chalk.green("✓") + " Embedded registry started on :" + registryPort);
+      }
+
+      // 2. Start the ACP bridge
+      const bridge = new GeminiAcpBridge({
+        registryUrl,
+        projectPath,
+        geminiCommand: options.geminiCommand,
+        debug: options.debug === true,
+      });
+
+      try {
+        await bridge.start();
+      } catch (err) {
+        console.error(chalk.red("Failed to start Gemini ACP bridge:"), err instanceof Error ? err.message : err);
+        if (embeddedRegistry) await embeddedRegistry.stop();
+        process.exit(1);
+      }
+
+      console.log(chalk.green("✓") + " Gemini ACP bridge ready\n");
+
+      const cleanup = async () => {
+        await bridge.stop();
+        if (embeddedRegistry) await embeddedRegistry.stop();
+      };
+
+      process.on("SIGINT", () => void cleanup().then(() => process.exit(0)));
+      process.on("SIGTERM", () => void cleanup().then(() => process.exit(0)));
+
+      // Keep process alive
+      await new Promise<never>(() => undefined);
     });
 }
