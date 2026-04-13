@@ -30,7 +30,14 @@
 - [MCP integration](#mcp-integration)
   - [.mcp.json](#mcpjson)
   - [Available tools](#available-tools)
-  - [Channel protocol](#channel-protocol)
+- [Channels](#channels)
+  - [Conversation model](#conversation-model)
+  - [Message payload](#message-payload)
+  - [Delivery states](#delivery-states)
+  - [MCP tool reference](#mcp-tool-reference)
+  - [HTTP API](#http-api)
+  - [WebSocket events](#websocket-events)
+  - [End-to-end example](#end-to-end-example)
 - [Codex bridge](#codex-bridge)
 - [Dashboard](#dashboard)
 - [Skills](#skills)
@@ -252,33 +259,231 @@ Check live tool and agent status at any time:
 pnpm run dev -- mcp status
 ```
 
-### Channel protocol
+---
 
-Every inter-agent message travels as a `ChannelMessage`. The full payload shape:
+## Channels
+
+Channels are the bidirectional messaging layer of agent-bridge. They let any agent or client session — Claude Code, Codex, Gemini CLI, the dashboard — send and receive structured conversational messages through the registry, with full delivery tracking and SQLite persistence.
+
+This is the core feature of the project. Everything else (MCP tools, bridge daemons, dashboard chat) is built on top of it.
+
+### Conversation model
+
+Every message belongs to a **conversation** identified by a `conversationId`. A conversation is a thread of related turns between two parties — like a back-and-forth between Claude Code and Codex.
+
+```
+Conversation abc-123
+  ├── Message m1  from: client-dashboard-ui  to: client-codex-bridge-xyz  "Review routes.ts"
+  ├── Ack     a1  state: delivered_to_bridge
+  ├── Message m2  from: client-codex-bridge-xyz  to: client-dashboard-ui  "Found 2 issues…"
+  └── Ack     a2  state: answered
+```
+
+Key properties:
+- `conversationId` is stable for the entire thread — use it to continue an existing conversation.
+- `replyTo` links a message to the specific `messageId` it responds to.
+- `expectsResponse: true` marks a message as pending until a reply arrives.
+- `requiresAck: true` requests an explicit delivery acknowledgement from the recipient.
+- All messages and ACKs are persisted in SQLite and survive registry restarts.
+
+### Message payload
 
 ```typescript
 interface ChannelMessage {
-  conversationId:    string;   // Groups related turns (stable per thread)
-  messageId:         string;   // Unique per message
-  replyTo?:          string;   // messageId this is responding to
-  fromAgentId:       string;   // Sender's registry ID
-  toAgentId?:        string;   // Recipient's registry ID (omit for broadcast)
-  kind:              "chat" | "task_request" | "task_result" | "ack" | "error" | "presence";
-  content:           string;   // Human-readable payload
-  createdAt:         number;   // Unix ms timestamp
-  requiresAck?:      boolean;  // Request delivery acknowledgement
-  expectsResponse?:  boolean;  // Sender is awaiting a reply turn
+  conversationId:   string;    // Thread identifier — stable per conversation
+  messageId:        string;    // Unique per message (UUID)
+  fromAgentId:      string;    // Sender's registry ID (required)
+  fromAgentName?:   string;    // Human-readable sender name
+  toAgentId?:       string;    // Recipient's registry ID (omit for broadcast)
+  replyTo?:         string;    // messageId this turn responds to
+  taskId?:          string;    // Optional task association
+  kind:             "chat" | "task_request" | "task_result" | "ack" | "error" | "presence";
+  content:          string;    // Message body
+  meta?:            Record<string, unknown>;  // Arbitrary metadata
+  createdAt:        number;    // Unix ms timestamp (set by registry)
+  expiresAt?:       number;    // Expiry timestamp in ms
+  requiresAck?:     boolean;   // Request delivery acknowledgement
+  expectsResponse?: boolean;   // Sender awaits a reply
+  attemptCount?:    number;    // Delivery attempt counter (for retries)
 }
 ```
 
-Delivery state progression tracked per message via `ChannelAck`:
+### Delivery states
+
+Each message transitions through delivery states tracked via `ChannelAck` records:
 
 ```
-queued  ->  delivered_to_bridge  ->  displayed_to_client  ->  answered
-                                                          `->  failed
+queued
+  └─→ delivered_to_bridge       (bridge daemon received it)
+        └─→ displayed_to_client (client session received it)
+              ├─→ answered       (recipient replied)
+              └─→ failed         (delivery or reply failed)
 ```
 
-The registry stores these states in SQLite and exposes them via `GET /channels/:conversationId`.
+ACK records carry: `conversationId`, `messageId`, `state`, `actorId`, `actorType` (`registry | bridge | client | agent`), and `timestamp`.
+
+### MCP tool reference
+
+These are the four tools Claude Code gets after configuring agent-bridge as an MCP server.
+
+#### `list_agents`
+
+Discover what agents and client sessions are currently connected.
+
+```
+Parameters:
+  skill?        string   — Filter to agents that expose this skill
+  project?      string   — Filter by project name or path substring
+  healthyOnly?  boolean  — Only show healthy agents (default: true)
+  includeClients? boolean — Include passive client sessions (default: false)
+```
+
+#### `message_client_session`
+
+Send a channel message to a client session. The tool resolves the best target automatically.
+
+```
+Parameters:
+  message       string   — Message body (required)
+  project?      string   — Project name or path to identify the target session
+  clientId?     string   — Exact agentId of the target (skips all resolution)
+  clientType?   string   — Disambiguate when a project has multiple sessions
+                           ("claude-code" | "codex" | "gemini")
+  conversationId? string — Continue an existing conversation thread
+  replyTo?      string   — messageId this message responds to
+  taskId?       string   — Associate with a task
+  expectsResponse? boolean — Whether you expect a reply (default: true)
+  timeoutMs?    number   — Ms before the message expires without a reply
+```
+
+**Target resolution order:**
+1. `clientId` provided → direct lookup, no further resolution
+2. No `clientId` and no `project`, but `conversationId` provided → resolves from conversation history
+3. `project` provided → filter by project path/name match
+4. Multiple matches → sorted by client type priority: `app-server-bridge` (-1) > `claude-code` > `claude` > `gemini-cli` > `gemini` > `codex-cli` > `codex`
+
+Returns: `toAgentId`, `conversationId`, `messageId`, `deliveryState`.
+
+#### `channel_inbox`
+
+Inspect pending conversations — messages that arrived but haven't been replied to yet.
+
+```
+Parameters:
+  pendingOnly?    boolean — Only show conversations awaiting reply (default: true)
+  expiredOnly?    boolean — Only show conversations past their expiry
+  limit?          number  — Max conversations when pendingOnly=false (default: 10)
+  includeMessages? boolean — Include full message history per conversation
+```
+
+Returns an array of conversation entries. Each entry includes a `replyWith` object with the exact values to pass to `reply`:
+
+```json
+{
+  "conversationId": "abc-123",
+  "status": "pending",
+  "lastMessagePreview": "Review src/api/routes.ts for N+1 queries",
+  "replyWith": {
+    "agentId": "client-codex-bridge-xyz",
+    "conversationId": "abc-123",
+    "replyTo": "msg-456"
+  }
+}
+```
+
+#### `reply`
+
+Respond to a pending channel message. Use the `replyWith` values from `channel_inbox`.
+
+```
+Parameters:
+  agentId        string  — fromAgentId of the message you're replying to (required)
+  conversationId string  — conversationId from channel_inbox replyWith (required)
+  replyTo        string  — messageId from channel_inbox replyWith (required)
+  message        string  — Your reply content (required)
+  taskId?        string  — Task association (optional)
+  skillId?       string  — Fallback skill for task invocation (optional)
+```
+
+### HTTP API
+
+The registry exposes a REST API for channel operations at `http://localhost:4999`:
+
+| Method | Path | Description |
+| :--- | :--- | :--- |
+| `POST` | `/channel/messages` | Create and broadcast a new channel message |
+| `POST` | `/channel/acks` | Record a delivery acknowledgement |
+| `GET` | `/channel/conversations` | List conversations (`?pending=true` for pending only) |
+| `GET` | `/channel/conversations/:id` | Full conversation snapshot with messages and ACKs |
+| `POST` | `/channel/conversations/:id/suppress` | Hide a conversation from inbox listings |
+| `DELETE` | `/channel/conversations/:id/suppress` | Restore a suppressed conversation |
+| `POST` | `/channel/messages/:convId/:msgId/retry` | Re-deliver a message (increments `attemptCount`) |
+| `POST` | `/notify-claude` | Shorthand: send a channel notification to a Claude Code session |
+
+**Create a message (POST `/channel/messages`):**
+
+```json
+{
+  "fromAgentId": "my-agent-id",
+  "toAgentId": "client-dashboard-ui",
+  "kind": "chat",
+  "content": "Task complete. Found 3 endpoints.",
+  "conversationId": "abc-123",
+  "replyTo": "msg-456",
+  "expectsResponse": false,
+  "requiresAck": true
+}
+```
+
+### WebSocket events
+
+Connect to `ws://localhost:4999/ws` to receive real-time channel events. Send `{ "type": "identify", "agentId": "<your-id>" }` immediately after connecting to enable targeted delivery.
+
+| Event type | Payload | When |
+| :--- | :--- | :--- |
+| `channel.message` | `ChannelMessage` | A new message was posted to the registry |
+| `channel.ack` | `ChannelAck` | A delivery state changed |
+| `channel.conversation.suppressed` | `{ conversationId }` | A conversation was hidden |
+| `channel.conversation.revived` | `{ conversationId }` | A suppressed conversation was restored |
+
+> **Targeted delivery:** If a message has `toAgentId`, the registry delivers it directly to that agent's WS connection before broadcasting to all subscribers.
+
+### End-to-end example
+
+Claude Code asks Codex to review a file, waits for the answer, and closes the thread:
+
+```
+# Step 1 — discover what's connected
+list_agents
+→ "codex" session active on project /projects/my-app
+
+# Step 2 — send the request
+message_client_session(
+  project: "my-app",
+  message: "Review src/api/routes.ts for N+1 queries",
+  expectsResponse: true,
+  timeoutMs: 120000
+)
+→ conversationId: "abc-123", messageId: "msg-001", deliveryState: "queued"
+
+# Step 3 — Codex processes the turn via app-server bridge, sends reply
+# (happens automatically via CodexAppServerBridge → turn/start JSON-RPC)
+
+# Step 4 — check the inbox
+channel_inbox
+→ conversationId: "abc-123", status: "pending"
+  lastMessagePreview: "Found 2 N+1 issues in getUserPosts() and..."
+  replyWith: { agentId: "client-codex-bridge-xyz", conversationId: "abc-123", replyTo: "msg-002" }
+
+# Step 5 — acknowledge and close the thread
+reply(
+  agentId: "client-codex-bridge-xyz",
+  conversationId: "abc-123",
+  replyTo: "msg-002",
+  message: "Thanks, applying the fix now."
+)
+→ Reply sent. Conversation answered.
+```
 
 ---
 
