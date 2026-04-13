@@ -1,290 +1,490 @@
 # agent-bridge
 
-Hub local de comunicación entre agentes para terminal y proyectos en desarrollo. `agent-bridge` conecta agentes vía HTTP, WebSocket, JSON-RPC 2.0 y expone esa red como herramientas MCP para clientes como Claude Code, Codex o Gemini CLI.
+<!-- TODO: Add SVG logo/hero image here -->
 
-El repositorio tiene dos superficies principales:
+<div style="text-align: center;">
+  <img alt="version" src="https://img.shields.io/badge/version-0.1.0-blue?style=for-the-badge" />
+  <img alt="node" src="https://img.shields.io/badge/node-%3E%3D22-brightgreen?style=for-the-badge&logo=node.js" />
+  <img alt="license" src="https://img.shields.io/badge/license-MIT-lightgrey?style=for-the-badge" />
+  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.x-3178c6?style=for-the-badge&logo=typescript" />
+</div>
 
-- Runtime TypeScript con CLI, registry, agentes A2A, clientes y adaptador MCP.
-- Dashboard Vue 3 para visualizar agentes y gestionar conversaciones de canal en tiempo real.
+**Let Claude Code, Codex, and Gemini CLI talk to each other — over MCP, locally, bidirectionally.**
 
-## Estado actual
+`agent-bridge` is a local communication hub for AI agents. It provides service discovery, bidirectional messaging, and MCP tool exposure so that Claude Code, Codex, and Gemini CLI running in separate projects can delegate tasks, exchange context, and coordinate work without leaving the local machine.
 
-El proyecto compila y cubre el flujo local completo incluyendo mensajería conversacional bidireccional:
+---
 
-- `pnpm run build` en la raíz compila el backend TypeScript.
-- `pnpm run build` dentro de `dashboard/` compila el frontend Vue.
-- El registry expone HTTP y WebSocket en `localhost:4999`.
-- Los agentes se registran en el registry, publican heartbeat y emiten eventos de tareas.
-- El dashboard consume el WebSocket del registry y permite chat bidireccional con agentes.
-- El adaptador MCP arranca en `stdio` y expone 4 tools: `list_agents`, `channel_inbox`, `message_client_session`, `reply`.
-- Canal bidireccional con mensajería conversacional — `conversationId`, `messageId`, ACKs, estado de entrega.
-- Persistencia de mensajes de canal en SQLite (`.agent-bridge/registry.sqlite`).
-- `CodexAppServerBridge` — daemon que recibe mensajes de canal y los inyecta en el app-server de Codex vía JSON-RPC `turn/start`.
-- Dashboard enruta mensajes al bridge correcto automáticamente cuando Codex está activo.
+<details>
+<summary><strong>Table of Contents</strong></summary>
 
-Limitaciones actuales:
+- [TL;DR — 60-second quickstart](#tldr--60-second-quickstart)
+- [Why agent-bridge?](#why-agent-bridge)
+- [How it works](#how-it-works)
+- [Getting started](#getting-started)
+  - [Requirements](#requirements)
+  - [Install](#install)
+  - [1. Start the registry](#1-start-the-registry)
+  - [2. Start an agent](#2-start-an-agent)
+  - [3. Configure MCP](#3-configure-mcp)
+- [MCP integration](#mcp-integration)
+  - [.mcp.json](#mcpjson)
+  - [Available tools](#available-tools)
+  - [Channel protocol](#channel-protocol)
+- [Codex bridge](#codex-bridge)
+- [Dashboard](#dashboard)
+- [Skills](#skills)
+  - [Built-in skills](#built-in-skills)
+  - [Auto-detected skills](#auto-detected-skills)
+- [CLI reference](#cli-reference)
+- [Scripts](#scripts)
+- [Architecture](#architecture)
+- [Limitations](#limitations)
+- [Contributing](#contributing)
+- [License](#license)
 
-- El transporte es local por defecto y hace bind en `localhost`.
-- `tasks/sendSubscribe` y el streaming A2A no están implementados end-to-end.
-- No hay autenticación ni endurecimiento de seguridad para uso fuera de entorno local.
+</details>
 
-## Requisitos
+---
 
-- Node.js `>=22`
-- `pnpm`
-
-## Instalación
+## TL;DR — 60-second quickstart
 
 ```bash
+# 1. Install
 pnpm install
-cd dashboard && pnpm install
+
+# 2. Start the registry
+pnpm run dev -- registry start
+
+# 3. In a second terminal — start an agent for your project
+pnpm run dev -- start .
+
+# 4. Generate .mcp.json for Claude Code
+pnpm run dev -- mcp config --write
+
+# 5. Restart Claude Code — it now has 4 MCP tools
 ```
 
-## Estructura rápida
+Claude Code now has four MCP tools: `list_agents`, `channel_inbox`, `message_client_session`, `reply`.
 
-```text
-.
-├── src/
-│   ├── agent/
-│   │   ├── server.ts                   # AgentServer: HTTP + WS + A2A + AG-UI
-│   │   ├── handlers.ts                 # TaskStore, RequestRouter, skill inference
-│   │   ├── card.ts                     # Generador de AgentCard A2A
-│   │   ├── project-detector.ts         # Detección de tipo de proyecto
-│   │   └── ag-ui-events.ts             # Helpers para AG-UI SSE events
-│   ├── cli/                            # Comandos agent-bridge
-│   ├── client/
-│   │   ├── codex-app-server-bridge.ts  # Bridge daemon para Codex
-│   │   └── ...
-│   ├── mcp/
-│   │   └── adapter.ts                  # McpAgentBridge: 4 MCP tools + resolución de sesión
-│   ├── registry/
-│   │   ├── server.ts                   # RegistryServer HTTP + WebSocket
-│   │   ├── channel-store.ts            # Persistencia SQLite de mensajes y ACKs
-│   │   └── ...
-│   ├── skills/                         # Skills framework y builtins
-│   └── types/                          # Tipos A2A, JSON-RPC y mensajes de canal
-├── dashboard/                          # SPA Vue 3 + Pinia + Vue Router
-├── PLAN.md                             # Arquitectura y estado del proyecto
-└── docs/                               # Documentación técnica detallada
+---
+
+## Why agent-bridge?
+
+- **Local-first, zero infrastructure.** Everything runs on `localhost`. No cloud relay, no auth tokens, no subscriptions. The registry binds to `:4999`; agents bind to `:5001+`.
+- **Native MCP integration.** Exposes the agent network as first-class MCP tools via `stdio` transport, so Claude Code picks them up automatically from `.mcp.json` without any plugin or wrapper.
+- **Bidirectional channel, not fire-and-forget.** Messages carry a `conversationId`, delivery ACKs are tracked in SQLite, and the `reply` tool closes the loop back to the sender. Claude Code can ask Codex a question and receive the answer in the same conversation thread.
+- **Codex app-server bridge.** `CodexAppServerBridge` injects incoming channel messages directly into the Codex app-server via `turn/start` JSON-RPC, so Codex actually processes requests rather than just receiving raw text.
+
+---
+
+## How it works
+
+```
+Claude Code / Codex / Gemini CLI / Dashboard
+              |
+              v
+    ┌─────────────────────────────────────┐
+    │       RegistryServer :4999          │
+    │  HTTP  /agents /health /channels    │
+    │  WS    /ws  (relay + broadcast)     │
+    │  SQLite .agent-bridge/registry.sqlite│
+    └──────┬─────────────┬───────────────┘
+           │             │
+           v             v
+  ┌────────────────┐  ┌──────────────────────────┐
+  │  AgentServer   │  │  McpAgentBridge (stdio)   │
+  │  :5001+        │  │  list_agents              │
+  │  A2A JSON-RPC  │  │  channel_inbox            │
+  │  Skills        │  │  message_client_session   │
+  │  AG-UI SSE     │  │  reply                    │
+  └────────────────┘  └──────────────────────────┘
+
+  ┌──────────────────────────────────────────────┐
+  │  CodexAppServerBridge  (separate daemon)      │
+  │  Spawns: codex app-server (:4500)             │
+  │  Connects: WS to registry + WS to app-server  │
+  │  Injects channel messages via turn/start       │
+  └──────────────────────────────────────────────┘
 ```
 
-## Quickstart local
+All three runtime components — `AgentServer`, `McpAgentBridge`, and `CodexAppServerBridge` — connect independently to the registry. None depends on the others being present.
 
-### 1. Levantar el registry
+**Message flow — Claude Code delegates a task to Codex:**
+
+```plaintext
+# sequence
+Claude Code
+  calls message_client_session MCP tool
+  McpAgentBridge posts ChannelMessage to RegistryServer /channels
+  RegistryServer broadcasts via WS to all subscribers
+  CodexAppServerBridge receives channel.message event
+  CodexAppServerBridge calls turn/start on codex app-server
+  Codex processes the turn and produces a reply
+  CodexAppServerBridge sends reply ChannelMessage back to registry
+  McpAgentBridge receives channel.message with the reply
+  McpAgentBridge surfaces reply in channel_inbox
+  Claude Code calls reply tool to close the conversation thread
+```
+
+---
+
+## Getting started
+
+### Requirements
+
+- Node.js `>=22`
+- pnpm >= 9
+- (Optional) `codex` CLI in `$PATH` for Codex bridge features
+- (Optional) `gemini` CLI in `$PATH` for Gemini bridge features
+
+### Install
+
+```bash
+git clone <repo-url>
+cd agent-bridge
+pnpm install
+```
+
+### 1. Start the registry
+
+The registry is the hub all agents connect to. Start it once per machine session:
 
 ```bash
 pnpm run dev -- registry start
+# Registry running on http://localhost:4999
 ```
 
-Registry por defecto:
+In auto mode (`mcp start` default), the registry starts embedded — no manual step needed.
 
-- HTTP: `http://localhost:4999`
-- WebSocket: `ws://localhost:4999/ws`
-- Dashboard servido por el registry si existe `dashboard/dist`: `http://localhost:4999/dashboard`
+The registry exposes:
 
-### 2. Levantar un agente en un proyecto
+| Endpoint | Description |
+| :--- | :--- |
+| `http://localhost:4999` | HTTP REST (`/agents`, `/health`, `/channels`) |
+| `ws://localhost:4999/ws` | WebSocket relay and channel broadcast |
+| `http://localhost:4999/dashboard` | Dashboard SPA (requires `pnpm run build:all`) |
+
+### 2. Start an agent
+
+Start an agent server for a project directory:
 
 ```bash
-pnpm run dev -- start .
+pnpm run dev -- start /path/to/my-project
+# Agent started
+#   ID:      a1b2c3d4-...
+#   HTTP:    http://localhost:5001
+#   WS:      ws://localhost:5001/ws
+#   Project: my-project
+#   Skills:  file-search, endpoint-find, code-query, ...
 ```
 
-Al arrancar, el agente:
+> **Note:** Add `--claude` to enable the Claude Code AI backend for richer skill execution (required for `code-review` and `claude-execute` auto-detected skills).
 
-- detecta el tipo de proyecto por archivos conocidos
-- construye su Agent Card
-- expone HTTP y WebSocket
-- se registra en el registry
-- manda heartbeat cada 30 segundos
+### 3. Configure MCP
 
-### 3. Levantar el bridge de Codex (para proyectos Codex)
-
-El bridge daemon conecta el canal de mensajería con el app-server de Codex. Se registra automáticamente con `clientName: "codex"` y `clientVersion: "app-server-bridge"`. Recibe mensajes de canal y los inyecta como turns en Codex vía JSON-RPC `turn/start`.
+Generate the `.mcp.json` entry and write it to the current directory:
 
 ```bash
-codex app-server:bridge start
+pnpm run dev -- mcp config --write
+# .mcp.json written
+# Restart Claude Code to pick up the new server
 ```
 
-### 4. Listar agentes
+---
+
+## MCP integration
+
+### .mcp.json
+
+`agent-bridge mcp config` generates the `.mcp.json` entry. The `AGENT_BRIDGE_PROJECT` environment variable tells the MCP adapter which project to associate the Claude Code session with:
+
+```json
+{
+  "mcpServers": {
+    "agent-bridge": {
+      "command": "node",
+      "args": ["/absolute/path/to/dist/cli/index.js", "mcp", "start"],
+      "env": {
+        "AGENT_BRIDGE_PROJECT": "/absolute/path/to/your/project"
+      }
+    }
+  }
+}
+```
+
+For a globally installed version, pass `--global`:
 
 ```bash
-pnpm run dev -- list
+node dist/cli/index.js mcp config --global --write
 ```
 
-### 5. Abrir el dashboard
+Which produces:
 
-En desarrollo:
+```json
+{
+  "mcpServers": {
+    "agent-bridge": {
+      "command": "pnpm",
+      "args": ["dlx", "agent-bridge", "mcp", "start"],
+      "env": {
+        "AGENT_BRIDGE_PROJECT": "/absolute/path/to/your/project"
+      }
+    }
+  }
+}
+```
+
+The `mcp config` command writes absolute paths for the current machine. Commit the result to the project or add it to your global Claude Code settings.
+
+### Available tools
+
+| Tool | Description |
+| :--- | :--- |
+| `list_agents` | Discover connected agents and client sessions. Excludes dashboard and bridge daemons (internal routing details). |
+| `channel_inbox` | Inspect pending channel conversations with full context and a `replyWith` hint for responding. |
+| `message_client_session` | Send a message to a named client session. Automatically resolves the best target — the bridge daemon is preferred when present. |
+| `reply` | Respond to an incoming channel message, correlating by `conversationId`. |
+
+Check live tool and agent status at any time:
 
 ```bash
-pnpm run dev:dashboard
+pnpm run dev -- mcp status
 ```
 
-Si ya compilaste el dashboard y el registry está arriba:
+### Channel protocol
 
-```text
-http://localhost:4999/dashboard
+Every inter-agent message travels as a `ChannelMessage`. The full payload shape:
+
+```typescript
+interface ChannelMessage {
+  conversationId:    string;   // Groups related turns (stable per thread)
+  messageId:         string;   // Unique per message
+  replyTo?:          string;   // messageId this is responding to
+  fromAgentId:       string;   // Sender's registry ID
+  toAgentId?:        string;   // Recipient's registry ID (omit for broadcast)
+  kind:              "chat" | "task_request" | "task_result" | "ack" | "error" | "presence";
+  content:           string;   // Human-readable payload
+  createdAt:         number;   // Unix ms timestamp
+  requiresAck?:      boolean;  // Request delivery acknowledgement
+  expectsResponse?:  boolean;  // Sender is awaiting a reply turn
+}
 ```
 
-El dashboard detecta automáticamente si el proyecto seleccionado tiene un bridge daemon activo y enruta los mensajes a través de él.
+Delivery state progression tracked per message via `ChannelAck`:
 
-### 6. Usar como servidor MCP
+```
+queued  ->  delivered_to_bridge  ->  displayed_to_client  ->  answered
+                                                          `->  failed
+```
 
-Arranque rápido en `stdio`:
+The registry stores these states in SQLite and exposes them via `GET /channels/:conversationId`.
+
+---
+
+## Codex bridge
+
+The Codex bridge enables bidirectional messaging between Claude Code and Codex by running a daemon (`CodexAppServerBridge`) that:
+
+1. Spawns `codex app-server --listen ws://127.0.0.1:4500`
+2. Connects to it directly as a second WebSocket client and performs the initialize handshake
+3. Registers as a client session in the registry (`clientVersion: "app-server-bridge"`)
+4. Injects incoming `channel.message` events as Codex turns via `turn/start` JSON-RPC
+
+**One-command startup (registry + bridge + Codex TUI):**
 
 ```bash
-pnpm run dev -- mcp start
+pnpm run dev -- codex start --project /path/to/codex-project
+# starts embedded registry if none is running
+# starts bridge daemon
+# launches Codex TUI connected to the app-server
 ```
 
-Generar configuración `.mcp.json`:
+**Bridge daemon only:**
 
 ```bash
-pnpm run dev -- mcp config
+pnpm run dev -- codex app-bridge --project /path/to/codex-project
+# Bridge running. Start Codex with:
+#   codex --remote ws://127.0.0.1:4500
 ```
+
+**tmux integration** — inject follow-up prompts into the active Codex pane:
+
+```bash
+# Bind the current tmux pane to the active Codex client session
+pnpm run dev -- codex tmux-bind
+
+# Poll and inject pending channel messages into the bound pane
+pnpm run dev -- codex tmux-sidecar
+```
+
+> **Note:** If no `CodexAppServerBridge` is running, `message_client_session` falls back to the Codex TUI MCP client (which has a lower routing priority than the bridge daemon).
+
+---
+
+## Dashboard
+
+The dashboard is a Vue 3 SPA served by the registry at `http://localhost:4999/dashboard`. It shows live agent status, channel conversations, and task events.
+
+Build the dashboard:
+
+```bash
+pnpm run build:dashboard
+# or build everything at once
+pnpm run build:all
+```
+
+Open in the browser:
+
+```bash
+pnpm run dev -- dashboard
+# Dashboard: http://localhost:4999/dashboard
+```
+
+The dashboard connects to the registry WebSocket for live updates. Pass `--no-open` to print the URL without launching a browser. For hot-reload development use `pnpm run dev:dashboard` (Vite on `:5173`).
+
+---
+
+## Skills
+
+### Built-in skills
+
+Always available on every `AgentServer`, regardless of project type.
+
+| Skill | Description |
+| :--- | :--- |
+| `file-search` | Find files by glob pattern within the project directory. |
+| `endpoint-find` | Detect HTTP endpoints in backends or API calls in frontends. |
+| `code-query` | Search source code by text or regex. |
+| `prompt-execute` | Render a prompt template with variables and return the result. |
+| `notify-claude` | Send a notification to a Claude Code terminal via the channel. |
+| `shell-execute` | Run an arbitrary shell command in the project directory. |
+
+### Auto-detected skills
+
+Activated based on files found in the project root at startup. Requires `--claude` flag.
+
+| Skill | Activation condition |
+| :--- | :--- |
+| `run-script` | `package.json` present. |
+| `run-tests` | Jest, Vitest, pytest, or `pom.xml` detected. |
+| `docker-build` | `Dockerfile` present. |
+| `code-review` | `src/` directory present (uses Claude Code AI backend). |
+| `claude-execute` | Always registered when `--claude` is active. |
+
+---
+
+## CLI reference
+
+All commands run via `node dist/cli/index.js <command>` (built) or `pnpm run dev -- <command>` (source).
+
+| Command | Description |
+| :--- | :--- |
+| `start [path]` | Start an agent server for the given directory (defaults to `.`). |
+| `registry start` | Start the registry on `:4999`. |
+| `registry status` | Query registry health and agent count. |
+| `list` | List all active agents. |
+| `health [agent-id]` | Check reachability of one or all agents. |
+| `ask <agent> <message>` | Send a one-shot task to a specific agent. |
+| `find <query>` | Search agents by skill or project type. |
+| `delegate <skill-id> <message>` | Send a task to the healthiest agent exposing a given skill. |
+| `broadcast <message>` | Send a message to all healthy agents. |
+| `mcp start` | Start the MCP adapter in `stdio` mode (used by Claude Code). |
+| `mcp config [--write] [--global]` | Print or write `.mcp.json` configuration. |
+| `mcp status` | Show live agents and registered MCP tools. |
+| `mcp server` | Start the MCP adapter in HTTP/SSE mode (port 6000). |
+| `codex start` | One-command: registry + bridge + Codex TUI. |
+| `codex app-bridge` | Start the Codex app-server bridge daemon only. |
+| `codex tmux-bind` | Bind the current tmux pane to the active Codex session. |
+| `codex tmux-sidecar` | Poll and inject pending channel messages into a tmux pane. |
+| `gemini tmux-bind` | Bind the current Gemini CLI session to a tmux pane. |
+| `gemini tmux-sidecar` | Poll and inject pending channel messages into a Gemini tmux pane. |
+| `dashboard` | Print or open the dashboard URL in the browser. |
+
+---
 
 ## Scripts
 
-### Raíz
+| Script | Command | Description |
+| :--- | :--- | :--- |
+| `build` | `tsc` | Compile TypeScript to `dist/`. |
+| `dev` | `tsx src/cli/index.ts` | Run CLI from source without building. |
+| `start` | `node dist/cli/index.js` | Run the compiled CLI. |
+| `clean` | `rm -rf dist` | Delete build output. |
+| `build:dashboard` | `cd dashboard && pnpm run build` | Build the Vue dashboard SPA. |
+| `build:all` | `build` + `build:dashboard` + copy | Full production build including dashboard. |
+| `dev:dashboard` | `cd dashboard && pnpm run dev` | Vite hot-reload dev server for the dashboard. |
+| `test` | `vitest run` | Run all unit tests once. |
+| `lint` | `biome check src/` | Lint and check code style with Biome. |
+| `lint:fix` | `biome check src/ --write` | Auto-fix lint issues. |
 
-| Script | Descripción |
-| --- | --- |
-| `pnpm run build` | Compila TypeScript a `dist/` |
-| `pnpm run dev` | Ejecuta la CLI desde `src/cli/index.ts` con `tsx` |
-| `pnpm run start` | Ejecuta la CLI compilada desde `dist/cli/index.js` |
-| `pnpm run clean` | Borra `dist/` |
-| `pnpm run build:dashboard` | Compila solo el dashboard |
-| `pnpm run build:all` | Compila backend, dashboard y copia `dashboard/dist` a `dist/dashboard` |
-| `pnpm run dev:dashboard` | Levanta Vite para el dashboard |
+---
 
-### Dashboard
-
-Dentro de `dashboard/`:
-
-| Script | Descripción |
-| --- | --- |
-| `pnpm run dev` | Levanta Vite en `localhost:5173` |
-| `pnpm run build` | Ejecuta `vue-tsc --noEmit` y build de Vite |
-| `pnpm run preview` | Sirve el build del dashboard |
-
-## Comandos CLI
-
-| Comando | Descripción |
-| --- | --- |
-| `start [path]` | Arranca un agente para un directorio |
-| `registry start` | Arranca el registry |
-| `registry status` | Consulta salud del registry |
-| `list` | Lista agentes activos |
-| `health [agent-id]` | Verifica alcanzabilidad de agentes |
-| `ask <agent> <message>` | Envía una tarea a un agente |
-| `find <query>` | Busca agentes por skill o proyecto |
-| `delegate <skill-id> <message>` | Envía una tarea al mejor agente saludable con esa skill |
-| `broadcast <message>` | Envía un mensaje a todos los agentes saludables |
-| `mcp start` | Arranca el adaptador MCP en `stdio` |
-| `mcp config` | Imprime o escribe configuración MCP |
-| `dashboard` | Imprime o abre la URL del dashboard |
-
-## Canal de mensajería
-
-El canal es el sistema de comunicación bidireccional principal entre el adaptador MCP y sesiones cliente (Claude Code, Codex, dashboard).
-
-### Tools MCP disponibles
-
-| Tool | Descripción |
-| --- | --- |
-| `list_agents` | Lista agentes y sesiones cliente conectados. Excluye dashboard y bridges (detalles internos de routing) |
-| `channel_inbox` | Consulta conversaciones de canal pendientes con contexto para responder |
-| `message_client_session` | Envía un mensaje de canal a una sesión cliente. Resuelve automáticamente el mejor target (bridge tiene prioridad) |
-| `reply` | Responde a un mensaje de canal entrante correlacionando la conversación |
-
-### Flujo de mensaje a Codex
+## Architecture
 
 ```
-Claude Code → message_client_session("codex", "mensaje")
-                    ↓
-            resolveClientSession()  ← prioriza bridge daemon (prioridad -1) sobre TUI MCP client
-                    ↓
-      CodexAppServerBridge recibe por WS
-                    ↓
-      Inyecta turn/start en el app-server de Codex
-                    ↓
-      Codex responde → reply vía canal → dashboard lo muestra
+src/
+├── agent/
+│   ├── server.ts              AgentServer: HTTP + WS + A2A JSON-RPC + AG-UI SSE
+│   ├── handlers.ts            TaskStore, RequestRouter, skill inference
+│   ├── card.ts                A2A AgentCard builder
+│   ├── project-detector.ts    Project type detection from filesystem
+│   └── ag-ui-events.ts        AG-UI SSE event helpers
+├── cli/
+│   ├── index.ts               CLI entrypoint (Commander)
+│   └── commands/              One file per CLI sub-command
+├── client/
+│   ├── codex-app-server-bridge.ts   CodexAppServerBridge daemon
+│   ├── codex-app-server-client.ts   WS client for the Codex app-server protocol
+│   ├── codex-tmux-bridge-service.ts tmux-based Codex injection sidecar
+│   ├── gemini-tmux-bridge-service.ts tmux-based Gemini injection sidecar
+│   ├── channel-transport.ts         WebSocket transport to registry
+│   ├── channel-client-runtime.ts    WS runtime with reconnect + event bus
+│   ├── conversation-service.ts      High-level send/reply/inbox helpers
+│   └── profiles/                    Client behavior profiles (Claude, Codex, Gemini)
+├── mcp/
+│   └── adapter.ts             McpAgentBridge — 4 MCP tools + session resolution
+├── registry/
+│   ├── server.ts              RegistryServer: HTTP + WebSocket hub (:4999)
+│   ├── store.ts               AgentStore: in-memory + SQLite registry
+│   ├── channel-store.ts       SQLite persistence for channel messages and ACKs
+│   └── events.ts              RegistryEventBus
+├── skills/
+│   ├── framework.ts           BaseSkill, SkillRegistry
+│   ├── state-graph.ts         StateGraph for multi-step skill workflows
+│   └── builtins/              Built-in and auto-detected skill implementations
+└── types/
+    ├── a2a.ts                 A2A spec types (AgentCard, Task, etc.)
+    ├── messages.ts            Registry wire types (AgentMessage, ChannelMessage, etc.)
+    └── skills.ts              Skill context and I/O types
 ```
 
-### Flujo desde el dashboard
+**Persistence:** channel messages and ACKs are stored in SQLite at `.agent-bridge/registry.sqlite` across three tables: `channel_messages`, `channel_acks`, and `channel_suppressed_conversations`.
 
-El panel de chat del dashboard detecta automáticamente si el proyecto seleccionado tiene un bridge activo:
+---
 
-```
-Dashboard → effectiveTargetId computed:
-  - busca agente con clientVersion === "app-server-bridge" en el mismo projectPath
-  - si lo encuentra: envía al bridge.agentId
-  - si no: envía directamente al agentId del cliente
-```
+## Limitations
 
-### Persistencia
+- **Local only.** The registry, agents, and bridges all run on `localhost`. No remote or cloud deployment is supported in v0.1.
+- **Single registry.** All agents must connect to the same registry instance. Multi-registry federation is not implemented.
+- **No authentication.** All local connections are unauthenticated. Do not expose registry or agent ports beyond `localhost`.
+- **SQLite registry store.** The `AgentStore` uses SQLite via `registry.sqlite`. Concurrent write throughput is bounded by SQLite's single-writer model.
+- **Codex bridge requires tmux or app-server.** The tmux sidecar approach polls at a fixed interval and injects follow-ups as synthetic keypresses, which is inherently racy under heavy TUI use.
+- **Dashboard `handleChannelMessage` depends on `toAgentId` in broadcast.** When a channel message is broadcast without a `toAgentId`, the dashboard may not correctly attribute it to the right conversation in the UI — this is a known issue with the current broadcast routing in the registry WebSocket relay.
+- **`tasks/sendSubscribe` not implemented.** End-to-end A2A streaming (Server-Sent Events per task) is not yet supported.
+- **Gemini bridge is experimental.** The `GeminiTmuxBridgeService` uses the same tmux injection mechanism as Codex and has the same caveats.
 
-Todos los mensajes y ACKs de canal se persisten en SQLite:
+---
 
-```
-.agent-bridge/registry.sqlite
-  ├── channel_messages                 — payload completo de cada mensaje
-  ├── channel_acks                     — estados de entrega (queued, delivered, failed)
-  └── channel_suppressed_conversations — conversaciones borradas (tombstones)
-```
+## Contributing
 
-### Routing de entrega
+1. Fork the repository and create a feature branch.
+2. Run `pnpm install` and `pnpm run build` to verify the build.
+3. Run `pnpm run test` (Vitest) and `pnpm run lint` (Biome) before committing.
+4. Open a pull request describing the change and its motivation.
 
-El registry hace **targeted delivery**: si el mensaje tiene `toAgentId`, lo entrega directamente al WS de ese agente. El EventBus hace broadcast a todos los demás como fallback.
+---
 
-## Skills incluidas
+## License
 
-### Skills builtin (siempre disponibles)
-
-| Skill | Propósito |
-| --- | --- |
-| `file-search` | Buscar archivos por glob pattern |
-| `endpoint-find` | Detectar endpoints en backends o llamadas API en frontends |
-| `code-query` | Buscar texto o regex en el código fuente |
-| `prompt-execute` | Renderizar un prompt template con variables |
-| `notify-claude` | Enviar notificación al terminal de Claude Code vía canal |
-| `shell-execute` | Ejecutar un comando shell en el directorio del proyecto |
-
-### Skills dinámicos (detectados automáticamente)
-
-| Skill | Condición de activación |
-| --- | --- |
-| `run-script` | `package.json` existe |
-| `run-tests` | jest/vitest/pytest/pom.xml detectado |
-| `docker-build` | `Dockerfile` existe |
-| `code-review` | directorio `src/` existe |
-
-## Arquitectura
-
-```text
-CLI / MCP Client / Dashboard
-          |
-          v
-   RegistryServer (:4999)
-   - HTTP /agents, /health, /events, /channel
-   - WS   /ws  (snapshot, eventos, canal bidireccional)
-   - SQLite  .agent-bridge/registry.sqlite
-          |
-          +---- AgentServer (:500x)
-          |     - A2A JSON-RPC, skills, AG-UI SSE
-          |
-          +---- CodexAppServerBridge  (clientVersion: "app-server-bridge")
-          |     - Se registra como sesión cliente (entryType: "client")
-          |     - Recibe mensajes de canal por WS
-          |     - Inyecta en Codex app-server vía turn/start JSON-RPC
-          |
-          +---- McpAgentBridge (stdio)
-                - list_agents, channel_inbox, message_client_session, reply
-                - resolveClientSession: bridge daemon gana por prioridad -1
-                - Excluye dashboard y bridges de list_agents
-```
-
-## Notas para mantenedores
-
-- `PLAN.md` describe la arquitectura y estado actual del proyecto.
-- El bridge daemon (`clientVersion: "app-server-bridge"`) **no aparece** en `list_agents` — es un detalle de routing interno.
-- El dashboard UI (`client-dashboard-ui`) tampoco aparece en `list_agents` por la misma razón.
-- El `onclose` del WS del dashboard ignora código `4001` (desconexión por supersesión) para evitar reconexiones infinitas.
-- Si se agregan nuevos MCP tools, actualizar la tabla de tools en este README y en `PLAN.md`.
+MIT
