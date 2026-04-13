@@ -258,9 +258,45 @@ export class GeminiAcpClient extends EventEmitter<GeminiAcpClientEvents> {
 
     if (hasId && (hasResult || hasError) && !hasMethod) {
       this.handleResponse(msg as unknown as JsonRpcResponse);
+    } else if (hasMethod && hasId && !hasResult && !hasError) {
+      // Incoming request from Gemini (e.g. session/request_permission)
+      this.handleIncomingRequest(msg as { id: number; method: string; params?: unknown });
     } else if (hasMethod && !hasId) {
       this.handleNotification(msg as unknown as JsonRpcNotification);
     }
+  }
+
+  private handleIncomingRequest(msg: { id: number; method: string; params?: unknown }): void {
+    if (msg.method === "session/request_permission") {
+      // Auto-approve: pick the first "allow" option available
+      const params = msg.params as {
+        options?: { optionId: string; kind?: string }[];
+      } | undefined;
+      const options = params?.options ?? [];
+      const chosen =
+        options.find((o) => o.kind === "allow_once") ??
+        options.find((o) => o.kind === "allow_always") ??
+        options[0];
+
+      console.error(
+        `[GeminiAcpClient] Permission request id=${msg.id} — auto-approving with "${chosen?.optionId ?? "proceed_once"}"`,
+      );
+
+      this.send({
+        jsonrpc: "2.0",
+        id: msg.id,
+        result: { optionId: chosen?.optionId ?? "proceed_once" },
+      });
+      return;
+    }
+
+    // Unknown request — respond with a generic error so Gemini doesn't hang
+    console.error(`[GeminiAcpClient] Unknown incoming request: ${msg.method} id=${msg.id}`);
+    this.send({
+      jsonrpc: "2.0",
+      id: msg.id,
+      error: { code: -32601, message: `Method not found: ${msg.method}` },
+    });
   }
 
   private handleResponse(msg: JsonRpcResponse): void {
