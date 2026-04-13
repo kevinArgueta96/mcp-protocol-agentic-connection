@@ -38,7 +38,11 @@
   - [HTTP API](#http-api)
   - [WebSocket events](#websocket-events)
   - [End-to-end example](#end-to-end-example)
-- [Codex bridge](#codex-bridge)
+- [Client bridges](#client-bridges)
+  - [Claude Code bridge (push)](#claude-code-bridge-push)
+  - [Codex bridge (app-server)](#codex-bridge-app-server)
+  - [Gemini bridge (tmux)](#gemini-bridge-tmux)
+  - [Delivery mode comparison](#delivery-mode-comparison)
 - [Dashboard](#dashboard)
 - [Skills](#skills)
   - [Built-in skills](#built-in-skills)
@@ -487,43 +491,120 @@ reply(
 
 ---
 
-## Codex bridge
+## Client bridges
 
-The Codex bridge enables bidirectional messaging between Claude Code and Codex by running a daemon (`CodexAppServerBridge`) that:
+Each AI client has a different bridge mechanism depending on how it receives channel messages. All three ultimately use the same channel protocol — what differs is *how the message surfaces to the human*.
 
-1. Spawns `codex app-server --listen ws://127.0.0.1:4500`
-2. Connects to it directly as a second WebSocket client and performs the initialize handshake
-3. Registers as a client session in the registry (`clientVersion: "app-server-bridge"`)
-4. Injects incoming `channel.message` events as Codex turns via `turn/start` JSON-RPC
+### Claude Code bridge (push)
+
+Claude Code's bridge is **built into the MCP adapter itself** — no separate daemon required.
+
+When Claude Code connects to agent-bridge via MCP, the `McpAgentBridge` intercepts the MCP `initialize` handshake. It reads the client name (`Claude Code`, version, workspace roots), builds a stable `agentId` (`client-claude-code-{hash}`), and registers it as a client session in the registry automatically.
+
+From that point on, any channel message addressed to that `agentId` is **pushed** to the Claude terminal as an MCP notification:
+
+```
+Incoming channel message
+  → ChannelClientRuntime receives channel.message event via WS
+  → ClaudeClientProfile.mapChannelMessage() formats it
+  → server.notification({ method: "notifications/claude/channel", params: { content, meta } })
+  → Claude terminal renders a <channel> block inline
+```
+
+What Claude sees in its terminal:
+
+```xml
+<channel source="agent-bridge" from_agent="my-agent-id" conversation_id="abc-123" message_id="msg-001">
+  Task complete. Found 3 N+1 queries in getUserPosts().
+</channel>
+```
+
+Claude then uses the `reply` MCP tool to respond, closing the conversation thread.
+
+**Delivery ACKs sent automatically:**
+1. `delivered_to_bridge` — MCP adapter received the message
+2. `displayed_to_client` — notification push to Claude succeeded
+
+If Claude Code is not yet connected when a message arrives, the adapter buffers up to 100 messages and replays them on `initialize`.
+
+**Sending to Claude Code from another agent** — use the `notify-claude` skill or `POST /notify-claude`:
+
+```bash
+# From any AgentServer via notify-claude skill
+{
+  "targetProject": "/path/to/my-project",
+  "content": "Build finished. 3 tests failed in auth module.",
+  "expectsResponse": true
+}
+
+# Or directly via HTTP
+POST http://localhost:4999/notify-claude
+{
+  "agentId": "my-agent",
+  "toAgentId": "client-claude-code-abc123",
+  "content": "Build finished. 3 tests failed in auth module.",
+  "conversationId": "conv-xyz",
+  "expectsResponse": true
+}
+```
+
+---
+
+### Codex bridge (app-server)
+
+The Codex bridge runs as a **separate daemon** (`CodexAppServerBridge`) that connects the channel layer to the Codex app-server JSON-RPC protocol:
+
+1. Connects to the Codex app-server WebSocket (`ws://127.0.0.1:4500`)
+2. Performs the `initialize` handshake
+3. Registers as a client session in the registry (`clientName: "codex"`, `clientVersion: "app-server-bridge"`)
+4. On incoming `channel.message`: calls `turn/start` on the app-server — Codex processes it as a real prompt turn
+5. Codex's reply is sent back through the channel
+
+This is the preferred path when Codex is active: `message_client_session` automatically routes to the bridge (priority `-1`) over the Codex TUI MCP client.
 
 **One-command startup (registry + bridge + Codex TUI):**
 
 ```bash
 pnpm run dev -- codex start --project /path/to/codex-project
-# starts embedded registry if none is running
-# starts bridge daemon
-# launches Codex TUI connected to the app-server
 ```
 
 **Bridge daemon only:**
 
 ```bash
 pnpm run dev -- codex app-bridge --project /path/to/codex-project
-# Bridge running. Start Codex with:
-#   codex --remote ws://127.0.0.1:4500
+# Start Codex separately with: codex --remote ws://127.0.0.1:4500
 ```
 
-**tmux integration** — inject follow-up prompts into the active Codex pane:
+**tmux fallback** — when the app-server is not available, inject follow-up prompts into the active Codex pane:
 
 ```bash
-# Bind the current tmux pane to the active Codex client session
-pnpm run dev -- codex tmux-bind
-
-# Poll and inject pending channel messages into the bound pane
-pnpm run dev -- codex tmux-sidecar
+pnpm run dev -- codex tmux-bind      # bind current tmux pane to this session
+pnpm run dev -- codex tmux-sidecar   # poll and inject pending channel messages
 ```
 
-> **Note:** If no `CodexAppServerBridge` is running, `message_client_session` falls back to the Codex TUI MCP client (which has a lower routing priority than the bridge daemon).
+---
+
+### Gemini bridge (tmux)
+
+Gemini CLI does not expose a JSON-RPC app-server, so its bridge uses tmux pane injection:
+
+```bash
+pnpm run dev -- gemini tmux-bind     # bind current tmux pane to this Gemini session
+pnpm run dev -- gemini tmux-sidecar  # poll channel inbox and inject follow-ups as keystrokes
+```
+
+---
+
+### Delivery mode comparison
+
+| Client | Bridge type | How messages arrive | Requires daemon |
+| :--- | :--- | :--- | :--- |
+| **Claude Code** | Built-in MCP push | `<channel>` block in terminal via `notifications/claude/channel` | No — part of MCP adapter |
+| **Codex** | App-server daemon | `turn/start` JSON-RPC → Codex processes as a prompt turn | Yes — `codex app-bridge` |
+| **Gemini CLI** | tmux sidecar | Keystrokes injected into the active tmux pane | Yes — `gemini tmux-sidecar` |
+| **Dashboard** | WebSocket | Chat panel updates via `channel.message` WS event | No — built into registry WS |
+
+All four paths share the same channel protocol (`ChannelMessage`, `ChannelAck`, `conversationId`). The bridge layer is just the last-mile delivery mechanism.
 
 ---
 
