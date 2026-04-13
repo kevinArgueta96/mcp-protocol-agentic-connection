@@ -94,6 +94,7 @@ Claude Code now has four MCP tools: `list_agents`, `channel_inbox`, `message_cli
 - **Native MCP integration.** Exposes the agent network as first-class MCP tools via `stdio` transport, so Claude Code picks them up automatically from `.mcp.json` without any plugin or wrapper.
 - **Bidirectional channel, not fire-and-forget.** Messages carry a `conversationId`, delivery ACKs are tracked in SQLite, and the `reply` tool closes the loop back to the sender. Claude Code can ask Codex a question and receive the answer in the same conversation thread.
 - **Codex app-server bridge.** `CodexAppServerBridge` injects incoming channel messages directly into the Codex app-server via `turn/start` JSON-RPC, so Codex actually processes requests rather than just receiving raw text.
+- **Gemini ACP bridge.** `GeminiAcpBridge` spawns `gemini --acp` and drives it over JSON-RPC 2.0 (stdin/stdout). Incoming channel messages are delivered as `session/prompt` calls; Gemini's replies come back programmatically — no tmux scraping needed.
 
 ---
 
@@ -254,13 +255,27 @@ codex --remote ws://127.0.0.1:4500
 
 ### Gemini CLI
 
-Gemini lacks a JSON-RPC app-server, so the bridge uses tmux pane injection:
+The preferred path is the **ACP bridge** — it drives `gemini --acp` over JSON-RPC 2.0, giving the same bidirectional, programmatic delivery as the Codex app-server bridge:
 
 ```bash
-# Terminal A — start Gemini in a tmux pane, then bind it
+agent-bridge gemini start --project "/absolute/path/to/your/project"
+```
+
+Or start the bridge daemon separately:
+
+```bash
+agent-bridge gemini app-bridge --project "/absolute/path/to/your/project"
+```
+
+This spawns `gemini --acp`, performs the ACP handshake, registers the Gemini session in the registry, and wires channel messages to `session/prompt` calls.
+
+**Fallback — tmux pane injection** (when `--acp` mode is unavailable):
+
+```bash
+# In a tmux pane running Gemini, bind it:
 agent-bridge gemini tmux-bind
 
-# Terminal B — sidecar polls channel inbox and injects pending messages as keystrokes
+# In a sidecar pane, poll and inject:
 agent-bridge gemini tmux-sidecar
 ```
 
@@ -676,9 +691,37 @@ pnpm run dev -- codex tmux-sidecar   # poll and inject pending channel messages
 
 ---
 
-### Gemini bridge (tmux)
+### Gemini bridge (ACP)
 
-Gemini CLI does not expose a JSON-RPC app-server, so its bridge uses tmux pane injection:
+Gemini CLI exposes an `--acp` mode that communicates over JSON-RPC 2.0 on stdin/stdout. `GeminiAcpBridge` uses this to drive Gemini programmatically — the same pattern as the Codex app-server bridge:
+
+1. Spawns `gemini --acp` as a subprocess.
+2. Sends `initialize` + `session/new` handshake.
+3. Registers as a client in the registry (`clientName: "gemini"`, `clientVersion: "acp-bridge"`).
+4. On incoming `channel.message` → calls `session/prompt` on the ACP session.
+5. Gemini processes the turn and responds; the reply is sent back through the channel.
+
+Permission requests from Gemini (`session/request_permission`) are auto-approved by the bridge.
+
+**One-command startup (registry + ACP bridge):**
+
+```bash
+agent-bridge gemini start --project "/absolute/path/to/your/project"
+```
+
+**Bridge daemon only:**
+
+```bash
+agent-bridge gemini app-bridge --project "/absolute/path/to/your/project"
+```
+
+Available options: `--registry-url <url>`, `--gemini-command <cmd>` (default: `gemini`), `--debug`.
+
+**Queue behaviour:** up to 10 messages are buffered while Gemini is mid-turn; each is retried up to 3 times with a 5 s delay.
+
+### Gemini bridge (tmux fallback)
+
+When `gemini --acp` is not available, fall back to tmux pane injection:
 
 ```bash
 pnpm run dev -- gemini tmux-bind     # bind current tmux pane to this Gemini session
@@ -693,7 +736,8 @@ pnpm run dev -- gemini tmux-sidecar  # poll channel inbox and inject follow-ups 
 | :--- | :--- | :--- | :--- |
 | **Claude Code** | Built-in MCP push | `<channel>` block in terminal via `notifications/claude/channel` | No — part of MCP adapter |
 | **Codex** | App-server daemon | `turn/start` JSON-RPC → Codex processes as a prompt turn | Yes — `codex app-bridge` |
-| **Gemini CLI** | tmux sidecar | Keystrokes injected into the active tmux pane | Yes — `gemini tmux-sidecar` |
+| **Gemini CLI** | ACP bridge (preferred) | `session/prompt` JSON-RPC → Gemini processes as a prompt turn | Yes — `gemini app-bridge` |
+| **Gemini CLI** | tmux sidecar (fallback) | Keystrokes injected into the active tmux pane | Yes — `gemini tmux-sidecar` |
 | **Dashboard** | WebSocket | Chat panel updates via `channel.message` WS event | No — built into registry WS |
 
 All four paths share the same channel protocol (`ChannelMessage`, `ChannelAck`, `conversationId`). The bridge layer is just the last-mile delivery mechanism.
@@ -775,8 +819,10 @@ All commands run via `node dist/cli/index.js <command>` (built) or `pnpm run dev
 | `codex app-bridge` | Start the Codex app-server bridge daemon only. |
 | `codex tmux-bind` | Bind the current tmux pane to the active Codex session. |
 | `codex tmux-sidecar` | Poll and inject pending channel messages into a tmux pane. |
-| `gemini tmux-bind` | Bind the current Gemini CLI session to a tmux pane. |
-| `gemini tmux-sidecar` | Poll and inject pending channel messages into a Gemini tmux pane. |
+| `gemini start` | One-command: registry + Gemini ACP bridge. |
+| `gemini app-bridge` | Start the Gemini ACP bridge daemon only (`gemini --acp`). |
+| `gemini tmux-bind` | Bind the current Gemini CLI session to a tmux pane (tmux fallback). |
+| `gemini tmux-sidecar` | Poll and inject pending channel messages into a Gemini tmux pane (tmux fallback). |
 | `dashboard` | Print or open the dashboard URL in the browser. |
 
 ---
@@ -822,9 +868,11 @@ src/
 │   ├── codex-session-files.ts       Read/write active Codex session marker
 │   ├── codex-tmux.ts                Low-level tmux pane helpers for Codex
 │   ├── codex-tmux-bridge-service.ts tmux-based Codex injection sidecar
+│   ├── gemini-acp-client.ts         JSON-RPC 2.0 client for `gemini --acp` (spawns process)
+│   ├── gemini-acp-bridge.ts         Full ACP bridge daemon (spawn + register + inject + reply)
 │   ├── gemini-runtime-discovery.ts  Detect running Gemini CLI process
 │   ├── gemini-session-files.ts      Read/write active Gemini session marker
-│   ├── gemini-tmux-bridge-service.ts tmux-based Gemini injection sidecar
+│   ├── gemini-tmux-bridge-service.ts tmux-based Gemini injection sidecar (fallback)
 │   ├── channel-transport.ts         WebSocket transport to registry
 │   ├── channel-client-runtime.ts    WS runtime with reconnect + event bus
 │   ├── conversation-service.ts      High-level send/reply/inbox helpers
