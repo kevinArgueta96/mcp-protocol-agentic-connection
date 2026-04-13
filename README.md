@@ -27,6 +27,11 @@
   - [1. Start the registry](#1-start-the-registry)
   - [2. Start an agent](#2-start-an-agent)
   - [3. Configure MCP](#3-configure-mcp)
+- [Launching each client](#launching-each-client)
+  - [Claude Code](#claude-code)
+  - [Codex](#codex)
+  - [Gemini CLI](#gemini-cli)
+  - [Dashboard](#dashboard-1)
 - [MCP integration](#mcp-integration)
   - [.mcp.json](#mcpjson)
   - [Available tools](#available-tools)
@@ -73,7 +78,10 @@ pnpm run dev -- start .
 # 4. Generate .mcp.json for Claude Code
 pnpm run dev -- mcp config --write
 
-# 5. Restart Claude Code — it now has 4 MCP tools
+# 5. Launch Claude Code with the agent-bridge channel enabled
+claude --dangerously-load-development-channels server:agent-bridge
+
+# 6. Claude Code now has 4 MCP tools
 ```
 
 Claude Code now has four MCP tools: `list_agents`, `channel_inbox`, `message_client_session`, `reply`.
@@ -97,7 +105,7 @@ Claude Code / Codex / Gemini CLI / Dashboard
               v
     ┌─────────────────────────────────────┐
     │       RegistryServer :4999          │
-    │  HTTP  /agents /health /channels    │
+    │  HTTP  /agents /health /channel/*   │
     │  WS    /ws  (relay + broadcast)     │
     │  SQLite .agent-bridge/registry.sqlite│
     └──────┬─────────────┬───────────────┘
@@ -127,7 +135,7 @@ All three runtime components — `AgentServer`, `McpAgentBridge`, and `CodexAppS
 # sequence
 Claude Code
   calls message_client_session MCP tool
-  McpAgentBridge posts ChannelMessage to RegistryServer /channels
+  McpAgentBridge posts ChannelMessage to RegistryServer /channel/messages
   RegistryServer broadcasts via WS to all subscribers
   CodexAppServerBridge receives channel.message event
   CodexAppServerBridge calls turn/start on codex app-server
@@ -172,7 +180,7 @@ The registry exposes:
 
 | Endpoint | Description |
 | :--- | :--- |
-| `http://localhost:4999` | HTTP REST (`/agents`, `/health`, `/channels`) |
+| `http://localhost:4999` | HTTP REST (`/agents`, `/health`, `/channel/*`) |
 | `ws://localhost:4999/ws` | WebSocket relay and channel broadcast |
 | `http://localhost:4999/dashboard` | Dashboard SPA (requires `pnpm run build:all`) |
 
@@ -201,6 +209,75 @@ pnpm run dev -- mcp config --write
 # .mcp.json written
 # Restart Claude Code to pick up the new server
 ```
+
+---
+
+## Launching each client
+
+Once the registry is running and `.mcp.json` is in place, each AI client connects to agent-bridge through its own startup command.
+
+### Claude Code
+
+```bash
+claude --dangerously-load-development-channels server:agent-bridge
+```
+
+The `--dangerously-load-development-channels` flag tells the Claude CLI to activate the MCP server named `server:agent-bridge` as a development notification channel. The name `agent-bridge` matches the entry in `.mcp.json`. This enables:
+- The four MCP tools (`list_agents`, `channel_inbox`, `message_client_session`, `reply`).
+- Push notifications via `notifications/claude/channel` — incoming channel messages appear as `<channel>` blocks inline in the terminal.
+
+The MCP adapter registers the Claude Code session automatically on the first `initialize` handshake.
+
+### Codex
+
+```bash
+agent-bridge codex start --project "/absolute/path/to/your/project"
+```
+
+This single command:
+1. Starts the registry (if not already running).
+2. Launches the `CodexAppServerBridge` daemon, which spawns `codex app-server` on `:4500`.
+3. Registers the Codex client session in the registry.
+4. Opens the Codex TUI.
+
+From that point, `message_client_session` routes to the Codex bridge automatically (it has the highest delivery priority).
+
+If you prefer to start Codex separately:
+
+```bash
+# Terminal A — bridge only
+agent-bridge codex app-bridge --project "/absolute/path/to/your/project"
+
+# Terminal B — Codex TUI connecting to the app-server
+codex --remote ws://127.0.0.1:4500
+```
+
+### Gemini CLI
+
+Gemini lacks a JSON-RPC app-server, so the bridge uses tmux pane injection:
+
+```bash
+# Terminal A — start Gemini in a tmux pane, then bind it
+agent-bridge gemini tmux-bind
+
+# Terminal B — sidecar polls channel inbox and injects pending messages as keystrokes
+agent-bridge gemini tmux-sidecar
+```
+
+The `.gemini/settings.json` at the repo root contains a reference MCP config for Gemini CLI.
+
+### Dashboard
+
+```bash
+# One-time: build the Vue SPA
+pnpm run build:all
+
+# Open in browser
+agent-bridge dashboard
+# → http://localhost:4999/dashboard
+```
+
+For hot-reload development: `pnpm run dev:dashboard` (Vite on `:5173`, proxies API calls to `:4999`).
 
 ---
 
@@ -411,7 +488,22 @@ Parameters:
 
 ### HTTP API
 
-The registry exposes a REST API for channel operations at `http://localhost:4999`:
+The registry exposes a REST API at `http://localhost:4999`.
+
+**Agent management:**
+
+| Method | Path | Description |
+| :--- | :--- | :--- |
+| `POST` | `/agents` | Register a new agent |
+| `DELETE` | `/agents/:id` | Deregister an agent |
+| `POST` | `/agents/:id/heartbeat` | Update agent heartbeat |
+| `GET` | `/agents` | List all registered agents |
+| `GET` | `/agents/:id` | Get a single agent by ID |
+| `POST` | `/agents/:id/message` | Relay a task message to a specific agent |
+| `POST` | `/agents/:id/ag-ui` | Proxy AG-UI SSE stream for a specific agent |
+| `GET` | `/health` | Registry liveness check |
+
+**Channel operations:**
 
 | Method | Path | Description |
 | :--- | :--- | :--- |
@@ -648,15 +740,15 @@ Always available on every `AgentServer`, regardless of project type.
 
 ### Auto-detected skills
 
-Activated based on files found in the project root at startup. Requires `--claude` flag.
+Activated based on files found in the project root at startup.
 
-| Skill | Activation condition |
-| :--- | :--- |
-| `run-script` | `package.json` present. |
-| `run-tests` | Jest, Vitest, pytest, or `pom.xml` detected. |
-| `docker-build` | `Dockerfile` present. |
-| `code-review` | `src/` directory present (uses Claude Code AI backend). |
-| `claude-execute` | Always registered when `--claude` is active. |
+| Skill | Activation condition | Requires `--claude` |
+| :--- | :--- | :--- |
+| `run-script` | `package.json` present | No |
+| `run-tests` | Jest, Vitest, pytest, or `pom.xml` detected | No |
+| `docker-build` | `Dockerfile` present | No |
+| `code-review` | `src/` directory present (uses Claude Code AI backend) | **Yes** |
+| `claude-execute` | Always registered when `--claude` is active | **Yes** |
 
 ---
 
@@ -720,9 +812,18 @@ src/
 │   ├── index.ts               CLI entrypoint (Commander)
 │   └── commands/              One file per CLI sub-command
 ├── client/
+│   ├── a2a-client.ts                A2AClient: HTTP + WS client for agent-to-agent calls
+│   ├── registry-client.ts           RegistryClient: HTTP client for the registry REST API
+│   ├── client-profile-resolver.ts   Resolves delivery profile by client type (Claude/Codex/Gemini)
+│   ├── conversation-session-store.ts In-memory conversation state with ACK tracking
 │   ├── codex-app-server-bridge.ts   CodexAppServerBridge daemon
 │   ├── codex-app-server-client.ts   WS client for the Codex app-server protocol
+│   ├── codex-runtime-discovery.ts   Detect running Codex process
+│   ├── codex-session-files.ts       Read/write active Codex session marker
+│   ├── codex-tmux.ts                Low-level tmux pane helpers for Codex
 │   ├── codex-tmux-bridge-service.ts tmux-based Codex injection sidecar
+│   ├── gemini-runtime-discovery.ts  Detect running Gemini CLI process
+│   ├── gemini-session-files.ts      Read/write active Gemini session marker
 │   ├── gemini-tmux-bridge-service.ts tmux-based Gemini injection sidecar
 │   ├── channel-transport.ts         WebSocket transport to registry
 │   ├── channel-client-runtime.ts    WS runtime with reconnect + event bus
@@ -732,7 +833,7 @@ src/
 │   └── adapter.ts             McpAgentBridge — 4 MCP tools + session resolution
 ├── registry/
 │   ├── server.ts              RegistryServer: HTTP + WebSocket hub (:4999)
-│   ├── store.ts               AgentStore: in-memory + SQLite registry
+│   ├── store.ts               AgentStore: in-memory only (not persisted across restarts)
 │   ├── channel-store.ts       SQLite persistence for channel messages and ACKs
 │   └── events.ts              RegistryEventBus
 ├── skills/
@@ -745,7 +846,20 @@ src/
     └── skills.ts              Skill context and I/O types
 ```
 
-**Persistence:** channel messages and ACKs are stored in SQLite at `.agent-bridge/registry.sqlite` across three tables: `channel_messages`, `channel_acks`, and `channel_suppressed_conversations`.
+**Persistence:** channel messages and ACKs are stored in SQLite at `.agent-bridge/registry.sqlite` across three tables: `channel_messages`, `channel_acks`, and `channel_suppressed_conversations`. SQLite access uses the `node:sqlite` built-in module (Node 22+) — there is no external SQLite dependency. The `AgentStore` (registered agents and heartbeats) is in-memory only and resets on registry restart; agents re-register automatically on reconnect.
+
+**AgentServer — A2A JSON-RPC methods:**
+
+| Method | Description |
+| :--- | :--- |
+| `tasks/send` | Submit a task to the agent (synchronous response) |
+| `tasks/get` | Poll the status of an in-flight task |
+| `tasks/cancel` | Cancel a running task |
+| `agent.health` | Liveness check (returns uptime, version, skill count) |
+| `agent.hello` | Handshake — returns agent name, project, and capabilities |
+| `project.info` | Project metadata: type, framework, category |
+| `project.files` | List files matching a glob pattern |
+| `project.search` | Full-text / regex search across project files |
 
 ---
 
@@ -754,7 +868,7 @@ src/
 - **Local only.** The registry, agents, and bridges all run on `localhost`. No remote or cloud deployment is supported in v0.1.
 - **Single registry.** All agents must connect to the same registry instance. Multi-registry federation is not implemented.
 - **No authentication.** All local connections are unauthenticated. Do not expose registry or agent ports beyond `localhost`.
-- **SQLite registry store.** The `AgentStore` uses SQLite via `registry.sqlite`. Concurrent write throughput is bounded by SQLite's single-writer model.
+- **Volatile agent registry.** The `AgentStore` is in-memory only. Restarting the registry clears all registered agents and heartbeats — agents re-register automatically on reconnect, but any in-flight state is lost. Only channel messages and ACKs (in `channel_messages`, `channel_acks`, `channel_suppressed_conversations`) are persisted to SQLite.
 - **Codex bridge requires tmux or app-server.** The tmux sidecar approach polls at a fixed interval and injects follow-ups as synthetic keypresses, which is inherently racy under heavy TUI use.
 - **Dashboard `handleChannelMessage` depends on `toAgentId` in broadcast.** When a channel message is broadcast without a `toAgentId`, the dashboard may not correctly attribute it to the right conversation in the UI — this is a known issue with the current broadcast routing in the registry WebSocket relay.
 - **`tasks/sendSubscribe` not implemented.** End-to-end A2A streaming (Server-Sent Events per task) is not yet supported.
