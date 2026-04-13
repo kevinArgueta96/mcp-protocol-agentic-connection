@@ -184,7 +184,7 @@ export class GeminiAcpClient extends EventEmitter<GeminiAcpClientEvents> {
         method: "session/prompt",
         params: {
           sessionId: this._sessionId,
-          messages: [{ role: "user", content: [{ type: "text", text }] }],
+          prompt: [{ type: "text", text }],
         },
       });
 
@@ -325,7 +325,7 @@ export class GeminiAcpClient extends EventEmitter<GeminiAcpClientEvents> {
     await this.sendRequest(
       "initialize",
       {
-        protocolVersion: "1",
+        protocolVersion: 1,
         clientInfo: { name: "agent-bridge", version: "0.1.0" },
         clientCapabilities: {
           fs: { readTextFile: false, writeTextFile: false },
@@ -342,7 +342,7 @@ export class GeminiAcpClient extends EventEmitter<GeminiAcpClientEvents> {
   private async openSession(): Promise<void> {
     const result = await this.sendRequest(
       "session/new",
-      {},
+      { cwd: this.cwd, mcpServers: [] },
       this.initTimeoutMs,
     ) as { sessionId?: string } | null;
 

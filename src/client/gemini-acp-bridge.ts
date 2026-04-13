@@ -191,6 +191,17 @@ export class GeminiAcpBridge extends EventEmitter {
   // ── Runtime event wiring ────────────────────────────────────────────────────
 
   private wireRuntimeEvents(): void {
+    this.channelRuntime.on("ws.open", () => {
+      console.error("[GeminiBridge] WebSocket connected to registry");
+      // Re-identify on every (re)connect so the registry maps this WS to our agentId
+      this.channelRuntime.identify();
+    });
+
+    this.channelRuntime.on("registry.event", (event) => {
+      const e = event as { type?: string };
+      console.error(`[GeminiBridge] Registry event: ${e.type ?? "unknown"}`);
+    });
+
     this.channelRuntime.on("channel.message", (message) => {
       if (message.toAgentId && message.toAgentId !== this.clientAgentId) return;
       if (message.fromAgentId === this.clientAgentId) return;
