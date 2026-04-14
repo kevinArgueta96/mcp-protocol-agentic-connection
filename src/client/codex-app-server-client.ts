@@ -394,6 +394,14 @@ export class CodexAppServerClient extends EventEmitter<CodexAppServerClientEvent
             }
 
             this.emit("agentMessage", text, ctx);
+            // Force-clear turn state when we captured our own injection's response.
+            // turn/completed may not be broadcast to non-owner connections (bridge is
+            // a second WS client, not the TUI that started the turn), so _turnInProgress
+            // can get stuck at true indefinitely without this.
+            if (ctx !== null && this._turnInProgress) {
+              this._turnInProgress = false;
+              this.emit("turnCompleted", "agentMessage-received");
+            }
           }
         }
         break;

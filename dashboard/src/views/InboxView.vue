@@ -313,14 +313,24 @@ const refreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 const templates = MESSAGE_TEMPLATES;
 
-const replyTargets = computed(() =>
-  registryStore.agentList.filter(
+// Build reply target list: prefer non-bridge clients; show the bridge only when no
+// non-bridge client exists for that project (avoids duplicate entries while keeping
+// app-server-bridge reachable when it's the only registered endpoint).
+const replyTargets = computed(() => {
+  const all = registryStore.agentList.filter(
+    (a) => a.entryType === "client" && a.agentId !== registryStore.dashboardClientId,
+  );
+  const nonBridgeProjects = new Set(
+    all
+      .filter((a) => a.clientInfo?.clientVersion !== "app-server-bridge")
+      .map((a) => a.projectPath),
+  );
+  return all.filter(
     (a) =>
-      a.entryType === "client" &&
-      a.agentId !== registryStore.dashboardClientId &&
-      a.clientInfo?.clientVersion !== "app-server-bridge",
-  ),
-);
+      a.clientInfo?.clientVersion !== "app-server-bridge" ||
+      !nonBridgeProjects.has(a.projectPath),
+  );
+});
 
 const availableClients = computed(() => {
   const names = new Set<string>();
@@ -462,14 +472,35 @@ async function selectConversation(conversationId: string) {
   selectedMsgId.value = null;
   selectedLoading.value = true;
   selectedError.value = null;
+  // Clear compose state from previous conversation
+  replyText.value = "";
+  replyTarget.value = "";
+  sendReplyError.value = null;
   try {
     selected.value = await fetchChannelConversation(conversationId);
+    autoPopulateReplyTarget();
     await nextTick();
     if (timelineEl.value) timelineEl.value.scrollTop = timelineEl.value.scrollHeight;
   } catch (err) {
     selectedError.value = err instanceof Error ? err.message : String(err);
   } finally {
     selectedLoading.value = false;
+  }
+}
+
+// Pre-select the most likely reply recipient based on conversation participants.
+function autoPopulateReplyTarget() {
+  if (!selected.value) return;
+  // Walk messages newest-first, find the last non-dashboard sender
+  for (const msg of [...selected.value.messages].reverse()) {
+    if (msg.fromAgentId === dashboardChannelRuntime.clientId) continue;
+    const sender = registryStore.agentList.find((a) => a.agentId === msg.fromAgentId);
+    if (!sender) continue;
+    // Find the best entry in replyTargets for this project
+    const match = replyTargets.value.find(
+      (a) => a.agentId === sender.agentId || a.projectPath === sender.projectPath,
+    );
+    if (match) { replyTarget.value = match.agentId; return; }
   }
 }
 
@@ -595,7 +626,20 @@ async function sendReply() {
   sentConfirmation.value = null;
 
   const lastMsg = selected.value.messages.at(-1);
-  const toAgentId = replyTarget.value;
+
+  // Route through the bridge if one exists for the selected agent's project
+  // (same pattern as ClientMessagePanel.vue effectiveTargetId)
+  const targetAgent = registryStore.agentList.find((a) => a.agentId === replyTarget.value);
+  const bridge =
+    targetAgent?.clientInfo?.clientVersion !== "app-server-bridge"
+      ? registryStore.agentList.find(
+          (a) =>
+            a.entryType === "client" &&
+            a.clientInfo?.clientVersion === "app-server-bridge" &&
+            a.projectPath === targetAgent?.projectPath,
+        )
+      : null;
+  const toAgentId = bridge?.agentId ?? replyTarget.value;
 
   try {
     await createChannelMessage({
@@ -648,11 +692,32 @@ watch([pendingOnly, showExpiredOnly, clientFilter], () => {
   void reload();
 });
 
+// Re-populate replyTarget when registry changes invalidate the current selection.
+// Triggered by heartbeats (every 30s), snapshots, and agent.registered events that
+// cause replyTargets to recompute and Vue to potentially clear the <select v-model>.
+watch(replyTargets, (targets) => {
+  if (!replyTarget.value) return;
+  const stillValid = targets.some((a) => a.agentId === replyTarget.value);
+  if (!stillValid) {
+    autoPopulateReplyTarget();
+  }
+});
+
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
+
+let stopStatusListener: (() => void) | null = null;
+let initialLoadDone = false;
 
 onMounted(async () => {
   stopRegistryListener = dashboardChannelRuntime.on("registry", handleRegistryEvent);
+  // Re-fetch when WS reconnects — avoids missing replies that arrived during disconnection.
+  // Guard with initialLoadDone to prevent a double-reload race on initial mount
+  // (onMounted already calls reload() below; a "connected" event right after would fire a second one).
+  stopStatusListener = dashboardChannelRuntime.on("status", (status) => {
+    if (status === "connected" && initialLoadDone) void reload();
+  });
   await reload();
+  initialLoadDone = true;
   // Auto-select conversation from ?conv= query param (e.g. linked from Plans view)
   const convId = route.query.conv as string | undefined;
   if (convId && convId !== selectedId.value) {
@@ -663,6 +728,8 @@ onMounted(async () => {
 onUnmounted(() => {
   stopRegistryListener?.();
   stopRegistryListener = null;
+  stopStatusListener?.();
+  stopStatusListener = null;
   for (const timer of refreshTimers.values()) clearTimeout(timer);
   refreshTimers.clear();
 });

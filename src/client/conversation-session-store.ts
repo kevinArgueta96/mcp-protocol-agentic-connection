@@ -54,6 +54,14 @@ export class ConversationSessionStore {
     session.state.lastMessageId = message.messageId;
     if (message.expectsResponse) {
       this.addPendingMessageId(session.state, message.messageId);
+      // Reset stale terminal ack state so waitForAcknowledgement() doesn't return
+      // the previous exchange's "answered"/"failed" as if this new message is done.
+      if (
+        session.state.lastAckState === "answered" ||
+        session.state.lastAckState === "failed"
+      ) {
+        session.state.lastAckState = undefined;
+      }
     }
     if (message.replyTo) {
       this.removePendingMessageId(session.state, message.replyTo);

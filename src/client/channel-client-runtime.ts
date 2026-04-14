@@ -198,6 +198,9 @@ export class ChannelClientRuntime {
     // Wait for the WS to be open (and identify sent) before returning.
     // This prevents the startup race where the agent is HTTP-registered but unreachable via WS.
     await this.waitForConnection(5_000);
+    // If the WS was already OPEN before connect() was called (e.g. MCP adapter opens WS in
+    // start() before agentId is known), onOpen won't fire again, so identify explicitly here.
+    this.identify();
     this.startHeartbeat(heartbeatMs);
   }
 
