@@ -105,9 +105,8 @@ export class CodexAppServerBridge extends EventEmitter {
     // 3. Wire client events
     this.wireClientEvents();
 
-    // 4. Register as client in registry and connect WS
+    // 4. Register as client in registry — activateClient now connects WS and waits for open
     await this.registerWithRegistry();
-    this.channelRuntime.connect();
     this.wireRuntimeEvents();
 
     const appServerWsUrl = `ws://127.0.0.1:${this.appServerPort}`;

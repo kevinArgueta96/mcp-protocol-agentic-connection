@@ -193,8 +193,33 @@ export class ChannelClientRuntime {
     this.activeRegistration = registration;
     this.currentAgentId = registration.agentId;
     await this.transport.registerClient(registration);
-    this.identify();
+    // Connect WS now that currentAgentId is set — connectWebSocket will send identify on open.
+    this.connect();
+    // Wait for the WS to be open (and identify sent) before returning.
+    // This prevents the startup race where the agent is HTTP-registered but unreachable via WS.
+    await this.waitForConnection(5_000);
     this.startHeartbeat(heartbeatMs);
+  }
+
+  private waitForConnection(timeoutMs: number): Promise<void> {
+    return new Promise((resolve) => {
+      if (this.ws?.readyState === WebSocket.OPEN) {
+        resolve();
+        return;
+      }
+      let settled = false;
+      const timeout = setTimeout(() => {
+        if (!settled) { settled = true; resolve(); }
+      }, timeoutMs);
+      const off = this.on("ws.open", () => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timeout);
+          off();
+          resolve();
+        }
+      });
+    });
   }
 
   async deactivateClient(): Promise<void> {

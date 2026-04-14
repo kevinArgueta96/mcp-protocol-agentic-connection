@@ -101,9 +101,8 @@ export class GeminiAcpBridge extends EventEmitter {
     // 2. Wire client events
     this.wireClientEvents();
 
-    // 3. Register as client in registry and connect WS
+    // 3. Register as client in registry — activateClient now connects WS and waits for open
     await this.registerWithRegistry();
-    this.channelRuntime.connect();
     this.wireRuntimeEvents();
 
     console.error(`[GeminiBridge] Ready. Session: ${this.client.sessionId}`);

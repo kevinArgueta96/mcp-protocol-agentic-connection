@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { createServer } from "node:net";
 import type { Command } from "commander";
 import chalk from "chalk";
 import { CodexTmuxBridgeService } from "../../client/codex-tmux-bridge-service.js";
@@ -10,6 +11,22 @@ import { readCurrentCodexSession, writeCurrentCodexSession } from "../../client/
 import { CodexAppServerBridge } from "../../client/codex-app-server-bridge.js";
 import { RegistryServer } from "../../registry/server.js";
 import { RegistryClient } from "../../client/registry-client.js";
+
+function isPortAvailable(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = createServer();
+    server.once("error", () => resolve(false));
+    server.once("listening", () => { server.close(); resolve(true); });
+    server.listen(port, "127.0.0.1");
+  });
+}
+
+async function findAvailablePort(startPort: number, maxAttempts = 20): Promise<number> {
+  for (let port = startPort; port < startPort + maxAttempts; port++) {
+    if (await isPortAvailable(port)) return port;
+  }
+  throw new Error(`No available port found in range ${startPort}–${startPort + maxAttempts - 1}`);
+}
 
 export function registerCodexCommand(program: Command): void {
   const codex = program.command("codex").description("Codex-specific utilities");
@@ -24,12 +41,16 @@ export function registerCodexCommand(program: Command): void {
       "Codex TUI connected directly to the app-server."
     )
     .option("--project <path>", "Project path", process.cwd())
-    .option("--app-server-port <number>", "Port for the codex app-server", "4500")
+    .option("--app-server-port <number>", "Starting port for the codex app-server (auto-increments if busy)", "4500")
     .option("--registry-url <url>", "Registry URL", "http://localhost:4999")
     .action(async (options) => {
       const projectPath = options.project ?? process.cwd();
-      const appServerPort = Number(options.appServerPort);
       const registryUrl: string = options.registryUrl;
+      const requestedPort = Number(options.appServerPort);
+      const appServerPort = await findAvailablePort(requestedPort);
+      if (appServerPort !== requestedPort) {
+        console.log(chalk.yellow(`  Port ${requestedPort} busy → using ${appServerPort}`));
+      }
       const appServerWsUrl = `ws://127.0.0.1:${appServerPort}`;
 
       console.log(chalk.bold("\n[agent-bridge] codex start\n"));
@@ -113,10 +134,14 @@ export function registerCodexCommand(program: Command): void {
     )
     .option("--registry-url <url>", "Registry URL", "http://localhost:4999")
     .option("--project <path>", "Project path for client registration (default: cwd)")
-    .option("--app-server-port <number>", "Port for the codex app-server", "4500")
+    .option("--app-server-port <number>", "Starting port for the codex app-server (auto-increments if busy)", "4500")
     .action(async (options) => {
       const projectPath = options.project ?? process.cwd();
-      const appServerPort = Number(options.appServerPort);
+      const requestedPort = Number(options.appServerPort);
+      const appServerPort = await findAvailablePort(requestedPort);
+      if (appServerPort !== requestedPort) {
+        console.log(chalk.yellow(`  Port ${requestedPort} busy → using ${appServerPort}`));
+      }
 
       const bridge = new CodexAppServerBridge({
         registryUrl: options.registryUrl,
