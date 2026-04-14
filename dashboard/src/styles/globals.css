@@ -132,11 +132,6 @@ a {
   min-height: calc(100vh - 98px);
 }
 
-.channels-grid {
-  display: grid;
-  grid-template-columns: 360px minmax(0, 1fr);
-  min-height: calc(100vh - 98px);
-}
 
 .app-column {
   min-height: 0;

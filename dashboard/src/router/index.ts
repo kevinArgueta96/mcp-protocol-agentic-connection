@@ -14,9 +14,19 @@ const routes: RouteRecordRaw[] = [
     props: true,
   },
   {
+    path: "/inbox",
+    name: "inbox",
+    component: () => import("@/views/InboxView.vue"),
+  },
+  {
+    path: "/plans",
+    name: "plans",
+    component: () => import("@/views/PlansView.vue"),
+  },
+  // Legacy redirect
+  {
     path: "/channels",
-    name: "channels",
-    component: () => import("@/views/ConversationsView.vue"),
+    redirect: "/inbox",
   },
   {
     path: "/:pathMatch(.*)*",

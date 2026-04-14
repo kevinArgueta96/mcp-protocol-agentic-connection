@@ -78,6 +78,14 @@
             </span>
           </div>
           <div class="chat-box-actions">
+            <!-- Template picker -->
+            <div class="select-wrap template-select-wrap">
+              <select class="sig-select sig-select--xs" @change="applyTemplate">
+                <option value="">template…</option>
+                <option v-for="t in templates" :key="t.id" :value="t.id">{{ t.label }}</option>
+              </select>
+              <span class="select-caret">▾</span>
+            </div>
             <button
               v-if="chatStore.messages.length > 0"
               class="btn-ghost btn-ghost--sm"
@@ -119,12 +127,14 @@ import { useChatStore } from "@/stores/chat";
 import { useRegistryStore } from "@/stores/registry";
 import { dashboardChannelRuntime } from "@/lib/channel-runtime";
 import { fetchChannelConversations } from "@/lib/registry-client";
+import { MESSAGE_TEMPLATES } from "@/lib/message-templates";
 import AgentSelector from "./AgentSelector.vue";
 import ChatMessage from "./ChatMessage.vue";
 import type { ChannelConversationListEntry, WsMessage } from "@/types";
 
 const chatStore = useChatStore();
 const registryStore = useRegistryStore();
+const templates = MESSAGE_TEMPLATES;
 
 const input = ref("");
 const inputEl = ref<HTMLTextAreaElement | null>(null);
@@ -202,6 +212,20 @@ async function submit(): Promise<void> {
 
 async function sendReminder(): Promise<void> {
   await chatStore.sendReminder(effectiveTargetId.value);
+}
+
+function applyTemplate(e: Event): void {
+  const id = (e.target as HTMLSelectElement).value;
+  if (!id) return;
+  const t = templates.find((t) => t.id === id);
+  if (t) {
+    input.value = t.body;
+    nextTick(() => {
+      inputEl.value?.focus();
+      autoResize();
+    });
+  }
+  (e.target as HTMLSelectElement).value = "";
 }
 
 function autoResize(): void {
@@ -381,5 +405,16 @@ onUnmounted(() => {
   color: var(--red);
   background: rgba(255, 140, 124, 0.06);
   border-top: 1px solid rgba(255, 140, 124, 0.14);
+}
+
+.template-select-wrap {
+  max-width: 120px;
+  flex-shrink: 0;
+}
+
+.sig-select--xs {
+  font-size: 0.72rem;
+  padding: 2px 20px 2px 7px;
+  min-height: 28px;
 }
 </style>

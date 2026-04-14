@@ -20,10 +20,10 @@
         :key="tab.to"
         :to="tab.to"
         class="nav-tab"
-        :class="$route.path === tab.to ? 'nav-tab--active' : ''"
+        :class="($route.path === tab.to || (tab.to === '/' && $route.path.startsWith('/agents'))) ? 'nav-tab--active' : ''"
       >
         {{ tab.label }}
-        <span v-if="tab.to === '/channels' && pendingCount > 0" class="pending-badge">{{ pendingCount }}</span>
+        <span v-if="tab.to === '/inbox' && pendingCount > 0" class="pending-badge">{{ pendingCount }}</span>
       </RouterLink>
     </nav>
 
@@ -98,8 +98,9 @@ const statusLabel = computed(() => ({
 
 const registryUrl = computed(() => import.meta.env.VITE_REGISTRY_URL ?? "http://localhost:4999");
 const tabs = [
-  { to: "/", label: "dashboard" },
-  { to: "/channels", label: "conversations" },
+  { to: "/", label: "agents" },
+  { to: "/inbox", label: "inbox" },
+  { to: "/plans", label: "plans" },
 ];
 
 const pendingCount = ref(0);

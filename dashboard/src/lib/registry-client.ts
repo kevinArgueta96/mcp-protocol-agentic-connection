@@ -89,6 +89,14 @@ export async function reviveChannelConversation(conversationId: string): Promise
   if (!res.ok) throw new Error(`Conversation revival failed: ${res.status}`);
 }
 
+export async function retryChannelMessage(conversationId: string, messageId: string): Promise<void> {
+  const res = await fetch(
+    `${BASE}/channel/messages/${encodeURIComponent(conversationId)}/${encodeURIComponent(messageId)}/retry`,
+    { method: "POST" },
+  );
+  if (!res.ok) throw new Error(`Retry failed: ${res.status}`);
+}
+
 export async function createChannelMessage(input: {
   conversationId?: string;
   replyTo?: string;
