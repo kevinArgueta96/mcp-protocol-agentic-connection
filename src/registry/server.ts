@@ -575,10 +575,17 @@ export class RegistryServer {
           const mappedWs = this.agentWsMap.get(identifiedAgentId);
           if (mappedWs === ws) {
             this.agentWsMap.delete(identifiedAgentId);
-            // Mark unhealthy immediately so list_agents reflects the disconnect
-            // instead of waiting up to 3 minutes for the health check.
-            this.store.markUnhealthy(identifiedAgentId);
-            console.error(`[Registry WS] Agent disconnected: ${identifiedAgentId}`);
+            const entry = this.store.get(identifiedAgentId);
+            if (entry?.entryType === "client") {
+              // Client sessions are bound to their CLI process. Remove immediately on WS drop
+              // so the dashboard and list_agents never show a zombie entry when the CLI dies.
+              this.store.deregister(identifiedAgentId);
+            } else {
+              // Agents may still serve HTTP after losing their WS — just mark unhealthy so the
+              // dashboard reflects the disconnect without waiting 2 minutes for the health check.
+              this.store.markUnhealthy(identifiedAgentId);
+            }
+            console.error(`[Registry WS] Disconnected: ${identifiedAgentId}`);
           }
         }
       });
@@ -591,7 +598,12 @@ export class RegistryServer {
           const mappedWs = this.agentWsMap.get(identifiedAgentId);
           if (mappedWs === ws) {
             this.agentWsMap.delete(identifiedAgentId);
-            this.store.markUnhealthy(identifiedAgentId);
+            const entry = this.store.get(identifiedAgentId);
+            if (entry?.entryType === "client") {
+              this.store.deregister(identifiedAgentId);
+            } else {
+              this.store.markUnhealthy(identifiedAgentId);
+            }
           }
         }
       });

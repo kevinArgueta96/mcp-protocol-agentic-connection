@@ -88,14 +88,9 @@ export function registerGeminiCommand(program: Command): void {
 
       await service.start();
 
-      process.on("SIGINT", () => {
-        service.stop();
-        process.exit(0);
-      });
-      process.on("SIGTERM", () => {
-        service.stop();
-        process.exit(0);
-      });
+      process.on("SIGINT", () => { service.stop(); process.exit(0); });
+      process.on("SIGTERM", () => { service.stop(); process.exit(0); });
+      process.on("SIGHUP", () => { service.stop(); process.exit(0); });
     });
 
   // ── gemini app-bridge ──────────────────────────────────────────────────────
@@ -143,6 +138,7 @@ export function registerGeminiCommand(program: Command): void {
 
       process.on("SIGINT", () => void shutdown());
       process.on("SIGTERM", () => void shutdown());
+      process.on("SIGHUP", () => void shutdown());
 
       // Keep process alive
       await new Promise<never>(() => undefined);
@@ -208,6 +204,7 @@ export function registerGeminiCommand(program: Command): void {
 
       process.on("SIGINT", () => void cleanup().then(() => process.exit(0)));
       process.on("SIGTERM", () => void cleanup().then(() => process.exit(0)));
+      process.on("SIGHUP", () => void cleanup().then(() => process.exit(0)));
 
       // Keep process alive
       await new Promise<never>(() => undefined);

@@ -19,10 +19,10 @@ export function registerStartCommand(program: Command): void {
         const registry = new RegistryServer();
         await registry.start();
         console.log(chalk.green("✓") + " Registry started on http://localhost:4999");
-        process.on("SIGINT", async () => {
-          await registry.stop();
-          process.exit(0);
-        });
+        const stopRegistry = async () => { await registry.stop(); process.exit(0); };
+        process.on("SIGINT", () => void stopRegistry());
+        process.on("SIGTERM", () => void stopRegistry());
+        process.on("SIGHUP", () => void stopRegistry());
         return;
       }
 
@@ -47,10 +47,13 @@ export function registerStartCommand(program: Command): void {
       console.log(`  Project: ${result.card.name}`);
       console.log(`  Skills:  ${result.card.skills.map((s) => s.id).join(", ")}`);
 
-      process.on("SIGINT", async () => {
+      const stopAgent = async () => {
         console.log("\n" + chalk.yellow("Shutting down..."));
         await agent.stop();
         process.exit(0);
-      });
+      };
+      process.on("SIGINT", () => void stopAgent());
+      process.on("SIGTERM", () => void stopAgent());
+      process.on("SIGHUP", () => void stopAgent());
     });
 }
