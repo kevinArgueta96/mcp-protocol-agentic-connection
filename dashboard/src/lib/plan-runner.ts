@@ -9,7 +9,7 @@
 import { randomUUID } from "@/lib/utils";
 import { createChannelMessage } from "@/lib/registry-client";
 import { dashboardChannelRuntime } from "@/lib/channel-runtime";
-import type { ChannelAckPayload } from "@/types";
+import type { ChannelAckPayload, ChannelMessagePayload } from "@/types";
 import type { Plan, PlanRun, PlanStep, StepRunStatus } from "@/stores/plans";
 
 export interface PlanRunnerCallbacks {

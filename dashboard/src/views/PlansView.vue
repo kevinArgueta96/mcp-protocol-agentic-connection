@@ -192,7 +192,7 @@
                   <!-- Step run result (if any) -->
                   <div v-if="stepRunStatus(step.id)" class="step-run-result">
                     <span v-if="stepRunStatus(step.id)?.conversationId" class="step-conv-link">
-                      conv:
+                      thread:
                       <RouterLink
                         :to="{ name: 'inbox', query: { conv: stepRunStatus(step.id)!.conversationId } }"
                         class="inline-link"
@@ -200,6 +200,9 @@
                         {{ stepRunStatus(step.id)!.conversationId!.slice(0, 8) }}…
                       </RouterLink>
                     </span>
+                    <p v-if="stepRunStatus(step.id)?.responsePreview" class="step-response-preview">
+                      {{ stepRunStatus(step.id)!.responsePreview }}
+                    </p>
                     <span v-if="stepRunStatus(step.id)?.errorDetail" class="step-error">
                       {{ stepRunStatus(step.id)!.errorDetail }}
                     </span>
@@ -612,6 +615,22 @@ function cancelRun() {
   font-family: var(--font-mono);
   font-size: 0.65rem;
   color: var(--text-dim);
+}
+
+.step-response-preview {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.45;
+  padding: 6px 8px;
+  background: rgba(116, 227, 156, 0.06);
+  border: 1px solid rgba(116, 227, 156, 0.15);
+  border-radius: 6px;
+  max-height: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .step-error {
