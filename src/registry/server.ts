@@ -17,6 +17,7 @@ import type {
 
 const REGISTRY_PORT = 4999;
 const HEALTH_CHECK_INTERVAL_MS = 60_000;
+const ACK_SWEEP_INTERVAL_MS = 60_000;
 
 const dashboardDir = new URL("../../dashboard/dist", import.meta.url).pathname;
 
@@ -27,6 +28,7 @@ export class RegistryServer {
   private app = express();
   private httpServer: ReturnType<typeof createServer> | null = null;
   private healthCheckTimer: NodeJS.Timeout | null = null;
+  private ackSweepTimer: NodeJS.Timeout | null = null;
   private wsClients = new Set<WebSocket>();
   private agentWsMap = new Map<string, WebSocket>();
 
@@ -206,7 +208,7 @@ export class RegistryServer {
         return;
       }
 
-      const message = this.channelStore.createMessage({
+      const { message, created } = this.channelStore.createMessage({
         conversationId,
         messageId,
         replyTo,
@@ -222,32 +224,37 @@ export class RegistryServer {
         expectsResponse,
       });
 
-      this.eventBus.broadcast({
-        type: "channel.message",
-        timestamp: new Date().toISOString(),
-        data: message,
-      });
+      // Idempotency: if a duplicate `messageId` was posted (e.g. client retried due
+      // to a transient network error), the store returns the original row and we
+      // suppress the rebroadcast so receivers don't see it twice.
+      if (created) {
+        this.eventBus.broadcast({
+          type: "channel.message",
+          timestamp: new Date().toISOString(),
+          data: message,
+        });
 
-      // Backward-compatible event for older listeners
-      this.eventBus.broadcast({
-        type: "claude.notify",
-        timestamp: new Date().toISOString(),
-        data: { agentId, agentName, content, meta, conversationId: message.conversationId, messageId: message.messageId },
-      });
+        // Backward-compatible event for older listeners
+        this.eventBus.broadcast({
+          type: "claude.notify",
+          timestamp: new Date().toISOString(),
+          data: { agentId, agentName, content, meta, conversationId: message.conversationId, messageId: message.messageId },
+        });
 
-      // Targeted delivery: if message has a specific recipient, send directly to their WS
-      if (message.toAgentId) {
-        const targetWs = this.agentWsMap.get(message.toAgentId);
-        if (targetWs && targetWs.readyState === WebSocket.OPEN) {
-          targetWs.send(JSON.stringify({
-            type: "channel.message",
-            timestamp: new Date().toISOString(),
-            data: message,
-          }));
+        // Targeted delivery: if message has a specific recipient, send directly to their WS
+        if (message.toAgentId) {
+          const targetWs = this.agentWsMap.get(message.toAgentId);
+          if (targetWs && targetWs.readyState === WebSocket.OPEN) {
+            targetWs.send(JSON.stringify({
+              type: "channel.message",
+              timestamp: new Date().toISOString(),
+              data: message,
+            }));
+          }
         }
       }
 
-      res.json({ ok: true, conversationId: message.conversationId, messageId: message.messageId });
+      res.json({ ok: true, conversationId: message.conversationId, messageId: message.messageId, deduplicated: !created });
     });
 
     this.app.post("/channel/messages", (req, res) => {
@@ -261,7 +268,7 @@ export class RegistryServer {
       const revived = body.conversationId
         ? this.channelStore.reviveConversation(body.conversationId)
         : false;
-      const message = this.channelStore.createMessage({
+      const { message, created } = this.channelStore.createMessage({
         conversationId: body.conversationId,
         messageId: body.messageId,
         replyTo: body.replyTo,
@@ -279,35 +286,40 @@ export class RegistryServer {
         expectsResponse: body.expectsResponse,
       });
 
-      // Send revive BEFORE the message so receiving clients clear deletedConversationIds
-      // before trackMessage() runs — otherwise the message would be silently dropped.
-      if (revived) {
-        this.eventBus.broadcast({
-          type: "channel.conversation.revived",
-          timestamp: new Date().toISOString(),
-          data: { conversationId: message.conversationId },
-        });
-      }
-
-      this.eventBus.broadcast({
-        type: "channel.message",
-        timestamp: new Date().toISOString(),
-        data: message,
-      });
-
-      // Targeted delivery: if message has a specific recipient, send directly to their WS
-      if (message.toAgentId) {
-        const targetWs = this.agentWsMap.get(message.toAgentId);
-        if (targetWs && targetWs.readyState === WebSocket.OPEN) {
-          targetWs.send(JSON.stringify({
-            type: "channel.message",
+      // Idempotency: if a duplicate `messageId` was posted, suppress all broadcasts.
+      // The 200 response below still echoes the canonical persisted message so the
+      // caller can treat the retry as success.
+      if (created) {
+        // Send revive BEFORE the message so receiving clients clear deletedConversationIds
+        // before trackMessage() runs — otherwise the message would be silently dropped.
+        if (revived) {
+          this.eventBus.broadcast({
+            type: "channel.conversation.revived",
             timestamp: new Date().toISOString(),
-            data: message,
-          }));
+            data: { conversationId: message.conversationId },
+          });
+        }
+
+        this.eventBus.broadcast({
+          type: "channel.message",
+          timestamp: new Date().toISOString(),
+          data: message,
+        });
+
+        // Targeted delivery: if message has a specific recipient, send directly to their WS
+        if (message.toAgentId) {
+          const targetWs = this.agentWsMap.get(message.toAgentId);
+          if (targetWs && targetWs.readyState === WebSocket.OPEN) {
+            targetWs.send(JSON.stringify({
+              type: "channel.message",
+              timestamp: new Date().toISOString(),
+              data: message,
+            }));
+          }
         }
       }
 
-      res.status(201).json(message);
+      res.status(created ? 201 : 200).json({ ...message, deduplicated: !created });
     });
 
     this.app.post("/channel/acks", (req, res) => {
@@ -619,13 +631,48 @@ export class RegistryServer {
       this.store.healthCheck();
     }, HEALTH_CHECK_INTERVAL_MS);
 
+    // Ack sweeper: every minute, mark as `failed` any message that requested a
+    // response, has passed its expiresAt deadline, and never reached a terminal
+    // ack. This unblocks senders waiting on the conversation state machine and
+    // gives the dashboard a definitive end-state instead of a "pending forever".
+    this.ackSweepTimer = setInterval(() => this.sweepExpiredAcks(), ACK_SWEEP_INTERVAL_MS);
+
     console.error(`[Registry] Listening on http://localhost:${this.port}`);
     console.error(`[Registry] Dashboard: http://localhost:${this.port}/dashboard`);
+  }
+
+  private sweepExpiredAcks(): void {
+    try {
+      const expired = this.channelStore.findExpiredAwaitingReply(Date.now());
+      if (expired.length === 0) return;
+      for (const message of expired) {
+        const ack = this.channelStore.addAck({
+          conversationId: message.conversationId,
+          messageId: message.messageId,
+          state: "failed",
+          actorId: "registry",
+          actorType: "registry",
+          timestamp: Date.now(),
+          detail: "Expired without reply (registry sweeper)",
+        });
+        this.eventBus.broadcast({
+          type: "channel.ack",
+          timestamp: new Date().toISOString(),
+          data: ack,
+        });
+      }
+      console.error(`[Registry] Ack sweeper marked ${expired.length} expired message(s) as failed`);
+    } catch (err: unknown) {
+      console.error("[Registry] Ack sweeper failed:", err instanceof Error ? err.message : err);
+    }
   }
 
   async stop(): Promise<void> {
     if (this.healthCheckTimer) {
       clearInterval(this.healthCheckTimer);
+    }
+    if (this.ackSweepTimer) {
+      clearInterval(this.ackSweepTimer);
     }
 
     // Close all WS clients

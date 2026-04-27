@@ -4,6 +4,7 @@ import { basename } from "node:path";
 import { GeminiAcpClient, type InjectionContext } from "./gemini-acp-client.js";
 import { ChannelTransport } from "./channel-transport.js";
 import { ChannelClientRuntime } from "./channel-client-runtime.js";
+import { BoundedIdSet } from "./bounded-id-set.js";
 import { RegistryClient } from "./registry-client.js";
 import type { ChannelMessage } from "../types/messages.js";
 
@@ -57,8 +58,9 @@ export class GeminiAcpBridge extends EventEmitter {
 
   /** MessageIds delivered to (or in flight to) the underlying Gemini ACP session.
    *  Built from successful injections + terminal acks owned by this bridge actor
-   *  during registry sync. Prevents duplicate prompts on revive/retry/replay. */
-  private readonly injectedMessageIds = new Set<string>();
+   *  during registry sync. Prevents duplicate prompts on revive/retry/replay.
+   *  Bounded to keep memory predictable in long-running daemons. */
+  private readonly injectedMessageIds = new BoundedIdSet(5_000);
   private syncInFlight = false;
 
   constructor(options: GeminiAcpBridgeOptions = {}) {

@@ -6,6 +6,7 @@ import { basename } from "node:path";
 import { CodexAppServerClient, type InjectionContext } from "./codex-app-server-client.js";
 import { ChannelTransport } from "./channel-transport.js";
 import { ChannelClientRuntime } from "./channel-client-runtime.js";
+import { BoundedIdSet } from "./bounded-id-set.js";
 import { RegistryClient } from "./registry-client.js";
 import type { ChannelMessage } from "../types/messages.js";
 
@@ -59,8 +60,9 @@ export class CodexAppServerBridge extends EventEmitter {
   /** MessageIds that have been (or are being) delivered to the underlying Codex
    *  process. Built from (a) successful injections, and (b) terminal acks from
    *  this same bridge actor when syncing the registry on startup/reconnect.
-   *  Used to avoid double-injection on revive/retry/replay. */
-  private readonly injectedMessageIds = new Set<string>();
+   *  Used to avoid double-injection on revive/retry/replay. Bounded to keep
+   *  memory predictable in long-running daemons. */
+  private readonly injectedMessageIds = new BoundedIdSet(5_000);
   private syncInFlight = false;
 
   constructor(options: CodexAppServerBridgeOptions = {}) {

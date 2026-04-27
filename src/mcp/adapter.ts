@@ -26,6 +26,7 @@ import { ChannelTransport } from "../client/channel-transport.js";
 import { ChannelClientRuntime } from "../client/channel-client-runtime.js";
 import { ConversationService } from "../client/conversation-service.js";
 import { DefaultClientProfileResolver, type ClientBehaviorProfile } from "../client/client-profile-resolver.js";
+import { BoundedIdSet } from "../client/bounded-id-set.js";
 import { RegistryServer } from "../registry/server.js";
 import type { RegistryEntry, AgentMessage, ChannelMessage } from "../types/messages.js";
 
@@ -90,7 +91,7 @@ export class McpAgentBridge {
   private clientAgentId: string | null = null;
   private clientActivating = false;
   private embeddedRegistry: RegistryServer | null = null;
-  private surfacedInboxMessageIds = new Set<string>();
+  private surfacedInboxMessageIds = new BoundedIdSet(5_000);
   private pendingPreInitMessages: ChannelMessage[] = [];
   private syncInFlight = false;
 
@@ -116,11 +117,25 @@ export class McpAgentBridge {
       {
         capabilities: { experimental: { "claude/channel": {} } },
         instructions:
-          "You are connected to agent-bridge, a multi-agent communication hub. " +
-          "Use list_agents to discover connected agents and client sessions. " +
-          "Use message_client_session to send messages to other clients. " +
-          "Use reply to respond to incoming channel messages. " +
-          "Use channel_inbox to inspect pending conversations.",
+          "You are connected to agent-bridge, a multi-agent communication hub.\n\n" +
+          "WORKFLOW:\n" +
+          "  • Discover targets:  list_agents(includeClients=true)\n" +
+          "  • Start a thread:    message_client_session(clientId|project, message)\n" +
+          "  • See pending in:    channel_inbox(pendingOnly=true) — every entry has a `replyWith` block\n" +
+          "  • Respond to one:    reply(agentId, conversationId, replyTo, message) — copy fields from replyWith verbatim\n\n" +
+          "ROUTING RULES — read this once, you will not have to fix routing manually:\n" +
+          "  • Claude Code peers receive your message as an immediate <channel> push event.\n" +
+          "  • Codex / Gemini peers run behind a bridge daemon that injects your message as a new turn\n" +
+          "    prompt to the agent. There are TWO registry entries per Codex/Gemini session:\n" +
+          "      - the bridge:        client-codex-bridge-* / client-gemini-bridge-*\n" +
+          "      - the inner client:  client-codex-mcp-client-* / client-gemini-mcp-client-*\n" +
+          "    Only the bridge can deliver a message to the agent. The inner client can only RECEIVE\n" +
+          "    push notifications (which Codex/Gemini ignore reactively).\n" +
+          "  • The adapter AUTO-REDIRECTS any inner-client agentId you pass to its bridge for the same\n" +
+          "    project. So you can copy `replyWith.agentId` straight from channel_inbox or the\n" +
+          "    `<channel>` event's `from_agent` field — routing is fixed for you, no manual lookup.\n" +
+          "  • If a delivery returns `delivered_to_bridge` and never advances, the bridge is offline\n" +
+          "    or the agent is mid-turn. Wait or call channel_inbox to inspect.",
       },
     );
     this.setupChannelRuntime();
@@ -574,11 +589,43 @@ export class McpAgentBridge {
             };
           }
 
+          // Prefetch the agents list once and build a (projectPath → bridge) index so
+          // we can resolve `replyWith.agentId` to the bridge agentId for Codex/Gemini
+          // peers without doing N HTTP lookups inside the conversation loop.
+          let bridgeByProject = new Map<string, RegistryEntry>();
+          let agentById = new Map<string, RegistryEntry>();
+          try {
+            const allAgents = await this.registry.listAgents();
+            for (const entry of allAgents) {
+              agentById.set(entry.agentId, entry);
+              const cv = entry.clientInfo?.clientVersion;
+              if (cv === "app-server-bridge" || cv === "acp-bridge") {
+                bridgeByProject.set(entry.projectPath, entry);
+              }
+            }
+          } catch {
+            // best-effort — fall through with empty maps; replyWith just keeps the raw fromAgentId
+          }
+          const resolveReplyAgentId = (rawAgentId: string): string => {
+            const entry = agentById.get(rawAgentId);
+            if (!entry) return rawAgentId;
+            const cv = entry.clientInfo?.clientVersion ?? "";
+            const cn = (entry.clientInfo?.clientName ?? "").toLowerCase();
+            const isBridge = cv === "app-server-bridge" || cv === "acp-bridge";
+            const isCodexOrGemini = cn.includes("codex") || cn.includes("gemini");
+            if (!isCodexOrGemini || isBridge) return rawAgentId;
+            return bridgeByProject.get(entry.projectPath)?.agentId ?? rawAgentId;
+          };
+
           const payload = conversations.map((snapshot) => {
             // Find the latest inbound pending message (not from self) to surface reply context
             const latestInbound = snapshot.pendingMessages
               .filter((m) => m.fromAgentId !== this.clientAgentId)
               .at(-1);
+
+            const routedReplyAgentId = latestInbound
+              ? resolveReplyAgentId(latestInbound.fromAgentId)
+              : undefined;
 
             return {
               conversationId: snapshot.conversation.conversationId,
@@ -588,12 +635,18 @@ export class McpAgentBridge {
               lastUpdatedAt: snapshot.lastUpdatedAt,
               expiresAt: snapshot.lastMessage?.expiresAt,
               lastMessagePreview: snapshot.lastMessage?.content.slice(0, 160),
-              // Exact parameters to pass to the reply tool — no guesswork needed
+              // Exact parameters to pass to the reply tool — no guesswork needed.
+              // For Codex/Gemini peers, `agentId` is already the bridge so the message
+              // is delivered as a turn prompt. The original sender's fromAgentId is
+              // preserved in `originalFromAgentId` for traceability.
               replyWith: latestInbound
                 ? {
-                    agentId: latestInbound.fromAgentId,
+                    agentId: routedReplyAgentId!,
                     conversationId: snapshot.conversation.conversationId,
                     replyTo: latestInbound.messageId,
+                    ...(routedReplyAgentId !== latestInbound.fromAgentId
+                      ? { originalFromAgentId: latestInbound.fromAgentId }
+                      : {}),
                   }
                 : undefined,
               pendingMessages: snapshot.pendingMessages.map((message) => ({
@@ -640,13 +693,20 @@ export class McpAgentBridge {
           "Initiate or continue a channel message thread with a client session (Claude Code, Codex, Gemini). " +
           "USE THIS when you want to proactively send a message or task to another agent. " +
           "DO NOT USE THIS to reply to a pending inbound message — use the reply tool for that instead. " +
-          "WORKFLOW: (1) call list_agents(includeClients=true) to find the target's agentId, " +
+          "\n\nWORKFLOW: (1) call list_agents(includeClients=true) to find the target's agentId, " +
           "(2) call message_client_session(clientId=<agentId>, message=<text>). " +
           "Target resolution order when clientId is not provided: " +
           "(a) conversationId participant lookup, (b) project name/path match; " +
           "when a project has multiple sessions, claude-code > gemini > codex (override with clientType). " +
-          "Claude Code receives messages as immediate <channel> push events; " +
-          "Codex/Gemini bridges inject the message as a new turn prompt.",
+          "\n\nDELIVERY SEMANTICS by target type:" +
+          "\n  • Claude Code  → message arrives as an immediate <channel> push event." +
+          "\n  • Codex/Gemini → message is injected as a new turn prompt by the bridge daemon." +
+          "\n\nROUTING (you do NOT need to know which agentId is the bridge): if you pass an inner " +
+          "Codex/Gemini MCP-client agentId (e.g. client-codex-mcp-client-* or client-gemini-mcp-client-*), " +
+          "the adapter auto-redirects the message to the bridge for the same project. So you can copy " +
+          "the `from_agent` of an inbound <channel> event or `replyWith.agentId` from channel_inbox " +
+          "directly — routing is fixed transparently. This avoids the failure mode where a message " +
+          "gets stuck at `delivered_to_bridge` because it was sent to a passive inner client.",
         inputSchema: {
           clientId: z.string().optional().describe("Exact agentId of the target client session (from list_agents). Most reliable — use this whenever possible."),
           project: z.string().optional().describe("Project name or path substring to resolve the target session. Use when you don't have the exact agentId."),
@@ -669,11 +729,15 @@ export class McpAgentBridge {
           "Reply to a pending inbound channel message from another agent and mark the thread as answered. " +
           "USE THIS when channel_inbox shows a pending message and you want to respond. " +
           "DO NOT USE THIS to initiate a new conversation — use message_client_session for that. " +
-          "WORKFLOW: (1) call channel_inbox(pendingOnly=true), " +
+          "\n\nWORKFLOW: (1) call channel_inbox(pendingOnly=true), " +
           "(2) read the replyWith field of the conversation, " +
           "(3) call reply(agentId=replyWith.agentId, conversationId=replyWith.conversationId, replyTo=replyWith.replyTo, message=<your response>). " +
           "All three routing fields (agentId, conversationId, replyTo) are REQUIRED — copy them exactly from replyWith. " +
-          "After calling this, the conversation is marked 'answered' and the sender receives your reply.",
+          "After calling this, the conversation is marked 'answered' and the sender receives your reply." +
+          "\n\nROUTING: if `agentId` is a Codex/Gemini inner MCP client (which is what their `reply` tool " +
+          "stamps as `fromAgentId` of their replies), the adapter auto-redirects to the project's bridge " +
+          "daemon so the agent receives your reply as a turn prompt. You should always copy " +
+          "`replyWith.agentId` verbatim — do NOT try to substitute a bridge agentId yourself.",
         inputSchema: {
           agentId: z.string().describe("The agentId of the sender you are replying to — MUST be replyWith.agentId from channel_inbox"),
           message: z.string().describe("Your reply text"),
@@ -688,8 +752,21 @@ export class McpAgentBridge {
           // Sync store before reply so resolveReplyContext has fresh data
           await this.syncRegistryToLocalStore();
 
+          // Auto-redirect: if `agentId` is a Codex/Gemini inner MCP client (which is
+          // typically what `replyWith.agentId` returns when the inbound message came
+          // from one of those agents), route the reply through the project's bridge
+          // so the agent actually receives it as a turn prompt.
+          let routedAgentId = agentId;
+          try {
+            const target = await this.resolveAgent(agentId);
+            const deliverable = await this.resolveDeliverableTarget(target);
+            routedAgentId = deliverable.agentId;
+          } catch {
+            // best-effort — keep the original agentId if lookup fails
+          }
+
           const replyResult = await this.conversationService.replyAndAcknowledge({
-            agentId,
+            agentId: routedAgentId,
             conversationId,
             replyTo,
             taskId,
@@ -747,6 +824,56 @@ export class McpAgentBridge {
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────────
+
+  /** Auto-redirect to a bridge daemon when the user-supplied target is a Codex/Gemini
+   *  inner MCP client.
+   *
+   *  Why: Codex and Gemini sessions register TWO entries in the registry —
+   *    1. the bridge daemon (`client-codex-bridge-*` / `client-gemini-bridge-*`),
+   *    2. the inner MCP client running inside the agent (`client-codex-mcp-client-*` /
+   *       `client-gemini-mcp-client-*`).
+   *
+   *  Only the bridge can deliver a message to the agent (it injects the content as a
+   *  new turn prompt). The inner client can only receive `notifications/message` push
+   *  events, which Codex/Gemini do NOT process reactively — so a message sent there
+   *  lands as a "displayed_to_client" log line and the agent never reads it.
+   *
+   *  This used to require the caller to know the bridge agentId. We now auto-redirect
+   *  transparently so any inner-client agentId you pass (including the `fromAgentId`
+   *  of an inbound reply or `replyWith.agentId` from channel_inbox) routes to the
+   *  bridge of the same project.
+   *
+   *  Returns the original entry unchanged for Claude Code targets and for entries
+   *  that are already a bridge. */
+  private async resolveDeliverableTarget(target: RegistryEntry): Promise<RegistryEntry> {
+    const clientVersion = target.clientInfo?.clientVersion ?? "";
+    const clientName = (target.clientInfo?.clientName ?? "").toLowerCase();
+    const isBridge = clientVersion === "app-server-bridge" || clientVersion === "acp-bridge";
+    const isCodexOrGemini = clientName.includes("codex") || clientName.includes("gemini");
+
+    if (!isCodexOrGemini || isBridge) return target;
+
+    try {
+      const all = await this.registry.listAgents();
+      const bridge = all.find(
+        (e) =>
+          e.entryType === "client" &&
+          e.projectPath === target.projectPath &&
+          (e.clientInfo?.clientVersion === "app-server-bridge" ||
+            e.clientInfo?.clientVersion === "acp-bridge"),
+      );
+      if (bridge) {
+        console.error(
+          `[MCP] Auto-redirect ${target.agentId.slice(0, 24)} (${clientName} inner client) ` +
+            `→ ${bridge.agentId.slice(0, 24)} (bridge) — Codex/Gemini cannot act on push notifications.`,
+        );
+        return bridge;
+      }
+    } catch {
+      // best-effort — fall through to the original target
+    }
+    return target;
+  }
 
   private async resolveAgent(agentId: string): Promise<RegistryEntry> {
     try {
@@ -878,12 +1005,15 @@ export class McpAgentBridge {
     timeoutMs?: number;
   }): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
     try {
-      const client = await this.resolveClientSession({
+      const resolved = await this.resolveClientSession({
         clientId: params.clientId,
         project: params.project,
         clientType: params.clientType,
         conversationId: params.conversationId,
       });
+      // Codex/Gemini inner MCP clients can't act on push notifications; transparently
+      // route the message through their bridge daemon instead.
+      const client = await this.resolveDeliverableTarget(resolved);
       const expectsResponse = params.expectsResponse ?? true;
       const expiresAt = expectsResponse ? Date.now() + (params.timeoutMs ?? 300_000) : undefined;
       // Use a deterministic conversationId so both sides always share the same thread.

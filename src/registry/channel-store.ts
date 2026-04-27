@@ -46,11 +46,34 @@ export class ChannelStore {
     `);
   }
 
+  /** Look up an existing message by id, regardless of conversation. */
+  getMessage(messageId: string): ChannelMessage | undefined {
+    const row = this.db.prepare(`
+      SELECT payload_json
+      FROM channel_messages
+      WHERE message_id = ?
+    `).get(messageId) as { payload_json: string } | undefined;
+    return row ? (JSON.parse(row.payload_json) as ChannelMessage) : undefined;
+  }
+
+  /** Create a new message, or return the existing one if its `messageId` is already
+   *  persisted. The returned `created` flag tells the caller whether this was a fresh
+   *  insert (and therefore needs to be broadcast) or a duplicate retry that the caller
+   *  should silently dedup.
+   *
+   *  Idempotency is keyed on `messageId`. Senders that retry `POST /channel/messages`
+   *  with the same explicit `messageId` will only see one broadcast and one row in
+   *  `channel_messages`. */
   createMessage(input: Omit<ChannelMessage, "conversationId" | "messageId" | "createdAt"> & {
     conversationId?: string;
     messageId?: string;
     createdAt?: number;
-  }): ChannelMessage {
+  }): { message: ChannelMessage; created: boolean } {
+    if (input.messageId) {
+      const existing = this.getMessage(input.messageId);
+      if (existing) return { message: existing, created: false };
+    }
+
     const message: ChannelMessage = {
       ...input,
       conversationId: input.conversationId ?? randomUUID(),
@@ -60,7 +83,7 @@ export class ChannelStore {
     };
 
     this.db.prepare(`
-      INSERT OR REPLACE INTO channel_messages (message_id, conversation_id, created_at, payload_json)
+      INSERT INTO channel_messages (message_id, conversation_id, created_at, payload_json)
       VALUES (?, ?, ?, ?)
     `).run(
       message.messageId,
@@ -69,7 +92,7 @@ export class ChannelStore {
       JSON.stringify(message),
     );
 
-    return message;
+    return { message, created: true };
   }
 
   addAck(ack: ChannelAck): ChannelAck {
@@ -125,6 +148,30 @@ export class ChannelStore {
     }
 
     return entries;
+  }
+
+  /** Find messages that are awaiting a reply but whose `expiresAt` deadline has
+   *  passed without ever receiving a terminal ack (`answered` or `failed`). Used
+   *  by the registry's ack sweeper to mark stuck conversations as failed and
+   *  notify subscribers, instead of letting them sit in `pending` forever. */
+  findExpiredAwaitingReply(now: number): ChannelMessage[] {
+    const expired: ChannelMessage[] = [];
+    const entries = this.listConversations();
+    for (const entry of entries) {
+      if (!entry.expired) continue;
+      const messages = this.loadMessages(entry.conversationId);
+      const acks = this.loadAcks(entry.conversationId);
+      const latestAckByMessage = new Map<string, ChannelAck>();
+      for (const ack of acks) latestAckByMessage.set(ack.messageId, ack);
+      for (const msg of messages) {
+        if (!msg.expectsResponse) continue;
+        if (typeof msg.expiresAt !== "number" || msg.expiresAt > now) continue;
+        const lastAck = latestAckByMessage.get(msg.messageId);
+        if (lastAck?.state === "answered" || lastAck?.state === "failed") continue;
+        expired.push(msg);
+      }
+    }
+    return expired;
   }
 
   retryMessage(conversationId: string, messageId: string): ChannelMessage | undefined {

@@ -113,6 +113,76 @@ This is the canonical fix because the **registry's SQLite ledger of acks is the 
 
 Both paths now reconstruct ack history from the registry, so a transient WS drop while a user typed a reply on the other side cannot cause the reply to be re-surfaced as "new" — its `answered` ack is replayed first.
 
+## Bug 5 — Duplicate broadcasts on `POST /channel/messages` retries
+
+### Symptom
+
+If a client retries `POST /channel/messages` (transient network error, or any future client-side retry policy) with the same explicit `messageId`, the registry would broadcast the message again. Receivers had to dedup at their layer (which they now do, after Bugs 1–3), but the registry itself was re-broadcasting.
+
+### Fix
+
+`ChannelStore.createMessage` is now idempotent on `messageId`:
+
+- Returns `{ message, created }`.
+- If `messageId` already exists in `channel_messages`, returns the persisted row with `created=false`. Switched the `INSERT OR REPLACE` to plain `INSERT` since duplicates short-circuit before reaching it.
+- Both `POST /channel/messages` handlers in `src/registry/server.ts` (the modern channel endpoint and the legacy `claude.notify` shim) suppress the global broadcast, the targeted WS send, and the legacy `claude.notify` event when `!created`. The HTTP response still echoes the canonical persisted message so the retry can be treated as success; a `deduplicated: true` flag is added to the body for observability.
+
+The result: senders can retry safely on any transient failure without polluting receivers' inboxes.
+
+## Bug 6 — `replyWith.agentId` exposed inner Codex/Gemini IDs
+
+### Symptom
+
+`channel_inbox` returned `replyWith.agentId = latestInbound.fromAgentId`. For Codex/Gemini peers, that was the inner MCP-client identity (e.g. `client-codex-mcp-client-*`). Callers that copied the value verbatim into `reply` triggered the auto-redirect (Bug 4 fix), but the surfaced UX still leaked the wrong-looking id.
+
+### Fix
+
+The `channel_inbox` handler now prefetches the agents list once, builds a `(projectPath → bridge)` index, and resolves `replyWith.agentId` to the bridge agentId for any Codex/Gemini inner client. The original raw value is preserved in a new `replyWith.originalFromAgentId` field for traceability when a redirect happened. Claude Code peers and bridges pass through unchanged (no `originalFromAgentId` field present).
+
+Net effect: an LLM that copies `replyWith.agentId` directly now sees the bridge id from the start, the auto-redirect in `reply` is a no-op for that case, and the UX matches the actual delivery target.
+
+## Bug 7 — Unbounded in-process dedup sets
+
+### Symptom
+
+`McpAgentBridge.surfacedInboxMessageIds` and the bridges' `injectedMessageIds` were plain `Set<string>` instances. Their size grows linearly with traffic for the lifetime of a process — a daemon running for weeks would slowly leak memory proportional to message volume.
+
+### Fix
+
+Introduced `BoundedIdSet` (`src/client/bounded-id-set.ts`): an insertion-ordered set with a hard cap (default 5 000 entries) that evicts the oldest id on overflow. Applied in:
+
+- `src/mcp/adapter.ts` — `surfacedInboxMessageIds`
+- `src/client/codex-app-server-bridge.ts` — `injectedMessageIds`
+- `src/client/gemini-acp-bridge.ts` — `injectedMessageIds`
+
+The eviction can never cause duplicate delivery: the registry's persisted ack ledger is the authoritative source for "did I already handle this?", and the sync-on-startup / sync-on-reconnect paths rebuild the in-process set from there. A bounded set just means the same already-handled message might fail the in-memory dedup check once after eviction — at which point the registry's terminal-ack filter (Bugs 2 and 3) kicks in and skips it correctly.
+
+## Bug 8 — Pending conversations stuck in `pending` forever
+
+### Symptom
+
+A message with `expectsResponse=true` whose `expiresAt` deadline passed without a reply stayed visible to the dashboard / inbox as `pending` (or, if the read-time computation flagged it, `expired`). The registry never *wrote* a terminal ack, so subscribers waiting on the conversation state machine had no event to react to.
+
+### Fix
+
+`ChannelStore.findExpiredAwaitingReply(now)` returns every message with `expectsResponse=true`, `expiresAt <= now`, and no terminal (`answered` / `failed`) ack. The registry server runs an **ack sweeper** every 60 s (`ACK_SWEEP_INTERVAL_MS`) that:
+
+1. Finds expired-awaiting-reply messages.
+2. For each, persists a `failed` ack with `actorId="registry"`, `actorType="registry"`, and detail `"Expired without reply (registry sweeper)"`.
+3. Broadcasts a `channel.ack` event so live subscribers see the state transition.
+
+Senders polling `waitForAcknowledgement` now unblock with `failed` instead of timing out silently, and dashboards get a definitive end-state. The sweeper is started in `RegistryServer.start()` and cleared in `stop()`.
+
+## Tests
+
+Three test suites cover the critical paths:
+
+- `src/__tests__/channel-store-idempotency.test.ts` — `createMessage` returns `created=true` on first insert and `created=false` on duplicate `messageId` without overwriting; `findExpiredAwaitingReply` correctly filters by `expiresAt`, `expectsResponse`, and the latest ack state.
+- `src/__tests__/seed-from-snapshot.test.ts` — `seedFromSnapshot(messages, acks)` reconstructs `lastAckState` and `awaitingReply`; acks are applied in timestamp order so the latest one wins.
+- `src/__tests__/bounded-id-set.test.ts` — capacity, FIFO eviction, no-op duplicate add, clear semantics.
+
+`pnpm test` is green: 58 tests across 5 suites (the existing `channel-dedup` and `registry-store` plus the three new ones).
+
 ## Improvements still on the table
 
 These are not implemented yet but follow naturally:
@@ -163,10 +233,48 @@ The contract becomes: the **registry's persisted ack ledger** is the single sour
 
 The bridges already declared the right capabilities in their respective `initialize` handshakes (Codex app-server's `tui_app_server` for turn injection; Gemini ACP's `session/new` with `cwd` + `mcpServers`), so the only gap was the higher-level recovery layer — now closed.
 
+## Bug 4 — Codex/Gemini "stuck at `delivered_to_bridge`" routing trap
+
+### Symptom (from a real session)
+
+A Claude Code session sent a message to a Codex peer and got a reply. The reply arrived as a `<channel>` push with `from_agent=client-codex-mcp-client-*`. Claude then sent a follow-up using *that* `fromAgentId` as the recipient. The follow-up landed at state `delivered_to_bridge` and **never advanced** to `displayed_to_client` or `answered`. The Codex agent never saw the message.
+
+### Root cause
+
+A Codex (or Gemini) session that loads `agent-bridge` as an MCP plugin registers **two** entries in the registry for the same project:
+
+- **Bridge daemon** — `client-codex-bridge-*` / `client-gemini-bridge-*`. Injects messages as new turn prompts via the underlying ACP/app-server protocol. **Can deliver to the agent.**
+- **Inner MCP client** — `client-codex-mcp-client-*` / `client-gemini-mcp-client-*`. Runs *inside* the agent and receives `notifications/message` push events, which Codex/Gemini do not act on reactively. **Cannot deliver to the agent.**
+
+When the inner agent uses its `reply` tool, the resulting `fromAgentId` is the **inner MCP client** identity. That's the natural ID for any sender to copy back as the next recipient — but it's the wrong destination for delivery, because only the bridge can inject a turn.
+
+The result is the documented failure mode: message reaches the registry, registry broadcasts it, the inner client gets a push it doesn't act on, the bridge ignores it (`toAgentId !== bridge.clientAgentId`), and the message stalls forever at `delivered_to_bridge`.
+
+### Fix
+
+Two changes in `src/mcp/adapter.ts`:
+
+1. **`resolveDeliverableTarget(target)` helper.** Given any registry entry, if its `clientName` looks like Codex or Gemini and its `clientVersion` is **not** a bridge variant (`app-server-bridge` / `acp-bridge`), look up the matching bridge entry for the same `projectPath` and return that instead. Returns the original entry untouched for Claude Code peers and for entries that are already a bridge.
+2. **Apply transparently** in both write paths:
+   - `handleMessageClientSession` — after `resolveClientSession(...)`, redirect through `resolveDeliverableTarget`. The recipient seen on the wire is the bridge, even if the user passed an inner-client agentId.
+   - `reply` handler — same redirect on the `agentId` argument before handing it to `ConversationService.replyAndAcknowledge`. So copying `replyWith.agentId` verbatim from `channel_inbox` always works, even when that ID is the inner MCP client of a Codex/Gemini session.
+
+The redirect is logged once per call (`[MCP] Auto-redirect <inner> → <bridge>`) so it's observable but doesn't surface to the LLM.
+
+### Tool description rewrite
+
+The MCP tool descriptions and the top-level `instructions` of the `McpServer` constructor were rewritten so any LLM client (Claude, Codex, Gemini, future others) can understand the rules without external documentation:
+
+- **Server-level `instructions`** now state explicitly: bridges vs inner clients, what each can do, that the adapter auto-redirects, and the typical failure signal (`delivered_to_bridge` not advancing).
+- **`message_client_session` description** documents the delivery semantics per target type and notes that any inner-client agentId is auto-redirected, so callers can copy `from_agent` / `replyWith.agentId` directly.
+- **`reply` description** explicitly tells the caller to copy `replyWith.agentId` verbatim and not try to substitute a bridge ID by hand — the adapter handles it.
+
+This is the change that prevents the bug from re-appearing whenever a new agent (or a new LLM revision) starts using the CLI.
+
 ## Files modified
 
 - `src/client/channel-client-runtime.ts` — `seedFromSnapshot` accepts and replays acks.
-- `src/mcp/adapter.ts` — `deliverChannelMessage` defers `surfacedInboxMessageIds.add` until push succeeds; `tryPushNotification` uses 5 attempts with capped exponential backoff; `syncRegistryToLocalStore` skips messages with terminal acks.
+- `src/mcp/adapter.ts` — `deliverChannelMessage` defers `surfacedInboxMessageIds.add` until push succeeds; `tryPushNotification` uses 5 attempts with capped exponential backoff; `syncRegistryToLocalStore` skips messages with terminal acks; **adds `resolveDeliverableTarget` for inner→bridge auto-redirect, applied in `message_client_session` and `reply`; rewrites server `instructions` and tool descriptions to document routing rules.**
 - `src/client/codex-app-server-bridge.ts` — adds `injectedMessageIds` dedup, `syncMissedMessages()` on startup and on every `ws.open`, and dedups live `channel.message` events.
 - `src/client/gemini-acp-bridge.ts` — same fixes as the Codex bridge (also already had a `ws.open` re-identify hook from a prior commit; sync is now hooked to it).
 
