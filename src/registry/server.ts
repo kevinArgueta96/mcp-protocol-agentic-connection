@@ -18,6 +18,8 @@ import type {
 const REGISTRY_PORT = 4999;
 const HEALTH_CHECK_INTERVAL_MS = 60_000;
 const ACK_SWEEP_INTERVAL_MS = 60_000;
+const CONVERSATION_CLEANUP_INTERVAL_MS = 60 * 60_000; // hourly
+const CONVERSATION_RETENTION_MS = 30 * 24 * 60 * 60_000; // 30 days
 
 const dashboardDir = new URL("../../dashboard/dist", import.meta.url).pathname;
 
@@ -29,6 +31,7 @@ export class RegistryServer {
   private httpServer: ReturnType<typeof createServer> | null = null;
   private healthCheckTimer: NodeJS.Timeout | null = null;
   private ackSweepTimer: NodeJS.Timeout | null = null;
+  private conversationCleanupTimer: NodeJS.Timeout | null = null;
   private wsClients = new Set<WebSocket>();
   private agentWsMap = new Map<string, WebSocket>();
 
@@ -643,6 +646,14 @@ export class RegistryServer {
     // gives the dashboard a definitive end-state instead of a "pending forever".
     this.ackSweepTimer = setInterval(() => this.sweepExpiredAcks(), ACK_SWEEP_INTERVAL_MS);
 
+    // Conversation cleanup: hourly, delete conversations whose last activity is
+    // older than the retention window. Bounds SQLite growth on long-running
+    // registries without affecting any active conversation.
+    this.conversationCleanupTimer = setInterval(
+      () => this.sweepStaleConversations(),
+      CONVERSATION_CLEANUP_INTERVAL_MS,
+    );
+
     console.error(`[Registry] Listening on http://localhost:${this.port}`);
     console.error(`[Registry] Dashboard: http://localhost:${this.port}/dashboard`);
   }
@@ -666,6 +677,18 @@ export class RegistryServer {
       this.agentWsMap.delete(agentId);
       console.error(`[Registry] sendToAgent(${agentId}) failed, evicted: ${err instanceof Error ? err.message : err}`);
       return false;
+    }
+  }
+
+  private sweepStaleConversations(): void {
+    try {
+      const cutoff = Date.now() - CONVERSATION_RETENTION_MS;
+      const removed = this.channelStore.deleteConversationsOlderThan(cutoff);
+      if (removed > 0) {
+        console.error(`[Registry] Cleanup removed ${removed} stale conversation(s) older than ${CONVERSATION_RETENTION_MS / (24 * 60 * 60_000)} day(s)`);
+      }
+    } catch (err: unknown) {
+      console.error("[Registry] Conversation cleanup failed:", err instanceof Error ? err.message : err);
     }
   }
 
@@ -701,6 +724,9 @@ export class RegistryServer {
     }
     if (this.ackSweepTimer) {
       clearInterval(this.ackSweepTimer);
+    }
+    if (this.conversationCleanupTimer) {
+      clearInterval(this.conversationCleanupTimer);
     }
 
     // Close all WS clients

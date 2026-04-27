@@ -79,6 +79,107 @@ describe("ChannelStore — createMessage idempotency", () => {
   });
 });
 
+describe("ChannelStore — deleteConversationsOlderThan", () => {
+  let tmpDir: string;
+  let store: ChannelStore;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "channel-store-"));
+    store = new ChannelStore(join(tmpDir, "test.sqlite"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("removes conversations whose latest message is older than the cutoff", () => {
+    const oldTs = 1_000;
+    const recentTs = 5_000;
+    store.createMessage({
+      conversationId: "old-conv",
+      messageId: "old-msg",
+      fromAgentId: "agent-a",
+      kind: "chat",
+      content: "old",
+      createdAt: oldTs,
+    });
+    store.createMessage({
+      conversationId: "recent-conv",
+      messageId: "recent-msg",
+      fromAgentId: "agent-a",
+      kind: "chat",
+      content: "recent",
+      createdAt: recentTs,
+    });
+
+    const removed = store.deleteConversationsOlderThan(3_000);
+    expect(removed).toBe(1);
+    expect(store.getMessage("old-msg")).toBeUndefined();
+    expect(store.getMessage("recent-msg")).toBeDefined();
+  });
+
+  it("removes acks and suppression rows for deleted conversations", () => {
+    const oldTs = 1_000;
+    store.createMessage({
+      conversationId: "old-conv",
+      messageId: "old-msg",
+      fromAgentId: "agent-a",
+      kind: "chat",
+      content: "old",
+      createdAt: oldTs,
+    });
+    store.addAck({
+      conversationId: "old-conv",
+      messageId: "old-msg",
+      state: "answered",
+      actorId: "agent-b",
+      actorType: "client",
+      timestamp: oldTs + 100,
+    });
+    store.suppressConversation("old-conv");
+
+    expect(store.deleteConversationsOlderThan(3_000)).toBe(1);
+    // Snapshot lookup returns undefined because no messages remain.
+    expect(store.getConversation("old-conv")).toBeUndefined();
+    // Suppression row was wiped, so a re-creation under the same id works.
+    expect(store.isConversationSuppressed("old-conv")).toBe(false);
+  });
+
+  it("keeps a conversation alive if any of its messages is recent", () => {
+    store.createMessage({
+      conversationId: "mixed-conv",
+      messageId: "mixed-old",
+      fromAgentId: "agent-a",
+      kind: "chat",
+      content: "old turn",
+      createdAt: 1_000,
+    });
+    store.createMessage({
+      conversationId: "mixed-conv",
+      messageId: "mixed-new",
+      fromAgentId: "agent-b",
+      kind: "chat",
+      content: "fresh turn",
+      createdAt: 5_000,
+    });
+    expect(store.deleteConversationsOlderThan(3_000)).toBe(0);
+    expect(store.getMessage("mixed-old")).toBeDefined();
+    expect(store.getMessage("mixed-new")).toBeDefined();
+  });
+
+  it("returns 0 when nothing is stale", () => {
+    store.createMessage({
+      conversationId: "fresh",
+      messageId: "msg",
+      fromAgentId: "agent-a",
+      kind: "chat",
+      content: "hi",
+      createdAt: Date.now(),
+    });
+    expect(store.deleteConversationsOlderThan(0)).toBe(0);
+  });
+});
+
 describe("ChannelStore — findExpiredAwaitingReply", () => {
   let tmpDir: string;
   let store: ChannelStore;

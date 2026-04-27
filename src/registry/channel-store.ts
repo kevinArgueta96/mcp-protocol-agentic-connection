@@ -150,6 +150,37 @@ export class ChannelStore {
     return entries;
   }
 
+  /** Delete every conversation whose most recent message is older than `cutoff`
+   *  (a timestamp in ms). Removes the corresponding rows from `channel_messages`,
+   *  `channel_acks`, and `channel_suppressed_conversations`. Returns the number
+   *  of conversations deleted, for logging.
+   *
+   *  Used by the registry's hourly maintenance sweep to bound SQLite growth on
+   *  long-running registries. Conversations actively used keep their `created_at`
+   *  refreshed via every new inbound message, so the cutoff effectively measures
+   *  "time since last activity". */
+  deleteConversationsOlderThan(cutoff: number): number {
+    const stale = this.db.prepare(`
+      SELECT conversation_id, MAX(created_at) AS last_activity
+      FROM channel_messages
+      GROUP BY conversation_id
+      HAVING last_activity < ?
+    `).all(cutoff) as Array<{ conversation_id: string }>;
+
+    if (stale.length === 0) return 0;
+
+    const deleteMessages = this.db.prepare(`DELETE FROM channel_messages WHERE conversation_id = ?`);
+    const deleteAcks = this.db.prepare(`DELETE FROM channel_acks WHERE conversation_id = ?`);
+    const deleteSuppressed = this.db.prepare(`DELETE FROM channel_suppressed_conversations WHERE conversation_id = ?`);
+
+    for (const row of stale) {
+      deleteMessages.run(row.conversation_id);
+      deleteAcks.run(row.conversation_id);
+      deleteSuppressed.run(row.conversation_id);
+    }
+    return stale.length;
+  }
+
   /** Find messages that are awaiting a reply but whose `expiresAt` deadline has
    *  passed without ever receiving a terminal ack (`answered` or `failed`). Used
    *  by the registry's ack sweeper to mark stuck conversations as failed and

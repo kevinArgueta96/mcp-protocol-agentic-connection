@@ -217,6 +217,20 @@ Three changes in `src/registry/server.ts`:
 
 Together with the periodic re-sync (Bug 9) and the receiver-side dedup (Bugs 2/3/7), the registry can no longer route a message to a dead WS for more than one send attempt. After eviction, subsequent traffic for that agent falls back to the eventBus broadcast (which all dashboard / observer WS clients still see), and when the client reconnects, its identification handler stamps a fresh `agentWsMap` entry. The `syncRegistryToLocalStore` triggered on `ws.open` then replays anything missed.
 
+## Bug 11 — SQLite grows forever
+
+### Symptom
+
+`channel_messages` and `channel_acks` had no retention policy. A registry running for months would accumulate every message ever sent, growing the SQLite file linearly and slowing down `listConversations` / `getConversation` calls. There was also no way to drop conversations the user definitively didn't care about.
+
+### Fix
+
+`ChannelStore.deleteConversationsOlderThan(cutoff)` walks `channel_messages`, finds every conversation whose most recent `created_at` is below the cutoff, and deletes the corresponding rows from all three channel tables (`channel_messages`, `channel_acks`, `channel_suppressed_conversations`). Returns the number of conversations deleted for logging.
+
+`RegistryServer.sweepStaleConversations()` runs hourly (`CONVERSATION_CLEANUP_INTERVAL_MS = 60 * 60_000`) and uses a 30-day retention window (`CONVERSATION_RETENTION_MS`). Conversations actively used keep their `created_at` refreshed via every new inbound message, so the cutoff effectively measures "time since last activity" — active threads are never affected. The timer is started in `start()` and cleared in `stop()`.
+
+Tests cover: deletion of stale conversations, cascade to acks/suppression rows, conservation of mixed-age conversations (any recent message keeps the whole thread alive), and the no-op case.
+
 ## Tests
 
 Three test suites cover the critical paths:
