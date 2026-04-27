@@ -94,6 +94,14 @@ export class McpAgentBridge {
   private surfacedInboxMessageIds = new BoundedIdSet(5_000);
   private pendingPreInitMessages: ChannelMessage[] = [];
   private syncInFlight = false;
+  /** Periodic sync as defense-in-depth: every 5 min the adapter pulls the
+   *  registry's snapshot to recover any messages that slipped through the live
+   *  WS path (e.g. half-open socket the runtime hasn't yet detected). */
+  private periodicSyncTimer: NodeJS.Timeout | null = null;
+  /** One-shot delayed sync triggered after a permanent push failure. Bounds the
+   *  worst-case "lost message" window to ~15 s instead of waiting for the next
+   *  ws.open or scheduled sync. */
+  private delayedSyncTimer: NodeJS.Timeout | null = null;
 
   constructor(options: McpAdapterOptions = {}) {
     this.options = {
@@ -147,6 +155,7 @@ export class McpAgentBridge {
 
     // ── 1b. Register shutdown cleanup for embedded registry ───────────────
     const shutdownEmbedded = async () => {
+      this.clearSyncTimers();
       if (this.embeddedRegistry) {
         try { await this.embeddedRegistry.stop(); } catch { /* ignore */ }
         this.embeddedRegistry = null;
@@ -157,6 +166,9 @@ export class McpAgentBridge {
 
     // ── 1c. Connect WS to registry for channel events ─────────────────────
     this.channelRuntime.connect();
+
+    // ── 1d. Periodic re-sync (defense-in-depth) ───────────────────────────
+    this.startPeriodicSync();
 
     // ── 2. Register tools ─────────────────────────────────────────────────
     this.registerMetaTools();
@@ -271,9 +283,42 @@ export class McpAgentBridge {
       }
     }
     console.error(
-      `[MCP] Notification push permanently failed for message ${channelMessage.messageId}. Message available in inbox: ${channelMessage.conversationId}`,
+      `[MCP] Notification push permanently failed for message ${channelMessage.messageId}. ` +
+        `Will retry via delayed sync; message stays in inbox: ${channelMessage.conversationId}`,
     );
+    // Bound the worst-case "lost message" window: schedule a one-shot sync that
+    // will pick this message up again because we never marked it surfaced.
+    this.scheduleDelayedSync(15_000);
     return false;
+  }
+
+  // ── Sync timers ────────────────────────────────────────────────────────────
+
+  private startPeriodicSync(periodMs = 5 * 60_000): void {
+    if (this.periodicSyncTimer) return;
+    this.periodicSyncTimer = setInterval(() => {
+      if (!this.clientAgentId) return; // pre-init: nothing to sync against
+      void this.syncRegistryToLocalStore();
+    }, periodMs);
+  }
+
+  private scheduleDelayedSync(delayMs: number): void {
+    if (this.delayedSyncTimer) return; // already scheduled — coalesce bursts
+    this.delayedSyncTimer = setTimeout(() => {
+      this.delayedSyncTimer = null;
+      void this.syncRegistryToLocalStore();
+    }, delayMs);
+  }
+
+  private clearSyncTimers(): void {
+    if (this.periodicSyncTimer) {
+      clearInterval(this.periodicSyncTimer);
+      this.periodicSyncTimer = null;
+    }
+    if (this.delayedSyncTimer) {
+      clearTimeout(this.delayedSyncTimer);
+      this.delayedSyncTimer = null;
+    }
   }
 
   private drainPendingPreInitMessages(): void {
@@ -461,6 +506,7 @@ export class McpAgentBridge {
         console.error(`[MCP] Registered client: ${realProjectName} (${clientName} v${version})`);
 
         const cleanup = async () => {
+          this.clearSyncTimers();
           this.surfacedInboxMessageIds.clear();
           await this.channelRuntime.deactivateClient();
           this.clientAgentId = null;

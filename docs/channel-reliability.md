@@ -173,6 +173,32 @@ A message with `expectsResponse=true` whose `expiresAt` deadline passed without 
 
 Senders polling `waitForAcknowledgement` now unblock with `failed` instead of timing out silently, and dashboards get a definitive end-state. The sweeper is started in `RegistryServer.start()` and cleared in `stop()`.
 
+## Bug 9 — Worst-case "lost message" window after a permanent push failure
+
+### Symptom
+
+Even with the 5-attempt capped exponential backoff in `tryPushNotification` (Bug 1 fix), if the MCP host stays under sustained backpressure for ~7.5 s the push permanently fails. The message stays in the registry's ack ledger and the next `syncRegistryToLocalStore()` call would replay it — but that call only ran on `ws.open` (i.e. on a reconnect) or on the initial `oninitialized`. On a long-lived stable connection, the message could sit unsurfaced indefinitely.
+
+The same applies to the bridges: if a `channel.message` event was missed (e.g. due to a half-open WS the runtime hasn't yet flagged) and no reconnect happens, `syncMissedMessages` would not run again.
+
+### Fix
+
+Both layers now run a **periodic re-sync** plus, in the adapter's case, a **delayed sync** triggered after a permanent push failure.
+
+In `src/mcp/adapter.ts`:
+
+- `periodicSyncTimer` — started in `start()`, runs `syncRegistryToLocalStore()` every 5 min. No-op while `clientAgentId` is null (pre-init).
+- `delayedSyncTimer` — one-shot 15 s timer scheduled by `tryPushNotification()` when it gives up. Coalesces bursts: if multiple permanent failures land within the window, only one delayed sync fires. The next sync pulls every unsurfaced message at once.
+- Both timers are cleared on `SIGINT` / `SIGTERM` / `beforeExit` (the existing cleanup paths).
+
+In `src/client/codex-app-server-bridge.ts` and `src/client/gemini-acp-bridge.ts`:
+
+- `periodicSyncTimer` — started after the initial `syncMissedMessages()` in `start()`, fires every 5 min. Cleared in `stop()`.
+
+### Bound on data loss
+
+The combination of these timers caps the worst case at **15 s after a permanent push failure** or **5 min in steady state**. Together with the registry-side ack sweeper (Bug 8, every 60 s) and the receiver-side dedup (Bugs 2, 3, 7), no message that the registry persisted can stay invisible to the recipient indefinitely.
+
 ## Tests
 
 Three test suites cover the critical paths:

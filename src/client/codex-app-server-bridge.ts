@@ -64,6 +64,10 @@ export class CodexAppServerBridge extends EventEmitter {
    *  memory predictable in long-running daemons. */
   private readonly injectedMessageIds = new BoundedIdSet(5_000);
   private syncInFlight = false;
+  /** Periodic re-sync (defense-in-depth): every 5 min the bridge pulls the
+   *  registry's snapshot to recover any messages missed via the live WS path
+   *  (e.g. half-open socket, lost broadcast). */
+  private periodicSyncTimer: NodeJS.Timeout | null = null;
 
   constructor(options: CodexAppServerBridgeOptions = {}) {
     super();
@@ -122,13 +126,27 @@ export class CodexAppServerBridge extends EventEmitter {
     //    Uses the registry's persisted ack ledger as source of truth.
     await this.syncMissedMessages();
 
+    // 6. Periodic re-sync as defense-in-depth.
+    this.startPeriodicSync();
+
     const appServerWsUrl = `ws://127.0.0.1:${this.appServerPort}`;
     console.error(`[Bridge] Ready. Start Codex TUI with:`);
     console.error(`  codex --remote ${appServerWsUrl}`);
   }
 
+  private startPeriodicSync(periodMs = 5 * 60_000): void {
+    if (this.periodicSyncTimer) return;
+    this.periodicSyncTimer = setInterval(() => {
+      void this.syncMissedMessages();
+    }, periodMs);
+  }
+
   async stop(): Promise<void> {
     this.stopped = true;
+    if (this.periodicSyncTimer) {
+      clearInterval(this.periodicSyncTimer);
+      this.periodicSyncTimer = null;
+    }
 
     this.client.disconnect();
     if (this.appServerProcess && !this.appServerProcess.killed) {

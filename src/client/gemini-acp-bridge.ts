@@ -62,6 +62,9 @@ export class GeminiAcpBridge extends EventEmitter {
    *  Bounded to keep memory predictable in long-running daemons. */
   private readonly injectedMessageIds = new BoundedIdSet(5_000);
   private syncInFlight = false;
+  /** Periodic re-sync (defense-in-depth): every 5 min the bridge pulls the
+   *  registry's snapshot to recover any messages missed via the live WS path. */
+  private periodicSyncTimer: NodeJS.Timeout | null = null;
 
   constructor(options: GeminiAcpBridgeOptions = {}) {
     super();
@@ -117,11 +120,25 @@ export class GeminiAcpBridge extends EventEmitter {
     //    Uses the registry's persisted ack ledger as source of truth.
     await this.syncMissedMessages();
 
+    // 5. Periodic re-sync as defense-in-depth.
+    this.startPeriodicSync();
+
     console.error(`[GeminiBridge] Ready. Session: ${this.client.sessionId}`);
+  }
+
+  private startPeriodicSync(periodMs = 5 * 60_000): void {
+    if (this.periodicSyncTimer) return;
+    this.periodicSyncTimer = setInterval(() => {
+      void this.syncMissedMessages();
+    }, periodMs);
   }
 
   async stop(): Promise<void> {
     this.stopped = true;
+    if (this.periodicSyncTimer) {
+      clearInterval(this.periodicSyncTimer);
+      this.periodicSyncTimer = null;
+    }
     this.client.disconnect();
     if (this.clientAgentId) {
       try {
