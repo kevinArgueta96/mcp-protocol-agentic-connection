@@ -55,6 +55,12 @@ export class GeminiAcpBridge extends EventEmitter {
   /** Queue of messages waiting for Gemini to finish its current turn */
   private readonly pendingQueue: QueuedMessage[] = [];
 
+  /** MessageIds delivered to (or in flight to) the underlying Gemini ACP session.
+   *  Built from successful injections + terminal acks owned by this bridge actor
+   *  during registry sync. Prevents duplicate prompts on revive/retry/replay. */
+  private readonly injectedMessageIds = new Set<string>();
+  private syncInFlight = false;
+
   constructor(options: GeminiAcpBridgeOptions = {}) {
     super();
     this.registryUrl = options.registryUrl ?? "http://localhost:4999";
@@ -104,6 +110,10 @@ export class GeminiAcpBridge extends EventEmitter {
     // 3. Register as client in registry — activateClient now connects WS and waits for open
     await this.registerWithRegistry();
     this.wireRuntimeEvents();
+
+    // 4. Recover any messages that arrived while this bridge was offline.
+    //    Uses the registry's persisted ack ledger as source of truth.
+    await this.syncMissedMessages();
 
     console.error(`[GeminiBridge] Ready. Session: ${this.client.sessionId}`);
   }
@@ -194,6 +204,8 @@ export class GeminiAcpBridge extends EventEmitter {
       console.error("[GeminiBridge] WebSocket connected to registry");
       // Re-identify on every (re)connect so the registry maps this WS to our agentId
       this.channelRuntime.identify();
+      // Recover any messages that arrived while the WS was disconnected.
+      void this.syncMissedMessages();
     });
 
     this.channelRuntime.on("registry.event", (event) => {
@@ -205,11 +217,74 @@ export class GeminiAcpBridge extends EventEmitter {
       if (message.toAgentId && message.toAgentId !== this.clientAgentId) return;
       if (message.fromAgentId === this.clientAgentId) return;
 
+      // Dedup: same channel.message can arrive multiple times — sender retries,
+      // conversation revives, sync replays overlapping with live broadcasts.
+      if (this.injectedMessageIds.has(message.messageId)) {
+        console.error(
+          `[GeminiBridge] Skipping already-injected ${message.messageId} (conv: ${message.conversationId})`,
+        );
+        return;
+      }
+
       console.error(
         `[GeminiBridge] Channel message from ${message.fromAgentId} (conv: ${message.conversationId})`,
       );
       this.enqueueOrInject(message);
     });
+  }
+
+  // ── Registry sync ───────────────────────────────────────────────────────────
+
+  /** Replay any messages from the registry that this bridge hasn't yet delivered.
+   *
+   *  Treats the registry's persisted ack ledger as the source of truth for
+   *  "already injected": any ack from this bridge actor with state in
+   *  {`delivered_to_bridge`, `answered`, `failed`} marks the corresponding message
+   *  as handled. All others targeting us (or broadcast) are replayed. */
+  private async syncMissedMessages(): Promise<void> {
+    if (this.syncInFlight) return;
+    if (!this.clientAgentId) return;
+    this.syncInFlight = true;
+    try {
+      const entries = await this.registry.listChannelConversations();
+      let replayed = 0;
+      for (const entry of entries) {
+        const snapshot = await this.registry.getChannelConversation(entry.conversationId);
+        if (!snapshot) continue;
+
+        for (const ack of snapshot.acknowledgements ?? []) {
+          if (
+            ack.actorId === this.clientAgentId &&
+            (ack.state === "delivered_to_bridge" ||
+              ack.state === "answered" ||
+              ack.state === "failed")
+          ) {
+            this.injectedMessageIds.add(ack.messageId);
+          }
+        }
+
+        for (const msg of snapshot.messages) {
+          if (msg.fromAgentId === this.clientAgentId) continue;
+          if (msg.toAgentId && msg.toAgentId !== this.clientAgentId) continue;
+          if (this.injectedMessageIds.has(msg.messageId)) continue;
+          if (msg.expiresAt && msg.expiresAt <= Date.now()) continue;
+          console.error(
+            `[GeminiBridge] Replaying missed message ${msg.messageId} from ${msg.fromAgentId} (conv: ${msg.conversationId})`,
+          );
+          this.enqueueOrInject(msg);
+          replayed++;
+        }
+      }
+      if (replayed > 0) {
+        console.error(`[GeminiBridge] Sync replayed ${replayed} missed message(s) from registry`);
+      }
+    } catch (err) {
+      console.error(
+        `[GeminiBridge] Registry sync failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      this.syncInFlight = false;
+    }
   }
 
   // ── Message injection ───────────────────────────────────────────────────────
@@ -246,6 +321,9 @@ export class GeminiAcpBridge extends EventEmitter {
         return;
       }
 
+      // Record the injection BEFORE the ack so a re-broadcast that races with the
+      // ack-write can't slip through the dedup check.
+      this.injectedMessageIds.add(message.messageId);
       void this.channelTransport.postChannelAck({
         conversationId: message.conversationId,
         messageId: message.messageId,

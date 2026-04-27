@@ -126,10 +126,49 @@ These are not implemented yet but follow naturally:
 | Idempotency on `POST /channel/messages`                                                | The transport already supports `messageId` on the body, but the registry could 200-OK on duplicates instead of inserting a fresh row. Avoids duplicate WS broadcasts on retry.|
 | Per-conversation surfaced-id watermark                                                 | Instead of a per-message Set, track the highest `createdAt` per conversation that was surfaced. Bounded memory regardless of inbox length.                                   |
 
+## Bug 3 — Same class of bugs in the Codex / Gemini bridges
+
+### Context
+
+`McpAgentBridge` is the channel client when the host is **Claude Code** (an MCP server speaking `notifications/claude/channel`). For **Codex** and **Gemini** the channel client is a separate daemon that:
+
+- spawns the underlying agent process (`codex app-server` / `gemini --acp`),
+- keeps a single long-lived ACP/JSON-RPC session,
+- on each inbound `channel.message`, **injects** the content as a new turn prompt into the agent.
+
+These two daemons live in `src/client/codex-app-server-bridge.ts` and `src/client/gemini-acp-bridge.ts`. They both subscribe to the same WS event stream from the registry and use the same `ChannelTransport` / `ChannelClientRuntime` machinery — so they inherit the registry-level reliability we already fixed for Claude.
+
+But they had two **bridge-specific** gaps:
+
+1. **No startup sync.** The bridges only listened to live `channel.message` events. Any message that landed at the registry while the bridge was offline (machine reboot, daemon restart, transient crash) was never injected into the underlying agent. From the user's perspective, "messages stopped arriving" — even though the registry had them persisted.
+2. **No dedup of injected messages.** Since the registry can broadcast the same `channel.message` more than once (sender retries, conversation revives, snapshot replays overlapping with live events), the bridge could re-inject the same prompt — the agent would see duplicate turns.
+
+### Fix
+
+In both `codex-app-server-bridge.ts` and `gemini-acp-bridge.ts`:
+
+- **`injectedMessageIds: Set<string>`** — populated from (a) every successful in-process injection and (b) terminal acks owned by this bridge actor on startup/reconnect.
+- **`syncMissedMessages()`** — a new method called after `activateClient(...)` and on every `ws.open`. It pulls all conversations from the registry HTTP API, walks `acknowledgements`, and:
+  - Marks any message the registry already saw this bridge ack as `delivered_to_bridge | answered | failed` as `injectedMessageIds`.
+  - Replays through `enqueueOrInject` every message that targets us (or is broadcast) and is not yet handled, not from us, and not expired.
+- **Live `channel.message` dedup** — the handler now short-circuits when `injectedMessageIds.has(messageId)`.
+- **Mark-on-success** — `injectedMessageIds.add(...)` is called *before* posting the `delivered_to_bridge` ack so a same-tick re-broadcast can't slip through.
+
+The contract becomes: the **registry's persisted ack ledger** is the single source of truth for "did this bridge already inject this message?" — surviving restarts and reconnects.
+
+### Why this matches the protocol surfaces
+
+- **Codex app-server**: Codex's app-server (`codex app-server --listen ws://...`) accepts injection requests via the bridge's `CodexAppServerClient`, which speaks JSON-RPC over WS to the spawned `codex` process. The protocol exposes `turn/start` (etc.) but offers no replay or "what did I miss" semantics — recovery has to live above it. That's exactly what `syncMissedMessages()` provides.
+- **Gemini ACP**: per the [ACP spec](https://agentclientprotocol.com/protocol/prompt-turn) (`session/prompt` + `session/update` notifications + `session/cancel`), each prompt is one full turn cycle ending in a `StopReason`. There is no protocol-level "list missed prompts since last seen" — replay is again the bridge's responsibility. Our `syncMissedMessages()` aligns with this: it does its own replay against the registry, then feeds prompts one-by-one through `client.sendPrompt(...)` so each runs as a normal ACP turn.
+
+The bridges already declared the right capabilities in their respective `initialize` handshakes (Codex app-server's `tui_app_server` for turn injection; Gemini ACP's `session/new` with `cwd` + `mcpServers`), so the only gap was the higher-level recovery layer — now closed.
+
 ## Files modified
 
 - `src/client/channel-client-runtime.ts` — `seedFromSnapshot` accepts and replays acks.
 - `src/mcp/adapter.ts` — `deliverChannelMessage` defers `surfacedInboxMessageIds.add` until push succeeds; `tryPushNotification` uses 5 attempts with capped exponential backoff; `syncRegistryToLocalStore` skips messages with terminal acks.
+- `src/client/codex-app-server-bridge.ts` — adds `injectedMessageIds` dedup, `syncMissedMessages()` on startup and on every `ws.open`, and dedups live `channel.message` events.
+- `src/client/gemini-acp-bridge.ts` — same fixes as the Codex bridge (also already had a `ws.open` re-identify hook from a prior commit; sync is now hooked to it).
 
 ## Verification
 

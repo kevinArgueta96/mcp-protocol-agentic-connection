@@ -56,6 +56,13 @@ export class CodexAppServerBridge extends EventEmitter {
   /** Queue of messages waiting for Codex to become idle */
   private readonly pendingQueue: QueuedMessage[] = [];
 
+  /** MessageIds that have been (or are being) delivered to the underlying Codex
+   *  process. Built from (a) successful injections, and (b) terminal acks from
+   *  this same bridge actor when syncing the registry on startup/reconnect.
+   *  Used to avoid double-injection on revive/retry/replay. */
+  private readonly injectedMessageIds = new Set<string>();
+  private syncInFlight = false;
+
   constructor(options: CodexAppServerBridgeOptions = {}) {
     super();
     this.registryUrl = options.registryUrl ?? "http://localhost:4999";
@@ -108,6 +115,10 @@ export class CodexAppServerBridge extends EventEmitter {
     // 4. Register as client in registry — activateClient now connects WS and waits for open
     await this.registerWithRegistry();
     this.wireRuntimeEvents();
+
+    // 5. Recover any messages that arrived while this bridge was offline.
+    //    Uses the registry's persisted ack ledger as source of truth.
+    await this.syncMissedMessages();
 
     const appServerWsUrl = `ws://127.0.0.1:${this.appServerPort}`;
     console.error(`[Bridge] Ready. Start Codex TUI with:`);
@@ -252,15 +263,89 @@ export class CodexAppServerBridge extends EventEmitter {
   // ── Runtime event wiring ───────────────────────────────────────────────────
 
   private wireRuntimeEvents(): void {
+    this.channelRuntime.on("ws.open", () => {
+      console.error("[Bridge] WebSocket connected to registry");
+      // Re-identify so the registry maps this WS to our agentId for targeted delivery.
+      this.channelRuntime.identify();
+      // Recover any messages that may have arrived while the WS was disconnected.
+      void this.syncMissedMessages();
+    });
+
     this.channelRuntime.on("channel.message", (message) => {
       if (message.toAgentId && message.toAgentId !== this.clientAgentId) return;
       if (message.fromAgentId === this.clientAgentId) return;
+
+      // Dedup: the same channel.message can arrive multiple times — e.g. when the
+      // sender retries `POST /channel/messages`, when a conversation is revived,
+      // or when a sync replays a snapshot that overlaps with live broadcasts.
+      if (this.injectedMessageIds.has(message.messageId)) {
+        console.error(
+          `[Bridge] Skipping already-injected ${message.messageId} (conv: ${message.conversationId})`,
+        );
+        return;
+      }
 
       console.error(
         `[Bridge] Channel message received from ${message.fromAgentId} (conv: ${message.conversationId})`,
       );
       this.enqueueOrInject(message);
     });
+  }
+
+  // ── Registry sync ───────────────────────────────────────────────────────────
+
+  /** Replay any messages from the registry that this bridge hasn't yet delivered.
+   *
+   *  We treat the registry's persisted ack ledger as the source of truth for "did
+   *  this bridge already inject this message?". A message is considered handled if
+   *  there's an ack for it from this bridge actor with a terminal state
+   *  (`delivered_to_bridge`, `answered`, or `failed`). All others are replayed. */
+  private async syncMissedMessages(): Promise<void> {
+    if (this.syncInFlight) return;
+    if (!this.clientAgentId) return;
+    this.syncInFlight = true;
+    try {
+      const entries = await this.registry.listChannelConversations();
+      let replayed = 0;
+      for (const entry of entries) {
+        const snapshot = await this.registry.getChannelConversation(entry.conversationId);
+        if (!snapshot) continue;
+
+        // Build the set of messageIds that this bridge actor has already handled.
+        for (const ack of snapshot.acknowledgements ?? []) {
+          if (
+            ack.actorId === this.clientAgentId &&
+            (ack.state === "delivered_to_bridge" ||
+              ack.state === "answered" ||
+              ack.state === "failed")
+          ) {
+            this.injectedMessageIds.add(ack.messageId);
+          }
+        }
+
+        // Replay messages that target us (or are broadcast) and haven't been handled.
+        for (const msg of snapshot.messages) {
+          if (msg.fromAgentId === this.clientAgentId) continue;
+          if (msg.toAgentId && msg.toAgentId !== this.clientAgentId) continue;
+          if (this.injectedMessageIds.has(msg.messageId)) continue;
+          if (msg.expiresAt && msg.expiresAt <= Date.now()) continue;
+          console.error(
+            `[Bridge] Replaying missed message ${msg.messageId} from ${msg.fromAgentId} (conv: ${msg.conversationId})`,
+          );
+          this.enqueueOrInject(msg);
+          replayed++;
+        }
+      }
+      if (replayed > 0) {
+        console.error(`[Bridge] Sync replayed ${replayed} missed message(s) from registry`);
+      }
+    } catch (err) {
+      console.error(
+        `[Bridge] Registry sync failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      this.syncInFlight = false;
+    }
   }
 
   // ── Message injection ───────────────────────────────────────────────────────
@@ -293,6 +378,9 @@ export class CodexAppServerBridge extends EventEmitter {
       this.pendingQueue.unshift({ message, retries: (message as { _retries?: number })._retries ?? 0 });
       setTimeout(() => this.drainQueue(), RETRY_DELAY_MS);
     } else {
+      // Record the injection BEFORE the ack so a re-broadcast that races with the
+      // ack-write can't slip through the dedup check.
+      this.injectedMessageIds.add(message.messageId);
       void this.channelTransport.postChannelAck({
         conversationId: message.conversationId,
         messageId: message.messageId,
