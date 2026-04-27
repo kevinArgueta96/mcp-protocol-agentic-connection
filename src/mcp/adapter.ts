@@ -214,10 +214,13 @@ export class McpAgentBridge {
 
     const notification = this.clientProfile.mapChannelMessage(channelMessage);
     if (!notification) return;
-    this.surfacedInboxMessageIds.add(channelMessage.messageId);
 
     void this.tryPushNotification(notification, channelMessage).then((success) => {
       if (success) {
+        // Mark surfaced ONLY after the push succeeded — otherwise a permanent push
+        // failure would silently swallow the message (sync would skip it as "surfaced"
+        // and the client would never see it).
+        this.surfacedInboxMessageIds.add(channelMessage.messageId);
         void this.postChannelAck({
           conversationId: channelMessage.conversationId,
           messageId: channelMessage.messageId,
@@ -233,8 +236,11 @@ export class McpAgentBridge {
   private async tryPushNotification(
     notification: { method: string; params: Record<string, unknown> },
     channelMessage: ChannelMessage,
-    maxRetries = 2,
+    maxRetries = 5,
   ): Promise<boolean> {
+    // Capped exponential backoff: 250, 500, 1000, 2000, 4000 ms (capped at 5s).
+    // Five attempts buys ~7.5s of resilience against transient stdio backpressure
+    // without blocking the event loop for too long.
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         await this.server.server.notification(notification);
@@ -244,7 +250,8 @@ export class McpAgentBridge {
           `[MCP] Notification push failed (attempt ${attempt}/${maxRetries}) for message ${channelMessage.messageId}: ${String(err)}`,
         );
         if (attempt < maxRetries) {
-          await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+          const delay = Math.min(250 * Math.pow(2, attempt - 1), 5_000);
+          await new Promise((resolve) => setTimeout(resolve, delay));
         }
       }
     }
@@ -265,24 +272,47 @@ export class McpAgentBridge {
   }
 
   /** Fetch all conversations from the registry HTTP endpoint and seed the local store.
-   *  Also replays any unsurfaced messages after WS reconnection. */
+   *  Also replays any unsurfaced messages after WS reconnection.
+   *
+   *  IMPORTANT: A message is considered "already handled" if the registry has any ack
+   *  for it in a terminal state (`displayed_to_client`, `answered`, `failed`). Without
+   *  this check, restarting the client would re-surface every prior message because
+   *  `surfacedInboxMessageIds` is in-memory and lost across process restarts. */
   private async syncRegistryToLocalStore(): Promise<void> {
     if (this.syncInFlight) return;
     this.syncInFlight = true;
     try {
       const entries = await this.registry.listChannelConversations();
       const unsurfacedMessages: ChannelMessage[] = [];
+      const TERMINAL_ACK_STATES = new Set(["displayed_to_client", "answered", "failed"]);
       for (const entry of entries) {
         const snapshot = await this.registry.getChannelConversation(entry.conversationId);
-        if (snapshot) {
-          this.channelRuntime.seedFromSnapshot(snapshot.messages);
-          for (const msg of snapshot.messages) {
-            if (msg.fromAgentId === this.clientAgentId) continue;
-            if (this.surfacedInboxMessageIds.has(msg.messageId)) continue;
-            if (!this.clientProfile.acceptsChannelMessage(msg, this.clientAgentId)) continue;
-            if (msg.expiresAt && msg.expiresAt <= Date.now()) continue;
-            unsurfacedMessages.push(msg);
+        if (!snapshot) continue;
+
+        // Replay both messages AND acknowledgements so lastAckState/awaitingReply
+        // reflect the registry's authoritative view after restart.
+        this.channelRuntime.seedFromSnapshot(snapshot.messages, snapshot.acknowledgements);
+
+        // Build a set of messageIds that the registry already saw reach a terminal
+        // state. These should never be re-surfaced as "new" inbox items.
+        const handledIds = new Set<string>();
+        for (const ack of snapshot.acknowledgements ?? []) {
+          if (TERMINAL_ACK_STATES.has(ack.state)) {
+            handledIds.add(ack.messageId);
           }
+        }
+
+        for (const msg of snapshot.messages) {
+          if (msg.fromAgentId === this.clientAgentId) continue;
+          if (this.surfacedInboxMessageIds.has(msg.messageId)) continue;
+          if (handledIds.has(msg.messageId)) {
+            // Mark in-memory too so any concurrent live delivery dedupes correctly.
+            this.surfacedInboxMessageIds.add(msg.messageId);
+            continue;
+          }
+          if (!this.clientProfile.acceptsChannelMessage(msg, this.clientAgentId)) continue;
+          if (msg.expiresAt && msg.expiresAt <= Date.now()) continue;
+          unsurfacedMessages.push(msg);
         }
       }
       console.error(`[MCP] Synced ${entries.length} conversation(s) from registry to local store`);
@@ -469,14 +499,16 @@ export class McpAgentBridge {
       "list_agents",
       {
         description:
-          "List all agents connected to agent-bridge. Shows each agent's project path, type, " +
-          "health status, and available skills. Use this first to discover what you can work with. " +
-          "By default, only shows agents with skills (excludes passive client entries).",
+          "List all agents and client sessions connected to agent-bridge. " +
+          "Returns each entry's agentId, project path, type, health status, and available skills. " +
+          "WORKFLOW: call this first to discover targets before using message_client_session. " +
+          "IMPORTANT: to see Codex/Gemini/Claude bridges (client sessions without HTTP skills), " +
+          "pass includeClients=true — they are hidden by default.",
         inputSchema: {
           skill: z.string().optional().describe("Filter agents with this skill (e.g. 'endpoint-find')"),
           project: z.string().optional().describe("Filter by project name or path substring"),
           healthyOnly: z.boolean().optional().describe("Only show healthy agents (default: true)"),
-          includeClients: z.boolean().optional().describe("Include passive client entries without skills (default: false)"),
+          includeClients: z.boolean().optional().describe("Include client sessions (Codex/Gemini/Claude bridges) that have no HTTP skills (default: false). Set true when looking for a session to message."),
         },
       },
       async ({ skill, project, healthyOnly = true, includeClients = false }) => {
@@ -506,14 +538,17 @@ export class McpAgentBridge {
       "channel_inbox",
       {
         description:
-          "Inspect the current client's channel conversations. " +
-          "Useful for reviewing pending messages and conversations tracked locally by the runtime. " +
-          "Always sync from registry before inspecting so the view is current.",
+          "Check this agent's channel inbox for pending inbound messages from other agents. " +
+          "Returns conversations with a 'replyWith' field — pass those exact values to the reply tool. " +
+          "WORKFLOW: (1) call channel_inbox to see pending messages, " +
+          "(2) read the replyWith field of each pending conversation, " +
+          "(3) call reply(replyWith.agentId, replyWith.conversationId, replyWith.replyTo, yourMessage). " +
+          "Syncs automatically from the registry before returning so the view is always current.",
         inputSchema: {
           expiredOnly: z.boolean().optional().describe("Show only locally expired conversations awaiting reply"),
           pendingOnly: z.boolean().optional().describe("Show only conversations awaiting reply (default: true)"),
           limit: z.coerce.number().optional().describe("Maximum number of conversations to show when pendingOnly=false (default: 10)"),
-          includeMessages: z.boolean().optional().describe("Include message history for each pending conversation"),
+          includeMessages: z.boolean().optional().describe("Include full message history for each pending conversation (default: true)"),
         },
       },
       async ({ expiredOnly = false, pendingOnly = true, limit = 10, includeMessages = true }) => {
@@ -602,21 +637,26 @@ export class McpAgentBridge {
       "message_client_session",
       {
         description:
-          "Send a channel message to a specific client session (Claude Code, Codex, Gemini, or dashboard). " +
-          "Resolves target in priority order: (1) exact clientId match, (2) conversationId participant lookup, " +
-          "(3) project name/path match — when multiple sessions share the same project, claude-code is preferred " +
-          "over gemini over codex automatically (use clientType to override). " +
-          "Claude Code receives messages as immediate <channel> push events.",
+          "Initiate or continue a channel message thread with a client session (Claude Code, Codex, Gemini). " +
+          "USE THIS when you want to proactively send a message or task to another agent. " +
+          "DO NOT USE THIS to reply to a pending inbound message — use the reply tool for that instead. " +
+          "WORKFLOW: (1) call list_agents(includeClients=true) to find the target's agentId, " +
+          "(2) call message_client_session(clientId=<agentId>, message=<text>). " +
+          "Target resolution order when clientId is not provided: " +
+          "(a) conversationId participant lookup, (b) project name/path match; " +
+          "when a project has multiple sessions, claude-code > gemini > codex (override with clientType). " +
+          "Claude Code receives messages as immediate <channel> push events; " +
+          "Codex/Gemini bridges inject the message as a new turn prompt.",
         inputSchema: {
-          clientId: z.string().optional().describe("Exact target client session agentId (most specific — skips all other resolution)"),
-          project: z.string().optional().describe("Project name or path to resolve the target session; not required if conversationId is provided"),
-          clientType: z.string().optional().describe("Filter by client type when project matches multiple sessions (e.g. 'claude-code', 'codex', 'gemini'). Ignored when clientId is set."),
-          message: z.string().describe("Message to send over the channel"),
-          conversationId: z.string().optional().describe("Conversation ID to continue; if neither clientId nor project is given, the target is resolved from this conversation's participants"),
-          replyTo: z.string().optional().describe("Message ID this replies to"),
-          taskId: z.string().optional().describe("Optional task ID associated with the channel conversation"),
-          expectsResponse: z.boolean().optional().describe("Whether the sender expects a reply"),
-          timeoutMs: z.coerce.number().optional().describe("How long the receiver may take to reply before the message expires (ms)"),
+          clientId: z.string().optional().describe("Exact agentId of the target client session (from list_agents). Most reliable — use this whenever possible."),
+          project: z.string().optional().describe("Project name or path substring to resolve the target session. Use when you don't have the exact agentId."),
+          clientType: z.string().optional().describe("Filter by client type when project matches multiple sessions: 'claude-code', 'codex', or 'gemini'. Ignored when clientId is set."),
+          message: z.string().describe("Message text to send to the target session"),
+          conversationId: z.string().optional().describe("Continue an existing conversation thread by reusing its ID. Leave blank to start a new thread."),
+          replyTo: z.string().optional().describe("messageId to thread this message as a reply to (optional, for in-thread continuations)"),
+          taskId: z.string().optional().describe("Optional task ID to associate with this conversation"),
+          expectsResponse: z.boolean().optional().describe("Set true if you want to wait for the target to reply before this tool returns (default: true). Set false for fire-and-forget."),
+          timeoutMs: z.coerce.number().optional().describe("How long to wait for a reply before reporting timeout (ms, default: 300000). Only used when expectsResponse=true."),
         },
       },
       async (input) => this.handleMessageClientSession(input)
@@ -626,17 +666,19 @@ export class McpAgentBridge {
       "reply",
       {
         description:
-          "Reply to a pending channel message from another agent. " +
-          "Always use the exact values from channel_inbox's replyWith field: " +
-          "agentId, conversationId, and replyTo. " +
-          "Do NOT guess or omit these — all three are required for correct routing. " +
-          "Example: if channel_inbox returns replyWith={agentId:'X', conversationId:'Y', replyTo:'Z'}, " +
-          "pass all three exactly as-is.",
+          "Reply to a pending inbound channel message from another agent and mark the thread as answered. " +
+          "USE THIS when channel_inbox shows a pending message and you want to respond. " +
+          "DO NOT USE THIS to initiate a new conversation — use message_client_session for that. " +
+          "WORKFLOW: (1) call channel_inbox(pendingOnly=true), " +
+          "(2) read the replyWith field of the conversation, " +
+          "(3) call reply(agentId=replyWith.agentId, conversationId=replyWith.conversationId, replyTo=replyWith.replyTo, message=<your response>). " +
+          "All three routing fields (agentId, conversationId, replyTo) are REQUIRED — copy them exactly from replyWith. " +
+          "After calling this, the conversation is marked 'answered' and the sender receives your reply.",
         inputSchema: {
-          agentId: z.string().describe("fromAgentId of the message you are replying to (from channel_inbox replyWith.agentId)"),
-          message: z.string().describe("Your reply message"),
-          conversationId: z.string().describe("conversationId from channel_inbox replyWith.conversationId"),
-          replyTo: z.string().describe("messageId of the message you are replying to (from channel_inbox replyWith.replyTo)"),
+          agentId: z.string().describe("The agentId of the sender you are replying to — MUST be replyWith.agentId from channel_inbox"),
+          message: z.string().describe("Your reply text"),
+          conversationId: z.string().describe("The conversation thread ID — MUST be replyWith.conversationId from channel_inbox"),
+          replyTo: z.string().describe("The messageId you are replying to — MUST be replyWith.replyTo from channel_inbox"),
           taskId: z.string().optional().describe("Task ID associated with the conversation (optional)"),
           skillId: z.string().optional().describe("Optional fallback skill when using task invocation"),
         },
@@ -883,10 +925,65 @@ export class McpAgentBridge {
             },
           });
       const channelMessage = snapshot.messages[snapshot.messages.length - 1];
-      const deliveryState = await this.conversationService.waitForAcknowledgement(
+
+      // Delivery wait strategy is client-specific:
+      //
+      // • Claude Code  → push delivery via `notifications/claude/channel` works reliably.
+      //   Return fast (≤3s) so Claude Code is not blocked when the reply notification arrives.
+      //   If we block Claude here, the incoming reply notification cannot be processed.
+      //
+      // • Codex/Gemini → `notifications/message` is only a log line; the AI agent does NOT
+      //   react to it once the tool call has returned. The only way to surface the reply is
+      //   in-band while the tool is still running. So we keep waiting for "answered".
+      const isClaudeClient = this.clientProfile.id === "claude";
+
+      // Phase 1 – always wait briefly for any delivery confirmation
+      const deliveryAck = await this.conversationService.waitForAcknowledgement(
         channelMessage.conversationId,
         channelMessage.messageId,
+        { timeoutMs: 3_000, states: ["delivered_to_bridge", "displayed_to_client", "answered", "failed"] },
       );
+
+      // Phase 2 – for non-Claude clients that don't process push notifications, keep
+      // waiting for the actual reply so we can return it inline.
+      let deliveryState = deliveryAck;
+      if (
+        !isClaudeClient &&
+        expectsResponse &&
+        deliveryAck &&
+        deliveryAck !== "answered" &&
+        deliveryAck !== "failed"
+      ) {
+        const replyAck = await this.conversationService.waitForAcknowledgement(
+          channelMessage.conversationId,
+          channelMessage.messageId,
+          {
+            timeoutMs: Math.min(params.timeoutMs ?? 120_000, 120_000),
+            pollIntervalMs: 500,
+            states: ["answered", "failed"],
+          },
+        );
+        if (replyAck) deliveryState = replyAck;
+      }
+
+      // If the agent answered, include the reply text inline
+      let replyPreview = "";
+      if (deliveryState === "answered") {
+        const msgs = this.channelRuntime.listConversationMessages(channelMessage.conversationId);
+        const reply = msgs.find((m) => m.replyTo === channelMessage.messageId);
+        if (reply) replyPreview = `\n  reply:          ${reply.content.slice(0, 500)}`;
+      }
+
+      const statusNote =
+        deliveryState === "answered"
+          ? ""
+          : deliveryState === "failed"
+            ? "\n  Note: Delivery failed — the target bridge rejected the message."
+            : isClaudeClient && deliveryState
+              ? `\n  Note: Message delivered. The reply will arrive as a push notification.\n  To check now: call channel_inbox(pendingOnly=true)`
+              : deliveryState
+                ? `\n  Note: Message delivered but no reply within timeout.\n  Call channel_inbox(pendingOnly=true) to check for the reply.`
+                : `\n  Note: No delivery confirmation yet. The target bridge may be offline.\n  To check: call channel_inbox(pendingOnly=true)`;
 
       return {
         content: [{
@@ -897,7 +994,7 @@ export class McpAgentBridge {
             `  conversationId: ${channelMessage.conversationId}`,
             `  messageId:      ${channelMessage.messageId}`,
             `  deliveryState:  ${deliveryState ?? "pending"}`,
-          ].join("\n"),
+          ].join("\n") + replyPreview + statusNote,
         }],
       };
     } catch (err) {

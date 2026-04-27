@@ -279,6 +279,16 @@ export class RegistryServer {
         expectsResponse: body.expectsResponse,
       });
 
+      // Send revive BEFORE the message so receiving clients clear deletedConversationIds
+      // before trackMessage() runs — otherwise the message would be silently dropped.
+      if (revived) {
+        this.eventBus.broadcast({
+          type: "channel.conversation.revived",
+          timestamp: new Date().toISOString(),
+          data: { conversationId: message.conversationId },
+        });
+      }
+
       this.eventBus.broadcast({
         type: "channel.message",
         timestamp: new Date().toISOString(),
@@ -295,14 +305,6 @@ export class RegistryServer {
             data: message,
           }));
         }
-      }
-
-      if (revived) {
-        this.eventBus.broadcast({
-          type: "channel.conversation.revived",
-          timestamp: new Date().toISOString(),
-          data: { conversationId: message.conversationId },
-        });
       }
 
       res.status(201).json(message);

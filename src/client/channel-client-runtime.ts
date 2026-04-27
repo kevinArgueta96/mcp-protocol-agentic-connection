@@ -169,11 +169,22 @@ export class ChannelClientRuntime {
     return this.conversationStore.deleteConversation(conversationId);
   }
 
-  /** Seed the local conversation store with messages from the registry HTTP snapshot.
-   *  Call this once after client activation to surface pre-existing conversations. */
-  seedFromSnapshot(messages: import("../types/messages.js").ChannelMessage[]): void {
+  /** Seed the local conversation store with messages and acknowledgements from the registry
+   *  HTTP snapshot. Call this once after client activation to surface pre-existing
+   *  conversations. Replaying acks here is what reconstructs `lastAckState` so that
+   *  already-answered conversations are not re-surfaced as if they were new. */
+  seedFromSnapshot(
+    messages: import("../types/messages.js").ChannelMessage[],
+    acks?: import("../types/messages.js").ChannelAck[],
+  ): void {
     for (const message of messages) {
       this.conversationStore.trackMessage(message);
+    }
+    if (acks) {
+      const sorted = [...acks].sort((a, b) => a.timestamp - b.timestamp);
+      for (const ack of sorted) {
+        this.conversationStore.trackAck(ack);
+      }
     }
   }
 

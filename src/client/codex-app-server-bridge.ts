@@ -313,6 +313,14 @@ export class CodexAppServerBridge extends EventEmitter {
     if (item) {
       if (item.retries >= MAX_RETRIES) {
         console.error(`[Bridge] Dropping message ${item.message.messageId} after ${MAX_RETRIES} retries`);
+        void this.channelTransport.postChannelAck({
+          conversationId: item.message.conversationId,
+          messageId: item.message.messageId,
+          state: "failed",
+          actorId: this.clientAgentId ?? "codex-app-bridge",
+          actorType: "bridge",
+          detail: `Dropped after ${MAX_RETRIES} injection retries`,
+        });
         return;
       }
       this.injectNow({ ...item.message });

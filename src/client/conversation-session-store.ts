@@ -41,8 +41,11 @@ export class ConversationSessionStore {
   }
 
   trackMessage(message: ChannelMessage): ConversationSessionState | undefined {
+    // Auto-revive: a new inbound message overrides local suppression, consistent with the
+    // registry which revives server-side before creating the message, and with sendMessage()
+    // which calls reviveConversation() on the sender side before posting.
     if (this.deletedConversationIds.has(message.conversationId)) {
-      return undefined;
+      this.deletedConversationIds.delete(message.conversationId);
     }
     this.messages.set(message.messageId, message);
 

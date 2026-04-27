@@ -226,8 +226,27 @@ export class CodexAppServerClient extends EventEmitter<CodexAppServerClientEvent
           `[CodexClient] Injection id=${id} rejected: ${msg.error.message}`,
         );
         this.injectionContexts.delete(id);
+        if (this.lastInjectionRequestId === id) this.lastInjectionRequestId = null;
+        this._turnInProgress = false;
+        this.emit("turnCompleted", `turn-error-${id}`);
+      } else {
+        // Fallback: extract response from the turn/start result. The app-server returns
+        // the full turn output in the JSON-RPC response, but item/completed notifications
+        // may NOT be delivered to non-owner WS connections (the bridge is a 2nd client,
+        // not the TUI). If item/completed already consumed the context, this is a no-op.
+        const ctx = this.injectionContexts.get(id)!;
+        const text = this.extractTurnResponseText(msg.result);
+        if (text) {
+          this.injectionContexts.delete(id);
+          if (this.lastInjectionRequestId === id) this.lastInjectionRequestId = null;
+          this.emit("agentMessage", text, ctx);
+          if (this._turnInProgress) {
+            this._turnInProgress = false;
+            this.emit("turnCompleted", `turn-response-${id}`);
+          }
+        }
+        // If no text in the result, keep context alive for item/completed notifications
       }
-      // Don't delete context on success — we need it when agentMessage arrives
     }
 
     // Resolve pending request promise
@@ -240,6 +259,26 @@ export class CodexAppServerClient extends EventEmitter<CodexAppServerClientEvent
         pending.resolve(msg.result);
       }
     }
+  }
+
+  /**
+   * Extract agent message text from a turn/start JSON-RPC response result.
+   * The result typically contains { output: [{ type: "agentMessage", content: [...] }] }.
+   */
+  private extractTurnResponseText(result: unknown): string {
+    if (!result || typeof result !== "object") return "";
+    const r = result as {
+      output?: Array<{
+        type?: string;
+        content?: Array<{ type?: string; text?: string }>;
+      }>;
+    };
+    return (r.output ?? [])
+      .filter((item) => item.type === "agentMessage")
+      .flatMap((item) => item.content ?? [])
+      .filter((c) => c.type === "output_text" && c.text)
+      .map((c) => c.text!)
+      .join("");
   }
 
   private handleServerRequest(msg: JsonRpcMessage): void {

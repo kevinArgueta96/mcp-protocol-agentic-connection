@@ -267,6 +267,14 @@ export class GeminiAcpBridge extends EventEmitter {
 
     if (item.retries >= MAX_RETRIES) {
       console.error(`[GeminiBridge] Dropping message ${item.message.messageId} after ${MAX_RETRIES} retries`);
+      void this.channelTransport.postChannelAck({
+        conversationId: item.message.conversationId,
+        messageId: item.message.messageId,
+        state: "failed",
+        actorId: this.clientAgentId ?? "gemini-acp-bridge",
+        actorType: "bridge",
+        detail: `Dropped after ${MAX_RETRIES} injection retries`,
+      });
       return;
     }
 
