@@ -241,16 +241,15 @@ export class RegistryServer {
           data: { agentId, agentName, content, meta, conversationId: message.conversationId, messageId: message.messageId },
         });
 
-        // Targeted delivery: if message has a specific recipient, send directly to their WS
+        // Targeted delivery: if message has a specific recipient, send directly to their WS.
+        // sendToAgent evicts the agentWsMap entry if the socket has died since the
+        // last keepalive cycle.
         if (message.toAgentId) {
-          const targetWs = this.agentWsMap.get(message.toAgentId);
-          if (targetWs && targetWs.readyState === WebSocket.OPEN) {
-            targetWs.send(JSON.stringify({
-              type: "channel.message",
-              timestamp: new Date().toISOString(),
-              data: message,
-            }));
-          }
+          this.sendToAgent(message.toAgentId, {
+            type: "channel.message",
+            timestamp: new Date().toISOString(),
+            data: message,
+          });
         }
       }
 
@@ -306,16 +305,13 @@ export class RegistryServer {
           data: message,
         });
 
-        // Targeted delivery: if message has a specific recipient, send directly to their WS
+        // Targeted delivery via sendToAgent (auto-evicts dead WS).
         if (message.toAgentId) {
-          const targetWs = this.agentWsMap.get(message.toAgentId);
-          if (targetWs && targetWs.readyState === WebSocket.OPEN) {
-            targetWs.send(JSON.stringify({
-              type: "channel.message",
-              timestamp: new Date().toISOString(),
-              data: message,
-            }));
-          }
+          this.sendToAgent(message.toAgentId, {
+            type: "channel.message",
+            timestamp: new Date().toISOString(),
+            data: message,
+          });
         }
       }
 
@@ -412,14 +408,11 @@ export class RegistryServer {
 
       // Targeted delivery: if message has a specific recipient, send directly to their WS
       if (retried.toAgentId) {
-        const targetWs = this.agentWsMap.get(retried.toAgentId);
-        if (targetWs && targetWs.readyState === WebSocket.OPEN) {
-          targetWs.send(JSON.stringify({
-            type: "channel.message",
-            timestamp: new Date().toISOString(),
-            data: retried,
-          }));
-        }
+        this.sendToAgent(retried.toAgentId, {
+          type: "channel.message",
+          timestamp: new Date().toISOString(),
+          data: retried,
+        });
       }
 
       res.json(retried);
@@ -440,14 +433,13 @@ export class RegistryServer {
       }
 
       const resolvedId = entry.agentId;
-      const targetWs = this.agentWsMap.get(resolvedId);
+      const sent = this.sendToAgent(resolvedId, {
+        type: "agent.message",
+        timestamp: new Date().toISOString(),
+        data: message,
+      });
 
-      if (targetWs && targetWs.readyState === WebSocket.OPEN) {
-        targetWs.send(JSON.stringify({
-          type: "agent.message",
-          timestamp: new Date().toISOString(),
-          data: message,
-        }));
+      if (sent) {
         // Broadcast to dashboard subscribers too
         this.eventBus.broadcast({
           type: "agent.message",
@@ -473,17 +465,30 @@ export class RegistryServer {
     // WebSocket server on /ws path
     const wss = new WebSocketServer({ server: this.httpServer, path: "/ws" });
 
-    // WebSocket keepalive: ping every 25s, terminate if no pong within 10s
+    // WebSocket keepalive: ping every 15s, terminate if no pong within 15s.
+    // Worst-case zombie window is ~30s (one missed cycle + the next), versus
+    // ~50s with the previous 25s interval.
+    //
+    // When we terminate a zombie, we also evict its entry from agentWsMap so
+    // targeted delivery doesn't silently write into a dead socket while waiting
+    // for the natural `close` event to fire. Without this, every agentWsMap
+    // lookup between terminate() and the close handler would race with a
+    // half-open socket whose readyState may still report OPEN.
     const wsPingInterval = setInterval(() => {
       for (const client of wss.clients) {
         if ((client as any)._isAlive === false) {
+          const agentId = (client as any)._identifiedAgentId as string | undefined;
+          if (agentId && this.agentWsMap.get(agentId) === client) {
+            this.agentWsMap.delete(agentId);
+            console.error(`[Registry] WS keepalive: evicted ${agentId} from routing map (no pong)`);
+          }
           client.terminate();
           continue;
         }
         (client as any)._isAlive = false;
         client.ping();
       }
-    }, 25_000);
+    }, 15_000);
 
     wss.on("close", () => clearInterval(wsPingInterval));
 
@@ -537,6 +542,10 @@ export class RegistryServer {
             }
 
             identifiedAgentId = msg.agentId;
+            // Stamp the agentId on the WS itself so the keepalive interval
+            // (which iterates wss.clients, not agentWsMap) can evict the
+            // routing entry in O(1) when a zombie is terminated.
+            (ws as any)._identifiedAgentId = msg.agentId;
             this.agentWsMap.set(msg.agentId, ws);
             console.error(`[Registry WS] Agent identified: ${msg.agentId}`);
 
@@ -566,10 +575,7 @@ export class RegistryServer {
 
           // Agent-to-agent message relay
           if (msg.type === "agent.message" && msg.data?.toAgentId) {
-            const targetWs = this.agentWsMap.get(msg.data.toAgentId);
-            if (targetWs && targetWs.readyState === WebSocket.OPEN) {
-              targetWs.send(JSON.stringify(msg));
-            }
+            this.sendToAgent(msg.data.toAgentId, msg);
             // Broadcast to dashboard too
             this.eventBus.broadcast({
               type: "agent.message",
@@ -639,6 +645,28 @@ export class RegistryServer {
 
     console.error(`[Registry] Listening on http://localhost:${this.port}`);
     console.error(`[Registry] Dashboard: http://localhost:${this.port}/dashboard`);
+  }
+
+  /** Send a payload directly to the WS mapped for `agentId`. Returns false and
+   *  evicts the entry from `agentWsMap` if the socket is missing, not OPEN, or
+   *  the synchronous send throws. The keepalive interval still catches zombies
+   *  whose readyState wrongly reports OPEN within ~30 s, but this helper covers
+   *  the cases visible at send time without waiting for the next ping cycle. */
+  private sendToAgent(agentId: string, payload: unknown): boolean {
+    const ws = this.agentWsMap.get(agentId);
+    if (!ws) return false;
+    if (ws.readyState !== WebSocket.OPEN) {
+      this.agentWsMap.delete(agentId);
+      return false;
+    }
+    try {
+      ws.send(JSON.stringify(payload));
+      return true;
+    } catch (err) {
+      this.agentWsMap.delete(agentId);
+      console.error(`[Registry] sendToAgent(${agentId}) failed, evicted: ${err instanceof Error ? err.message : err}`);
+      return false;
+    }
   }
 
   private sweepExpiredAcks(): void {
