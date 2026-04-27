@@ -199,6 +199,24 @@ In `src/client/codex-app-server-bridge.ts` and `src/client/gemini-acp-bridge.ts`
 
 The combination of these timers caps the worst case at **15 s after a permanent push failure** or **5 min in steady state**. Together with the registry-side ack sweeper (Bug 8, every 60 s) and the receiver-side dedup (Bugs 2, 3, 7), no message that the registry persisted can stay invisible to the recipient indefinitely.
 
+## Bug 10 — `agentWsMap` could hold half-open zombie sockets
+
+### Symptom
+
+`agentWsMap` is the routing table that lets the registry deliver a `channel.message` directly to its target's WS. When a client's underlying TCP socket dies without a clean WS close (network partition, OS-killed process, idle timeout on a NAT), the WS keepalive eventually catches it via missed pongs — but until then, `targetWs.readyState` may still report `OPEN`. Result: the registry calls `targetWs.send(...)`, the bytes go nowhere, and the recipient is silently invisible until the natural `close` event fires.
+
+### Fix
+
+Three changes in `src/registry/server.ts`:
+
+1. **Faster keepalive.** Ping interval lowered from 25 s to **15 s**. Worst-case zombie window drops from ~50 s to ~30 s.
+2. **Eager eviction on terminate.** When the keepalive interval terminates a client whose `_isAlive` flag is still false, it now also deletes the corresponding entry from `agentWsMap` immediately, instead of waiting for the natural `close` event to bubble up. Each WS is stamped with `_identifiedAgentId` at identify time so the lookup is O(1).
+3. **`sendToAgent(agentId, payload)` helper.** Centralises every targeted delivery callsite (5 of them: 2× POST `/channel/messages`, 1× retry, 1× `/agents/:id/message`, 1× incoming WS `agent.message`). It checks `readyState === OPEN`, wraps `ws.send` in try/catch, and on any failure (or non-OPEN state) deletes the entry from `agentWsMap` immediately. So a zombie discovered at send time is evicted *now*, without waiting for the next ping cycle.
+
+### Net effect
+
+Together with the periodic re-sync (Bug 9) and the receiver-side dedup (Bugs 2/3/7), the registry can no longer route a message to a dead WS for more than one send attempt. After eviction, subsequent traffic for that agent falls back to the eventBus broadcast (which all dashboard / observer WS clients still see), and when the client reconnects, its identification handler stamps a fresh `agentWsMap` entry. The `syncRegistryToLocalStore` triggered on `ws.open` then replays anything missed.
+
 ## Tests
 
 Three test suites cover the critical paths:
