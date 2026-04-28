@@ -4,9 +4,9 @@
 
 El sistema usa JSON-RPC 2.0 sobre HTTP y WebSocket. El modelo base de mensajes y tareas vive en:
 
-- [`src/types/a2a.ts`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/src/types/a2a.ts)
-- [`src/types/jsonrpc.ts`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/src/types/jsonrpc.ts)
-- [`src/types/messages.ts`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/src/types/messages.ts)
+- [`src/types/a2a.ts`](/Users/kevin/Documents/dev_projects/open-agent-bridge/src/types/a2a.ts)
+- [`src/types/jsonrpc.ts`](/Users/kevin/Documents/dev_projects/open-agent-bridge/src/types/jsonrpc.ts)
+- [`src/types/messages.ts`](/Users/kevin/Documents/dev_projects/open-agent-bridge/src/types/messages.ts)
 
 ## Agent API
 
@@ -24,7 +24,7 @@ Campos relevantes:
 - `defaultInputModes`
 - `defaultOutputModes`
 - `skills`
-- extension local `x-agent-bridge` con `agentId`, `projectPath`, `projectType`, `wsUrl`
+- extension local `x-open-agent-bridge` con `agentId`, `projectPath`, `projectType`, `wsUrl`
 
 Ejemplo:
 
@@ -64,7 +64,7 @@ Respuesta típica:
 {
   "ok": true,
   "agentId": "uuid",
-  "projectName": "agent-bridge",
+  "projectName": "open-agent-bridge",
   "projectPath": "/ruta/al/proyecto",
   "port": 5001,
   "timestamp": "2026-03-18T00:00:00.000Z"

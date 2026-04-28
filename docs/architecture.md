@@ -2,7 +2,7 @@
 
 ## Resumen
 
-`agent-bridge` es una plataforma local para descubrimiento y comunicación entre agentes. El sistema se compone de:
+`open-agent-bridge` es una plataforma local para descubrimiento y comunicación entre agentes. El sistema se compone de:
 
 - `RegistryServer`: directorio central de agentes y bus de eventos para tiempo real.
 - `AgentServer`: endpoint por proyecto que expone Agent Card, RPC y WebSocket.
@@ -25,9 +25,9 @@ Responsabilidades principales:
 
 Implementación principal:
 
-- [`src/registry/server.ts`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/src/registry/server.ts)
-- [`src/registry/store.ts`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/src/registry/store.ts)
-- [`src/registry/events.ts`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/src/registry/events.ts)
+- [`src/registry/server.ts`](/Users/kevin/Documents/dev_projects/open-agent-bridge/src/registry/server.ts)
+- [`src/registry/store.ts`](/Users/kevin/Documents/dev_projects/open-agent-bridge/src/registry/store.ts)
+- [`src/registry/events.ts`](/Users/kevin/Documents/dev_projects/open-agent-bridge/src/registry/events.ts)
 
 Política de salud actual:
 
@@ -55,10 +55,10 @@ Responsabilidades:
 
 Implementación principal:
 
-- [`src/agent/server.ts`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/src/agent/server.ts)
-- [`src/agent/handlers.ts`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/src/agent/handlers.ts)
-- [`src/agent/card.ts`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/src/agent/card.ts)
-- [`src/agent/project-detector.ts`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/src/agent/project-detector.ts)
+- [`src/agent/server.ts`](/Users/kevin/Documents/dev_projects/open-agent-bridge/src/agent/server.ts)
+- [`src/agent/handlers.ts`](/Users/kevin/Documents/dev_projects/open-agent-bridge/src/agent/handlers.ts)
+- [`src/agent/card.ts`](/Users/kevin/Documents/dev_projects/open-agent-bridge/src/agent/card.ts)
+- [`src/agent/project-detector.ts`](/Users/kevin/Documents/dev_projects/open-agent-bridge/src/agent/project-detector.ts)
 
 ### Skills
 
@@ -71,9 +71,9 @@ Las skills builtin se cargan desde `createDefaultRegistry()`:
 
 Framework y runtime:
 
-- [`src/skills/framework.ts`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/src/skills/framework.ts)
-- [`src/skills/index.ts`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/src/skills/index.ts)
-- [`src/skills/state-graph.ts`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/src/skills/state-graph.ts)
+- [`src/skills/framework.ts`](/Users/kevin/Documents/dev_projects/open-agent-bridge/src/skills/framework.ts)
+- [`src/skills/index.ts`](/Users/kevin/Documents/dev_projects/open-agent-bridge/src/skills/index.ts)
+- [`src/skills/state-graph.ts`](/Users/kevin/Documents/dev_projects/open-agent-bridge/src/skills/state-graph.ts)
 
 ### MCP Adapter
 
@@ -91,7 +91,7 @@ Puede funcionar en:
 
 Implementación:
 
-- [`src/mcp/adapter.ts`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/src/mcp/adapter.ts)
+- [`src/mcp/adapter.ts`](/Users/kevin/Documents/dev_projects/open-agent-bridge/src/mcp/adapter.ts)
 
 ### Dashboard
 
@@ -105,7 +105,7 @@ El dashboard Vue:
 Referencia:
 
 - [`docs/dashboard.md`](dashboard.md)
-- [`dashboard/ARCHITECTURE.md`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/dashboard/ARCHITECTURE.md)
+- [`dashboard/ARCHITECTURE.md`](/Users/kevin/Documents/dev_projects/open-agent-bridge/dashboard/ARCHITECTURE.md)
 
 ## Flujo principal
 
@@ -175,10 +175,10 @@ Comportamiento actual:
 
 Los contratos publicos principales viven en:
 
-- [`src/types/a2a.ts`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/src/types/a2a.ts)
-- [`src/types/jsonrpc.ts`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/src/types/jsonrpc.ts)
-- [`src/types/messages.ts`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/src/types/messages.ts)
-- [`src/types/skills.ts`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/src/types/skills.ts)
+- [`src/types/a2a.ts`](/Users/kevin/Documents/dev_projects/open-agent-bridge/src/types/a2a.ts)
+- [`src/types/jsonrpc.ts`](/Users/kevin/Documents/dev_projects/open-agent-bridge/src/types/jsonrpc.ts)
+- [`src/types/messages.ts`](/Users/kevin/Documents/dev_projects/open-agent-bridge/src/types/messages.ts)
+- [`src/types/skills.ts`](/Users/kevin/Documents/dev_projects/open-agent-bridge/src/types/skills.ts)
 
 Tipos clave:
 

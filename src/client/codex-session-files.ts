@@ -14,7 +14,7 @@ export interface CurrentCodexSessionRecord {
 }
 
 function sessionFilePath(projectPath: string): string {
-  return join(projectPath, ".agent-bridge", "current-codex-session.json");
+  return join(projectPath, ".open-agent-bridge", "current-codex-session.json");
 }
 
 export function writeCurrentCodexSession(projectPath: string, record: CurrentCodexSessionRecord): void {

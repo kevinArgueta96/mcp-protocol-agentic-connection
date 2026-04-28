@@ -1,4 +1,4 @@
-// agent-bridge health [agent-id]
+// open-agent-bridge health [agent-id]
 import type { Command } from "commander";
 import chalk from "chalk";
 import { RegistryClient } from "../../client/registry-client.js";

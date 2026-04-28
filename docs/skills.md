@@ -6,8 +6,8 @@ Las skills builtin se registran en `createDefaultRegistry()` y representan las c
 
 Referencias:
 
-- [`src/skills/index.ts`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/src/skills/index.ts)
-- [`src/skills/framework.ts`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/src/skills/framework.ts)
+- [`src/skills/index.ts`](/Users/kevin/Documents/dev_projects/open-agent-bridge/src/skills/index.ts)
+- [`src/skills/framework.ts`](/Users/kevin/Documents/dev_projects/open-agent-bridge/src/skills/framework.ts)
 
 ## Framework
 

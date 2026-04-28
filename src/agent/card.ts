@@ -19,7 +19,7 @@ export function generateAgentCard(options: CardOptions): AgentCard {
     url,
     version: "0.1.0",
     provider: {
-      organization: "agent-bridge",
+      organization: "open-agent-bridge",
     },
     capabilities: {
       streaming: true,
@@ -31,7 +31,7 @@ export function generateAgentCard(options: CardOptions): AgentCard {
     skills,
     // Store extra local metadata in a custom extension field
     ...({
-      "x-agent-bridge": {
+      "x-open-agent-bridge": {
         agentId,
         projectPath: projectInfo.rootDir,
         projectType: projectInfo.type,

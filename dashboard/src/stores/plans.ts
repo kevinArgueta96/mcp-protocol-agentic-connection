@@ -40,7 +40,7 @@ export interface PlanRun {
   cancelled: boolean;
 }
 
-const STORAGE_KEY = "agent-bridge:plans:v1";
+const STORAGE_KEY = "open-agent-bridge:plans:v1";
 
 function loadPlans(): Plan[] {
   try {

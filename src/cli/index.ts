@@ -16,7 +16,7 @@ import { registerGeminiCommand } from "./commands/gemini.js";
 const program = new Command();
 
 program
-  .name("agent-bridge")
+  .name("open-agent-bridge")
   .description("Local agent communication protocol — A2A + MCP + WebSocket")
   .version("0.1.0");
 

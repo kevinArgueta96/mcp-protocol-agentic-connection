@@ -40,7 +40,7 @@ export interface McpAdapterOptions {
 
 function formatAgentsSummary(agents: RegistryEntry[]): string {
   if (agents.length === 0) {
-    return "No agents currently connected. Start one with: agent-bridge start <project-path>";
+    return "No agents currently connected. Start one with: open-agent-bridge start <project-path>";
   }
   const runnableAgents = agents.filter((a) => a.entryType !== "client" || a.card.skills.length > 0);
   // Exclude internal infrastructure from the visible client list:
@@ -55,7 +55,7 @@ function formatAgentsSummary(agents: RegistryEntry[]): string {
   );
 
   return [
-    `${agents.length} entry(ies) connected via agent-bridge:\n`,
+    `${agents.length} entry(ies) connected via open-agent-bridge:\n`,
     runnableAgents.length > 0 ? "Agents with skills:\n" : "Agents with skills:\n  (none)",
     ...runnableAgents.map((a) => {
       const skills = a.card.skills.map((s) => `    • ${s.id}: ${s.description}`).join("\n");
@@ -121,11 +121,11 @@ export class McpAgentBridge {
     // Default to Claude profile until the real client identifies itself
     this.clientProfile = this.profileResolver.resolve({ clientName: "claude-code" });
     this.server = new McpServer(
-      { name: "agent-bridge", version: "0.1.0" },
+      { name: "open-agent-bridge", version: "0.1.0" },
       {
         capabilities: { experimental: { "claude/channel": {} } },
         instructions:
-          "You are connected to agent-bridge, a multi-agent communication hub.\n\n" +
+          "You are connected to open-agent-bridge, a multi-agent communication hub.\n\n" +
           "WORKFLOW:\n" +
           "  • Discover targets:  list_agents(includeClients=true)\n" +
           "  • Start a thread:    message_client_session(clientId|project, message)\n" +
@@ -180,7 +180,7 @@ export class McpAgentBridge {
     if (transport === "stdio") {
       const stdioTransport = new StdioServerTransport();
       await this.server.connect(stdioTransport);
-      console.error("[MCP] agent-bridge ready.");
+      console.error("[MCP] open-agent-bridge ready.");
     } else {
       await this.startHttpTransport(httpPort);
     }
@@ -420,7 +420,7 @@ export class McpAgentBridge {
 
     if (!registryAvailable) {
       if (!this.options.auto) {
-        console.error("[MCP] Registry not available. Start with: agent-bridge registry start");
+        console.error("[MCP] Registry not available. Start with: open-agent-bridge registry start");
         return;
       }
 
@@ -560,7 +560,7 @@ export class McpAgentBridge {
       "list_agents",
       {
         description:
-          "List all agents and client sessions connected to agent-bridge. " +
+          "List all agents and client sessions connected to open-agent-bridge. " +
           "Returns each entry's agentId, project path, type, health status, and available skills. " +
           "WORKFLOW: call this first to discover targets before using message_client_session. " +
           "IMPORTANT: to see Codex/Gemini/Claude bridges (client sessions without HTTP skills), " +
@@ -1204,7 +1204,7 @@ export class McpAgentBridge {
 
     app.get("/", (_req, res) => {
       res.json({
-        server: "agent-bridge MCP",
+        server: "open-agent-bridge MCP",
         endpoints: { sse: "/mcp", message: "/mcp/message" },
       });
     });

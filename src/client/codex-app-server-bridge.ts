@@ -438,7 +438,7 @@ export class CodexAppServerBridge extends EventEmitter {
   private buildInjectionPrompt(message: ChannelMessage): string {
     const sender = message.fromAgentName ?? message.fromAgentId;
     const lines = [
-      `[agent-bridge] Mensaje de canal de ${sender}:`,
+      `[open-agent-bridge] Mensaje de canal de ${sender}:`,
       ``,
       message.content,
     ];

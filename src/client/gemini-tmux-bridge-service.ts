@@ -70,7 +70,7 @@ export class GeminiTmuxBridgeService {
     const registryUrl = options.registryUrl ?? "http://localhost:4999";
     this.registry = new RegistryClient(registryUrl);
     this.channelTransport = new ChannelTransport({ registryUrl });
-    this.statePath = join(options.projectPath, ".agent-bridge", "gemini-tmux-sidecar-state.json");
+    this.statePath = join(options.projectPath, ".open-agent-bridge", "gemini-tmux-sidecar-state.json");
     this.clientId = options.clientId;
     this.tmuxPane = options.tmuxPane;
     this.verbose = options.verbose ?? false;
@@ -243,7 +243,7 @@ export class GeminiTmuxBridgeService {
     // special-character issues with set-buffer. The -dr flags on paste-buffer
     // delete the buffer afterwards and paste in raw mode (no trailing newline),
     // so the Enter we send next is always a clean submit keystroke.
-    const bufferName = `agent-bridge-gemini-${process.pid}-${Date.now()}`;
+    const bufferName = `open-agent-bridge-gemini-${process.pid}-${Date.now()}`;
     const tmpFile = join(tmpdir(), `${bufferName}.txt`);
     await writeFile(tmpFile, prompt, "utf8");
     try {

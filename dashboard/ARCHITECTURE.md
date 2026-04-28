@@ -1,4 +1,4 @@
-# agent-bridge Dashboard — Architecture
+# open-agent-bridge Dashboard — Architecture
 
 ## Overview
 
@@ -144,13 +144,13 @@ pnpm run build:all
 
 After building, start the registry:
 ```bash
-agent-bridge registry start
+open-agent-bridge registry start
 # Open: http://localhost:4999/dashboard
 ```
 
 Or use the CLI:
 ```bash
-agent-bridge dashboard
+open-agent-bridge dashboard
 ```
 
 ## Adding Features

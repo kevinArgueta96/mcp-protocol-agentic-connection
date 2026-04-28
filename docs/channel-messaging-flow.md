@@ -2,7 +2,7 @@
 
 How a message travels from the LLM's tool call through the MCP adapter, the registry, and into another agent's inbox.
 
-This document covers the end-to-end path of `message_client_session` (and its sibling `reply`) — the tools an agent uses to push a message into another agent's channel inbox via `agent-bridge`.
+This document covers the end-to-end path of `message_client_session` (and its sibling `reply`) — the tools an agent uses to push a message into another agent's channel inbox via `open-agent-bridge`.
 
 ## TL;DR
 
@@ -88,7 +88,7 @@ The LLM calls `message_client_session({ clientId, message, ... })`. The handler 
 5. Optional filter by `clientType` (`claude-code` | `codex` | `gemini`).
 6. On multiple matches, sort by `CLIENT_PRIORITY` (`claude-code > gemini > codex`); `app-server-bridge` daemons always win because they inject the message as a turn into a running app-server.
 
-The dashboard UI (`agent-bridge:client-dashboard-ui`) is excluded from valid targets.
+The dashboard UI (`open-agent-bridge:client-dashboard-ui`) is excluded from valid targets.
 
 ### 2. Build a deterministic conversationId
 

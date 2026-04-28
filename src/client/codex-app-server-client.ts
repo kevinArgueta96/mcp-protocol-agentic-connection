@@ -177,7 +177,7 @@ export class CodexAppServerClient extends EventEmitter<CodexAppServerClientEvent
 
   private async performInitialize(): Promise<void> {
     const result = await this.sendRequest("initialize", {
-      clientInfo: { name: "agent-bridge", version: "0.1.0" },
+      clientInfo: { name: "open-agent-bridge", version: "0.1.0" },
       capabilities: {},
       protocolVersion: "0.1.0",
     });
@@ -288,7 +288,7 @@ export class CodexAppServerClient extends EventEmitter<CodexAppServerClientEvent
     // Respond to known server-initiated requests
     switch (method) {
       case "server.client_name":
-        this.send({ id, result: "agent-bridge" });
+        this.send({ id, result: "open-agent-bridge" });
         console.error("[CodexClient] Responded to server.client_name");
         break;
       case "server.client_version":

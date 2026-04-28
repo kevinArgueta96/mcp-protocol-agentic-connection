@@ -381,7 +381,7 @@ export class GeminiAcpBridge extends EventEmitter {
   private buildInjectionPrompt(message: ChannelMessage): string {
     const sender = message.fromAgentName ?? message.fromAgentId;
     const lines = [
-      `[agent-bridge] Channel message from ${sender}:`,
+      `[open-agent-bridge] Channel message from ${sender}:`,
       "",
       message.content,
     ];

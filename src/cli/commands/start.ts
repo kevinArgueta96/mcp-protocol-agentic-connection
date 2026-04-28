@@ -1,4 +1,4 @@
-// agent-bridge start [path] [--port N] [--mcp] [--registry]
+// open-agent-bridge start [path] [--port N] [--mcp] [--registry]
 import type { Command } from "commander";
 import chalk from "chalk";
 import { AgentServer } from "../../agent/server.js";

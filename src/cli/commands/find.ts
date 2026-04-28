@@ -1,4 +1,4 @@
-// agent-bridge find <query> — find agents by skill or project
+// open-agent-bridge find <query> — find agents by skill or project
 import type { Command } from "commander";
 import chalk from "chalk";
 import { RegistryClient } from "../../client/registry-client.js";

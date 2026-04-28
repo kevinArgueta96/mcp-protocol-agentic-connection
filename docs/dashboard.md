@@ -15,8 +15,8 @@ Tecnologías:
 
 Referencias:
 
-- [`dashboard/package.json`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/dashboard/package.json)
-- [`dashboard/ARCHITECTURE.md`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/dashboard/ARCHITECTURE.md)
+- [`dashboard/package.json`](/Users/kevin/Documents/dev_projects/open-agent-bridge/dashboard/package.json)
+- [`dashboard/ARCHITECTURE.md`](/Users/kevin/Documents/dev_projects/open-agent-bridge/dashboard/ARCHITECTURE.md)
 
 ## Arranque
 
@@ -56,7 +56,7 @@ Dashboard not built. Run: pnpm run build:dashboard
 
 ## Variables de entorno
 
-Definidas en [`dashboard/.env.example`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/dashboard/.env.example):
+Definidas en [`dashboard/.env.example`](/Users/kevin/Documents/dev_projects/open-agent-bridge/dashboard/.env.example):
 
 - `VITE_REGISTRY_URL=http://localhost:4999`
 - `VITE_REGISTRY_WS=ws://localhost:4999/ws`
@@ -78,7 +78,7 @@ Layout de tres paneles:
 
 Referencia:
 
-- [`dashboard/src/views/DashboardView.vue`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/dashboard/src/views/DashboardView.vue)
+- [`dashboard/src/views/DashboardView.vue`](/Users/kevin/Documents/dev_projects/open-agent-bridge/dashboard/src/views/DashboardView.vue)
 
 ### `AgentDetailView`
 
@@ -92,7 +92,7 @@ Detalle de un agente:
 
 Referencia:
 
-- [`dashboard/src/views/AgentDetailView.vue`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/dashboard/src/views/AgentDetailView.vue)
+- [`dashboard/src/views/AgentDetailView.vue`](/Users/kevin/Documents/dev_projects/open-agent-bridge/dashboard/src/views/AgentDetailView.vue)
 
 ## Stores
 
@@ -107,7 +107,7 @@ Responsabilidades:
 
 Referencia:
 
-- [`dashboard/src/stores/registry.ts`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/dashboard/src/stores/registry.ts)
+- [`dashboard/src/stores/registry.ts`](/Users/kevin/Documents/dev_projects/open-agent-bridge/dashboard/src/stores/registry.ts)
 
 ### `useTraceStore`
 
@@ -119,7 +119,7 @@ Responsabilidades:
 
 Referencia:
 
-- [`dashboard/src/stores/trace.ts`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/dashboard/src/stores/trace.ts)
+- [`dashboard/src/stores/trace.ts`](/Users/kevin/Documents/dev_projects/open-agent-bridge/dashboard/src/stores/trace.ts)
 
 ### `useChatStore`
 
@@ -131,7 +131,7 @@ Responsabilidades:
 
 Referencia:
 
-- [`dashboard/src/stores/chat.ts`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/dashboard/src/stores/chat.ts)
+- [`dashboard/src/stores/chat.ts`](/Users/kevin/Documents/dev_projects/open-agent-bridge/dashboard/src/stores/chat.ts)
 
 ## Comportamiento del chat
 

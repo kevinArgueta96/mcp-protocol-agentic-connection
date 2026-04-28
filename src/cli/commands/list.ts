@@ -1,4 +1,4 @@
-// agent-bridge list
+// open-agent-bridge list
 import type { Command } from "commander";
 import chalk from "chalk";
 import { RegistryClient } from "../../client/registry-client.js";
@@ -42,7 +42,7 @@ export function registerListCommand(program: Command): void {
           console.log();
         }
       } catch {
-        console.error(chalk.red("Error: Registry not available. Start it with: agent-bridge registry start"));
+        console.error(chalk.red("Error: Registry not available. Start it with: open-agent-bridge registry start"));
         process.exit(1);
       }
     });

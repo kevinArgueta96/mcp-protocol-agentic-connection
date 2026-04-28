@@ -10,7 +10,7 @@ import type {
 } from "../types/messages.js";
 
 function defaultDbPath(): string {
-  return resolve(process.cwd(), ".agent-bridge", "registry.sqlite");
+  return resolve(process.cwd(), ".open-agent-bridge", "registry.sqlite");
 }
 
 export class ChannelStore {

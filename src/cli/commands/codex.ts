@@ -53,7 +53,7 @@ export function registerCodexCommand(program: Command): void {
       }
       const appServerWsUrl = `ws://127.0.0.1:${appServerPort}`;
 
-      console.log(chalk.bold("\n[agent-bridge] codex start\n"));
+      console.log(chalk.bold("\n[open-agent-bridge] codex start\n"));
       console.log(`  Project:    ${projectPath}`);
       console.log(`  Registry:   ${registryUrl}`);
       console.log(`  App-server: ${appServerWsUrl}`);
@@ -91,7 +91,7 @@ export function registerCodexCommand(program: Command): void {
       console.log(chalk.green("✓") + " Bridge ready. Launching Codex TUI…\n");
 
       // 3. Redirect bridge/registry stderr to a log file so it doesn't pollute the TUI
-      const logFile = join(tmpdir(), `agent-bridge-codex-${process.pid}.log`);
+      const logFile = join(tmpdir(), `open-agent-bridge-codex-${process.pid}.log`);
       const logStream = createWriteStream(logFile, { flags: "a" });
       const originalStderrWrite = process.stderr.write.bind(process.stderr);
       process.stderr.write = ((chunk: string | Uint8Array, ...args: unknown[]) => {
@@ -150,7 +150,7 @@ export function registerCodexCommand(program: Command): void {
         appServerPort,
       });
 
-      console.log(chalk.bold("\n[agent-bridge] Codex app-server bridge\n"));
+      console.log(chalk.bold("\n[open-agent-bridge] Codex app-server bridge\n"));
       console.log(`  Project:    ${projectPath}`);
       console.log(`  Registry:   ${options.registryUrl}`);
       console.log(`  App-server: ws://127.0.0.1:${appServerPort}`);
@@ -167,7 +167,7 @@ export function registerCodexCommand(program: Command): void {
       console.log(chalk.cyan(`  codex --remote ws://127.0.0.1:${appServerPort}\n`));
 
       const shutdown = async () => {
-        console.log("\n[agent-bridge] Shutting down...");
+        console.log("\n[open-agent-bridge] Shutting down...");
         await bridge.stop();
         process.exit(0);
       };
@@ -182,7 +182,7 @@ export function registerCodexCommand(program: Command): void {
 
   codex
     .command("tmux-bind")
-    .description("Bind the current Codex client session to a tmux pane so agent-bridge can inject follow-up prompts")
+    .description("Bind the current Codex client session to a tmux pane so open-agent-bridge can inject follow-up prompts")
     .option("--project <path>", "Project path override", process.cwd())
     .option("--client-id <id>", "Exact Codex client session ID to bind")
     .option("--pane <pane>", "Explicit tmux pane target, for example %12")

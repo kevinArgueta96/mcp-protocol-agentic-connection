@@ -1,4 +1,4 @@
-# agent-bridge — Plan y Arquitectura del Proyecto
+# open-agent-bridge — Plan y Arquitectura del Proyecto
 
 ## Visión
 
@@ -21,7 +21,7 @@ CLI / MCP Client / Dashboard
    RegistryServer (:4999)
    - HTTP /agents, /health, /events, /channel
    - WS   /ws  (snapshot, eventos registry + canal bidireccional)
-   - SQLite  .agent-bridge/registry.sqlite
+   - SQLite  .open-agent-bridge/registry.sqlite
           |
           +---- AgentServer (:500x)
           |     - GET  /.well-known/agent.json   (A2A Agent Card)
@@ -60,7 +60,7 @@ Centro de descubrimiento y coordinación.
 - Almacenamiento y broadcast de mensajes de canal con ACKs
 - Targeted delivery: si `toAgentId` está presente, entrega directa al WS de ese agente
 - Fallback: EventBus hace broadcast a todos
-- Persistencia SQLite en `.agent-bridge/registry.sqlite`
+- Persistencia SQLite en `.open-agent-bridge/registry.sqlite`
 
 **Tablas SQLite:**
 - `channel_messages` — payload completo de cada mensaje

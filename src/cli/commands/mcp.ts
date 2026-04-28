@@ -1,4 +1,4 @@
-// agent-bridge mcp — MCP adapter for Claude Code, Codex, Gemini CLI
+// open-agent-bridge mcp — MCP adapter for Claude Code, Codex, Gemini CLI
 import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { Command } from "commander";
@@ -6,7 +6,7 @@ import chalk from "chalk";
 import { McpAgentBridge } from "../../mcp/adapter.js";
 
 export function registerMcpCommand(program: Command): void {
-  const mcp = program.command("mcp").description("MCP adapter — connect agent-bridge to Claude Code, Codex, or Gemini CLI");
+  const mcp = program.command("mcp").description("MCP adapter — connect open-agent-bridge to Claude Code, Codex, or Gemini CLI");
 
   // ── mcp start ─────────────────────────────────────────────────────────────
   mcp
@@ -44,7 +44,7 @@ export function registerMcpCommand(program: Command): void {
   // ── mcp config ────────────────────────────────────────────────────────────
   mcp
     .command("config")
-    .description("Print the .mcp.json config to add agent-bridge to Claude Code")
+    .description("Print the .mcp.json config to add open-agent-bridge to Claude Code")
     .option("--write", "Write .mcp.json to the current directory")
     .option("--global", "Use global installation path (pnpm dlx)")
     .action(async (options) => {
@@ -55,16 +55,16 @@ export function registerMcpCommand(program: Command): void {
       const config = options.global
         ? {
             mcpServers: {
-              "agent-bridge": {
+              "open-agent-bridge": {
                 command: "pnpm",
-                args: ["dlx", "agent-bridge", "mcp", "start"],
+                args: ["dlx", "open-agent-bridge", "mcp", "start"],
                 env: { AGENT_BRIDGE_PROJECT: projectPath },
               },
             },
           }
         : {
             mcpServers: {
-              "agent-bridge": {
+              "open-agent-bridge": {
                 command: "node",
                 args: [cliPath, "mcp", "start"],
                 env: { AGENT_BRIDGE_PROJECT: projectPath },
@@ -83,8 +83,8 @@ export function registerMcpCommand(program: Command): void {
         console.log("\n" + chalk.bold("Add to your .mcp.json:") + "\n");
         console.log(json);
         console.log();
-        console.log(chalk.dim("Or run: agent-bridge mcp config --write"));
-        console.log(chalk.dim("Or run: claude mcp add agent-bridge -- node " + cliPath + " mcp start"));
+        console.log(chalk.dim("Or run: open-agent-bridge mcp config --write"));
+        console.log(chalk.dim("Or run: claude mcp add open-agent-bridge -- node " + cliPath + " mcp start"));
       }
     });
 
@@ -101,7 +101,7 @@ export function registerMcpCommand(program: Command): void {
         const agents = await client.listAgents({ healthy: true });
 
         if (agents.length === 0) {
-          console.log(chalk.yellow("No healthy agents found. Start agents with: agent-bridge start <path>"));
+          console.log(chalk.yellow("No healthy agents found. Start agents with: open-agent-bridge start <path>"));
           return;
         }
 
@@ -122,10 +122,10 @@ export function registerMcpCommand(program: Command): void {
         }
 
         console.log(chalk.bold("To connect Claude Code:"));
-        console.log(chalk.dim("  agent-bridge mcp config --write  # writes .mcp.json"));
-        console.log(chalk.dim("  agent-bridge mcp start           # or run directly"));
+        console.log(chalk.dim("  open-agent-bridge mcp config --write  # writes .mcp.json"));
+        console.log(chalk.dim("  open-agent-bridge mcp start           # or run directly"));
       } catch {
-        console.error(chalk.red("Registry not available. Start it with: agent-bridge registry start"));
+        console.error(chalk.red("Registry not available. Start it with: open-agent-bridge registry start"));
         process.exit(1);
       }
     });

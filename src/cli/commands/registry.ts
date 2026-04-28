@@ -1,4 +1,4 @@
-// agent-bridge registry start|status
+// open-agent-bridge registry start|status
 import type { Command } from "commander";
 import chalk from "chalk";
 import { RegistryServer } from "../../registry/server.js";

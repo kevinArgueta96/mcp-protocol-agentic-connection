@@ -1,4 +1,4 @@
-// agent-bridge ask <agent-id> <message>
+// open-agent-bridge ask <agent-id> <message>
 import type { Command } from "commander";
 import chalk from "chalk";
 import { RegistryClient } from "../../client/registry-client.js";

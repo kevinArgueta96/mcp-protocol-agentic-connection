@@ -1,4 +1,4 @@
-// agent-bridge delegate <skill-id> <message> — find agent with skill and send task
+// open-agent-bridge delegate <skill-id> <message> — find agent with skill and send task
 import type { Command } from "commander";
 import chalk from "chalk";
 import { RegistryClient } from "../../client/registry-client.js";

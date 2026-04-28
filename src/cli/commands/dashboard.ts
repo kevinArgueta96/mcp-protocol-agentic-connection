@@ -5,7 +5,7 @@ import { platform } from "node:os";
 export function registerDashboardCommand(program: Command): void {
   program
     .command("dashboard")
-    .description("Open the agent-bridge dashboard in your browser")
+    .description("Open the open-agent-bridge dashboard in your browser")
     .option("--no-open", "Print URL without opening browser")
     .option("--port <number>", "Registry port", "4999")
     .action((options: { open: boolean; port: string }) => {

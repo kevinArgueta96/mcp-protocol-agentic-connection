@@ -9,7 +9,7 @@
         </div>
       </div>
       <div class="brand-copy">
-        <span class="brand-title">agent-bridge</span>
+        <span class="brand-title">open-agent-bridge</span>
         <span class="brand-subtitle">live orchestration for agents, clients, traces and channels</span>
       </div>
     </div>

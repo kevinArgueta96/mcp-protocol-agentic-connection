@@ -12,7 +12,7 @@ export function registerGeminiCommand(program: Command): void {
 
   gemini
     .command("tmux-bind")
-    .description("Bind the current Gemini client session to a tmux pane so agent-bridge can inject follow-up prompts")
+    .description("Bind the current Gemini client session to a tmux pane so open-agent-bridge can inject follow-up prompts")
     .option("--project <path>", "Project path override", process.cwd())
     .option("--client-id <id>", "Exact Gemini client session ID to bind")
     .option("--pane <pane>", "Explicit tmux pane target, for example %12")
@@ -115,7 +115,7 @@ export function registerGeminiCommand(program: Command): void {
         debug: options.debug === true,
       });
 
-      console.log(chalk.bold("\n[agent-bridge] Gemini ACP bridge\n"));
+      console.log(chalk.bold("\n[open-agent-bridge] Gemini ACP bridge\n"));
       console.log(`  Project:  ${projectPath}`);
       console.log(`  Registry: ${options.registryUrl}`);
       console.log(`  Command:  ${options.geminiCommand}`);
@@ -131,7 +131,7 @@ export function registerGeminiCommand(program: Command): void {
       console.log(chalk.green("✓") + " Gemini ACP bridge running\n");
 
       const shutdown = async () => {
-        console.log("\n[agent-bridge] Shutting down…");
+        console.log("\n[open-agent-bridge] Shutting down…");
         await bridge.stop();
         process.exit(0);
       };
@@ -159,7 +159,7 @@ export function registerGeminiCommand(program: Command): void {
       const projectPath = options.project ?? process.cwd();
       const registryUrl: string = options.registryUrl;
 
-      console.log(chalk.bold("\n[agent-bridge] gemini start\n"));
+      console.log(chalk.bold("\n[open-agent-bridge] gemini start\n"));
       console.log(`  Project:  ${projectPath}`);
       console.log(`  Registry: ${registryUrl}`);
       console.log(`  Command:  ${options.geminiCommand}`);

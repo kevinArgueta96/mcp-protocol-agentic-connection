@@ -93,7 +93,7 @@ Acciones:
 
 ## Exportaciones públicas
 
-Desde [`src/index.ts`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/src/index.ts):
+Desde [`src/index.ts`](/Users/kevin/Documents/dev_projects/open-agent-bridge/src/index.ts):
 
 - servidores: `AgentServer`, `RegistryServer`
 - clientes: `A2AClient`, `RegistryClient`

@@ -1,4 +1,4 @@
-// agent-bridge broadcast <message> — send to all agents
+// open-agent-bridge broadcast <message> — send to all agents
 import type { Command } from "commander";
 import chalk from "chalk";
 import { RegistryClient } from "../../client/registry-client.js";

@@ -104,7 +104,7 @@ class DashboardChannelRuntime {
       },
       card: {
         name: DASHBOARD_PROJECT_NAME,
-        description: "Dashboard web client for agent-bridge channels",
+        description: "Dashboard web client for open-agent-bridge channels",
         url: "",
         version: "web",
         capabilities: {

@@ -4,7 +4,7 @@ Memoria operativa rápida para cargar contexto del repo sin releer toda la docum
 
 ## Qué es
 
-`agent-bridge` es un hub local para descubrir agentes por proyecto, enviarles tareas por A2A/JSON-RPC, retransmitir eventos en tiempo real y exponer esa red como herramientas MCP para clientes como Codex, Claude o Gemini.
+`open-agent-bridge` es un hub local para descubrir agentes por proyecto, enviarles tareas por A2A/JSON-RPC, retransmitir eventos en tiempo real y exponer esa red como herramientas MCP para clientes como Codex, Claude o Gemini.
 
 Tiene dos superficies principales:
 
@@ -36,7 +36,7 @@ Hotspots:
 Notas reales:
 
 - el registro de agentes vive en memoria del proceso
-- las conversaciones de canal persisten en `.agent-bridge/registry.sqlite`
+- las conversaciones de canal persisten en `.open-agent-bridge/registry.sqlite`
 - el WebSocket del registry es la fuente de verdad para dashboard y bridge MCP
 
 ### 2. Agent Runtime
@@ -184,7 +184,7 @@ Notas reales:
 
 1. `channels` sigue siendo transporte + persistencia.
 2. Codex carga MCP desde `.codex/config.toml`.
-3. `mcp start` registra la sesión cliente Codex y escribe `.agent-bridge/current-codex-session.json`.
+3. `mcp start` registra la sesión cliente Codex y escribe `.open-agent-bridge/current-codex-session.json`.
 4. Si la sesión corre dentro de `tmux`, el marker guarda el `TMUX_PANE` activo.
 5. Un sidecar separado `codex tmux-sidecar` vigila mensajes pendientes para ese `clientId`.
 6. Cuando entra un mensaje pendiente, el sidecar inyecta un follow-up en el pane real de Codex para que esa misma sesión use `channel_inbox` y `reply`.

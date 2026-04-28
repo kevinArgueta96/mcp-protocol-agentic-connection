@@ -1,10 +1,10 @@
 {
-  "name": "agent-bridge",
+  "name": "open-agent-bridge",
   "version": "0.1.0",
   "description": "Local agent communication protocol — A2A + MCP + WebSocket",
   "type": "module",
   "bin": {
-    "agent-bridge": "./dist/cli/index.js"
+    "open-agent-bridge": "./dist/cli/index.js"
   },
   "license": "MIT",
   "engines": {

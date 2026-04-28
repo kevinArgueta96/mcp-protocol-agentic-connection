@@ -7,7 +7,7 @@ function buildGeminiPayload(content: string, meta: Record<string, unknown>): Cli
     method: "notifications/message",
     params: {
       level: "info",
-      logger: "agent-bridge.channel",
+      logger: "open-agent-bridge.channel",
       data: {
         content,
         meta,

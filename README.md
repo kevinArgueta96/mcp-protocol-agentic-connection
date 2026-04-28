@@ -1,4 +1,4 @@
-# agent-bridge
+# open-agent-bridge
 
 <!-- TODO: Add SVG logo/hero image here -->
 
@@ -11,7 +11,7 @@
 
 **Let Claude Code, Codex, and Gemini CLI talk to each other — over MCP, locally, bidirectionally.**
 
-`agent-bridge` is a local communication hub for AI agents. It provides service discovery, bidirectional messaging, and MCP tool exposure so that Claude Code, Codex, and Gemini CLI running in separate projects can delegate tasks, exchange context, and coordinate work without leaving the local machine.
+`open-agent-bridge` is a local communication hub for AI agents. It provides service discovery, bidirectional messaging, and MCP tool exposure so that Claude Code, Codex, and Gemini CLI running in separate projects can delegate tasks, exchange context, and coordinate work without leaving the local machine.
 
 ---
 
@@ -19,7 +19,7 @@
 <summary><strong>Table of Contents</strong></summary>
 
 - [TL;DR — 60-second quickstart](#tldr--60-second-quickstart)
-- [Why agent-bridge?](#why-agent-bridge)
+- [Why open-agent-bridge?](#why-open-agent-bridge)
 - [How it works](#how-it-works)
 - [Getting started](#getting-started)
   - [Requirements](#requirements)
@@ -78,8 +78,8 @@ pnpm run dev -- start .
 # 4. Generate .mcp.json for Claude Code
 pnpm run dev -- mcp config --write
 
-# 5. Launch Claude Code with the agent-bridge channel enabled
-claude --dangerously-load-development-channels server:agent-bridge
+# 5. Launch Claude Code with the open-agent-bridge channel enabled
+claude --dangerously-load-development-channels server:open-agent-bridge
 
 # 6. Claude Code now has 4 MCP tools
 ```
@@ -88,7 +88,7 @@ Claude Code now has four MCP tools: `list_agents`, `channel_inbox`, `message_cli
 
 ---
 
-## Why agent-bridge?
+## Why open-agent-bridge?
 
 - **Local-first, zero infrastructure.** Everything runs on `localhost`. No cloud relay, no auth tokens, no subscriptions. The registry binds to `:4999`; agents bind to `:5001+`.
 - **Native MCP integration.** Exposes the agent network as first-class MCP tools via `stdio` transport, so Claude Code picks them up automatically from `.mcp.json` without any plugin or wrapper.
@@ -108,7 +108,7 @@ Claude Code / Codex / Gemini CLI / Dashboard
     │       RegistryServer :4999          │
     │  HTTP  /agents /health /channel/*   │
     │  WS    /ws  (relay + broadcast)     │
-    │  SQLite .agent-bridge/registry.sqlite│
+    │  SQLite .open-agent-bridge/registry.sqlite│
     └──────┬─────────────┬───────────────┘
            │             │
            v             v
@@ -162,7 +162,7 @@ Claude Code
 
 ```bash
 git clone <repo-url>
-cd agent-bridge
+cd open-agent-bridge
 pnpm install
 ```
 
@@ -215,15 +215,15 @@ pnpm run dev -- mcp config --write
 
 ## Launching each client
 
-Once the registry is running and `.mcp.json` is in place, each AI client connects to agent-bridge through its own startup command.
+Once the registry is running and `.mcp.json` is in place, each AI client connects to open-agent-bridge through its own startup command.
 
 ### Claude Code
 
 ```bash
-claude --dangerously-load-development-channels server:agent-bridge
+claude --dangerously-load-development-channels server:open-agent-bridge
 ```
 
-The `--dangerously-load-development-channels` flag tells the Claude CLI to activate the MCP server named `server:agent-bridge` as a development notification channel. The name `agent-bridge` matches the entry in `.mcp.json`. This enables:
+The `--dangerously-load-development-channels` flag tells the Claude CLI to activate the MCP server named `server:open-agent-bridge` as a development notification channel. The name `open-agent-bridge` matches the entry in `.mcp.json`. This enables:
 - The four MCP tools (`list_agents`, `channel_inbox`, `message_client_session`, `reply`).
 - Push notifications via `notifications/claude/channel` — incoming channel messages appear as `<channel>` blocks inline in the terminal.
 
@@ -232,7 +232,7 @@ The MCP adapter registers the Claude Code session automatically on the first `in
 ### Codex
 
 ```bash
-agent-bridge codex start --project "/absolute/path/to/your/project"
+open-agent-bridge codex start --project "/absolute/path/to/your/project"
 ```
 
 This single command:
@@ -247,7 +247,7 @@ If you prefer to start Codex separately:
 
 ```bash
 # Terminal A — bridge only
-agent-bridge codex app-bridge --project "/absolute/path/to/your/project"
+open-agent-bridge codex app-bridge --project "/absolute/path/to/your/project"
 
 # Terminal B — Codex TUI connecting to the app-server
 codex --remote ws://127.0.0.1:4500
@@ -258,13 +258,13 @@ codex --remote ws://127.0.0.1:4500
 The preferred path is the **ACP bridge** — it drives `gemini --acp` over JSON-RPC 2.0, giving the same bidirectional, programmatic delivery as the Codex app-server bridge:
 
 ```bash
-agent-bridge gemini start --project "/absolute/path/to/your/project"
+open-agent-bridge gemini start --project "/absolute/path/to/your/project"
 ```
 
 Or start the bridge daemon separately:
 
 ```bash
-agent-bridge gemini app-bridge --project "/absolute/path/to/your/project"
+open-agent-bridge gemini app-bridge --project "/absolute/path/to/your/project"
 ```
 
 This spawns `gemini --acp`, performs the ACP handshake, registers the Gemini session in the registry, and wires channel messages to `session/prompt` calls.
@@ -273,10 +273,10 @@ This spawns `gemini --acp`, performs the ACP handshake, registers the Gemini ses
 
 ```bash
 # In a tmux pane running Gemini, bind it:
-agent-bridge gemini tmux-bind
+open-agent-bridge gemini tmux-bind
 
 # In a sidecar pane, poll and inject:
-agent-bridge gemini tmux-sidecar
+open-agent-bridge gemini tmux-sidecar
 ```
 
 The `.gemini/settings.json` at the repo root contains a reference MCP config for Gemini CLI.
@@ -288,7 +288,7 @@ The `.gemini/settings.json` at the repo root contains a reference MCP config for
 pnpm run build:all
 
 # Open in browser
-agent-bridge dashboard
+open-agent-bridge dashboard
 # → http://localhost:4999/dashboard
 ```
 
@@ -300,12 +300,12 @@ For hot-reload development: `pnpm run dev:dashboard` (Vite on `:5173`, proxies A
 
 ### .mcp.json
 
-`agent-bridge mcp config` generates the `.mcp.json` entry. The `AGENT_BRIDGE_PROJECT` environment variable tells the MCP adapter which project to associate the Claude Code session with:
+`open-agent-bridge mcp config` generates the `.mcp.json` entry. The `AGENT_BRIDGE_PROJECT` environment variable tells the MCP adapter which project to associate the Claude Code session with:
 
 ```json
 {
   "mcpServers": {
-    "agent-bridge": {
+    "open-agent-bridge": {
       "command": "node",
       "args": ["/absolute/path/to/dist/cli/index.js", "mcp", "start"],
       "env": {
@@ -327,9 +327,9 @@ Which produces:
 ```json
 {
   "mcpServers": {
-    "agent-bridge": {
+    "open-agent-bridge": {
       "command": "pnpm",
-      "args": ["dlx", "agent-bridge", "mcp", "start"],
+      "args": ["dlx", "open-agent-bridge", "mcp", "start"],
       "env": {
         "AGENT_BRIDGE_PROJECT": "/absolute/path/to/your/project"
       }
@@ -359,7 +359,7 @@ pnpm run dev -- mcp status
 
 ## Channels
 
-Channels are the bidirectional messaging layer of agent-bridge. They let any agent or client session — Claude Code, Codex, Gemini CLI, the dashboard — send and receive structured conversational messages through the registry, with full delivery tracking and SQLite persistence.
+Channels are the bidirectional messaging layer of open-agent-bridge. They let any agent or client session — Claude Code, Codex, Gemini CLI, the dashboard — send and receive structured conversational messages through the registry, with full delivery tracking and SQLite persistence.
 
 This is the core feature of the project. Everything else (MCP tools, bridge daemons, dashboard chat) is built on top of it.
 
@@ -420,7 +420,7 @@ ACK records carry: `conversationId`, `messageId`, `state`, `actorId`, `actorType
 
 ### MCP tool reference
 
-These are the four tools Claude Code gets after configuring agent-bridge as an MCP server.
+These are the four tools Claude Code gets after configuring open-agent-bridge as an MCP server.
 
 #### `list_agents`
 
@@ -606,7 +606,7 @@ Each AI client has a different bridge mechanism depending on how it receives cha
 
 Claude Code's bridge is **built into the MCP adapter itself** — no separate daemon required.
 
-When Claude Code connects to agent-bridge via MCP, the `McpAgentBridge` intercepts the MCP `initialize` handshake. It reads the client name (`Claude Code`, version, workspace roots), builds a stable `agentId` (`client-claude-code-{hash}`), and registers it as a client session in the registry automatically.
+When Claude Code connects to open-agent-bridge via MCP, the `McpAgentBridge` intercepts the MCP `initialize` handshake. It reads the client name (`Claude Code`, version, workspace roots), builds a stable `agentId` (`client-claude-code-{hash}`), and registers it as a client session in the registry automatically.
 
 From that point on, any channel message addressed to that `agentId` is **pushed** to the Claude terminal as an MCP notification:
 
@@ -621,7 +621,7 @@ Incoming channel message
 What Claude sees in its terminal:
 
 ```xml
-<channel source="agent-bridge" from_agent="my-agent-id" conversation_id="abc-123" message_id="msg-001">
+<channel source="open-agent-bridge" from_agent="my-agent-id" conversation_id="abc-123" message_id="msg-001">
   Task complete. Found 3 N+1 queries in getUserPosts().
 </channel>
 ```
@@ -706,13 +706,13 @@ Permission requests from Gemini (`session/request_permission`) are auto-approved
 **One-command startup (registry + ACP bridge):**
 
 ```bash
-agent-bridge gemini start --project "/absolute/path/to/your/project"
+open-agent-bridge gemini start --project "/absolute/path/to/your/project"
 ```
 
 **Bridge daemon only:**
 
 ```bash
-agent-bridge gemini app-bridge --project "/absolute/path/to/your/project"
+open-agent-bridge gemini app-bridge --project "/absolute/path/to/your/project"
 ```
 
 Available options: `--registry-url <url>`, `--gemini-command <cmd>` (default: `gemini`), `--debug`.
@@ -894,7 +894,7 @@ src/
     └── skills.ts              Skill context and I/O types
 ```
 
-**Persistence:** channel messages and ACKs are stored in SQLite at `.agent-bridge/registry.sqlite` across three tables: `channel_messages`, `channel_acks`, and `channel_suppressed_conversations`. SQLite access uses the `node:sqlite` built-in module (Node 22+) — there is no external SQLite dependency. The `AgentStore` (registered agents and heartbeats) is in-memory only and resets on registry restart; agents re-register automatically on reconnect.
+**Persistence:** channel messages and ACKs are stored in SQLite at `.open-agent-bridge/registry.sqlite` across three tables: `channel_messages`, `channel_acks`, and `channel_suppressed_conversations`. SQLite access uses the `node:sqlite` built-in module (Node 22+) — there is no external SQLite dependency. The `AgentStore` (registered agents and heartbeats) is in-memory only and resets on registry restart; agents re-register automatically on reconnect.
 
 **AgentServer — A2A JSON-RPC methods:**
 

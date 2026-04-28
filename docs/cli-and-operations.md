@@ -2,7 +2,7 @@
 
 ## Resumen
 
-La CLI publica se registra en [`src/cli/index.ts`](/Users/kevin/Documents/dev_projects/mcp-protocol-agentic-connection/src/cli/index.ts) y se distribuye bajo el binario `agent-bridge`.
+La CLI publica se registra en [`src/cli/index.ts`](/Users/kevin/Documents/dev_projects/open-agent-bridge/src/cli/index.ts) y se distribuye bajo el binario `open-agent-bridge`.
 
 En desarrollo, los ejemplos de este documento usan:
 
@@ -13,7 +13,7 @@ pnpm run dev -- <comando>
 Con build compilado, el equivalente es:
 
 ```bash
-agent-bridge <comando>
+open-agent-bridge <comando>
 ```
 
 ## Comandos principales

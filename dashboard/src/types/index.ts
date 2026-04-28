@@ -1,4 +1,4 @@
-// Shared types for the agent-bridge dashboard
+// Shared types for the open-agent-bridge dashboard
 
 export type AgentState = "healthy" | "unhealthy" | "unknown";
 export type TaskState = "submitted" | "working" | "input-required" | "completed" | "failed" | "canceled";

@@ -15,7 +15,7 @@
         </div>
         <div>
           <p class="empty-state__title">No agents connected</p>
-          <p class="empty-state__body">Start a local runtime with <code>agent-bridge start .</code> and the registry will begin streaming activity here.</p>
+          <p class="empty-state__body">Start a local runtime with <code>open-agent-bridge start .</code> and the registry will begin streaming activity here.</p>
         </div>
       </div>
 

@@ -14,7 +14,7 @@ export interface CurrentGeminiSessionRecord {
 }
 
 function sessionFilePath(projectPath: string): string {
-  return join(projectPath, ".agent-bridge", "current-gemini-session.json");
+  return join(projectPath, ".open-agent-bridge", "current-gemini-session.json");
 }
 
 export function writeCurrentGeminiSession(projectPath: string, record: CurrentGeminiSessionRecord): void {

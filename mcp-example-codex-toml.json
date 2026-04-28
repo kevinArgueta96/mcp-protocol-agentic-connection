@@ -1,12 +1,12 @@
 [mcp_servers.agent_bridge_local]
 command = "node"
 args = [
-  "/Users/kevs/Documents/DEV_PROJECTS/1. MCP/mcp-protocol-agentic-connection/dist/cli/index.js",
+  "/Users/kevs/Documents/DEV_PROJECTS/1. MCP/open-agent-bridge/dist/cli/index.js",
   "mcp",
   "start",
   "--project",
-  "/Users/kevs/Documents/DEV_PROJECTS/1. MCP/mcp-protocol-agentic-connection",
+  "/Users/kevs/Documents/DEV_PROJECTS/1. MCP/open-agent-bridge",
   "--config",
-  "/Users/kevs/Documents/DEV_PROJECTS/1. MCP/mcp-protocol-agentic-connection/.agent-bridge.mcp.yml"
+  "/Users/kevs/Documents/DEV_PROJECTS/1. MCP/open-agent-bridge/.open-agent-bridge.mcp.yml"
 ]
 startup_timeout_sec = 20
