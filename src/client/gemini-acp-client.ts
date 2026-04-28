@@ -37,6 +37,20 @@ interface ActivePromptState {
   ctx: InjectionContext;
   contentBuffer: string;
   settle: (ok: boolean) => void;
+  /** Reset the idle timer. Called from `handleNotification` whenever a
+   *  session/update arrives for this prompt — that way the timeout measures
+   *  *idle time* (no progress) rather than total wall-clock time, so a long
+   *  turn that keeps streaming chunks doesn't get cut off. */
+  resetIdle: () => void;
+}
+
+/** Subset of the `initialize` response we care about. The full response also
+ *  carries `agentCapabilities` and `agentInfo` per the ACP spec, but the bridge
+ *  only needs `protocolVersion` for logging and `authMethods` to decide whether
+ *  to call `authenticate`. */
+interface InitializeResult {
+  protocolVersion: number;
+  authMethods?: Array<{ id: string; name?: string; description?: string }>;
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -48,7 +62,10 @@ export interface GeminiAcpClientOptions {
   cwd?: string;
   /** Log ACP messages to stderr for debugging. Default: false */
   debug?: boolean;
-  /** Timeout for initialize/session/new requests. Default: 30_000ms */
+  /** Timeout for initialize/session/new requests. Default: 60_000ms.
+   *  Bumped from 30 s because Gemini CLI's `initialize` handler awaits
+   *  `config.initialize()` which loads cached credentials / OAuth state and
+   *  can be slow on cold start. */
   initTimeoutMs?: number;
   /** Timeout for session/prompt requests. Default: 120_000ms */
   promptTimeoutMs?: number;
@@ -104,7 +121,7 @@ export class GeminiAcpClient extends EventEmitter<GeminiAcpClientEvents> {
     this.geminiCommand = options.geminiCommand ?? "gemini";
     this.cwd = options.cwd ?? process.cwd();
     this.debug = options.debug ?? false;
-    this.initTimeoutMs = options.initTimeoutMs ?? 30_000;
+    this.initTimeoutMs = options.initTimeoutMs ?? 60_000;
     this.promptTimeoutMs = options.promptTimeoutMs ?? 120_000;
   }
 
@@ -119,7 +136,8 @@ export class GeminiAcpClient extends EventEmitter<GeminiAcpClientEvents> {
 
   async connect(): Promise<void> {
     this.spawnProcess();
-    await this.performInitialize();
+    const initResult = await this.performInitialize();
+    await this.maybeAuthenticate(initResult);
     await this.openSession();
     this.emit("connected");
   }
@@ -161,6 +179,7 @@ export class GeminiAcpClient extends EventEmitter<GeminiAcpClientEvents> {
 
     return new Promise<boolean>((resolve) => {
       let settled = false;
+      let timer: NodeJS.Timeout;
       const settle = (ok: boolean): void => {
         if (settled) return;
         settled = true;
@@ -171,12 +190,23 @@ export class GeminiAcpClient extends EventEmitter<GeminiAcpClientEvents> {
         resolve(ok);
       };
 
-      const timer = setTimeout(() => {
-        console.error(`[GeminiAcpClient] Prompt id=${id} timed out after ${this.promptTimeoutMs}ms`);
-        settle(false);
-      }, this.promptTimeoutMs);
+      // Idle timeout: the prompt is considered stuck only if Gemini stops
+      // emitting session/update notifications for `promptTimeoutMs`. Long turns
+      // that keep streaming chunks (e.g. a chain of tool calls + thinking) are
+      // not cut off mid-flight just because the wall clock passed the budget.
+      const armTimer = (): void => {
+        if (settled) return;
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          console.error(
+            `[GeminiAcpClient] Prompt id=${id} idle for ${this.promptTimeoutMs}ms — giving up`,
+          );
+          settle(false);
+        }, this.promptTimeoutMs);
+      };
+      armTimer();
 
-      this.activePrompt = { id, ctx, contentBuffer: "", settle };
+      this.activePrompt = { id, ctx, contentBuffer: "", settle, resetIdle: armTimer };
 
       this.send({
         jsonrpc: "2.0",
@@ -203,9 +233,23 @@ export class GeminiAcpClient extends EventEmitter<GeminiAcpClientEvents> {
       cwd: this.cwd,
     });
 
-    this.process.stderr?.on("data", (d: Buffer) => {
-      process.stderr.write(`[gemini-acp] ${d.toString()}`);
-    });
+    // stderr is normally just diagnostic chatter, but some Gemini CLI builds
+    // accidentally write valid JSON-RPC frames there too. We forward the bytes
+    // for visibility AND scan each line: if it parses as JSON-RPC, hand it to
+    // handleLine() the same as a stdout line. This makes the bridge robust to
+    // versions that mux stdout/stderr inconsistently without changing happy-path
+    // behaviour for well-behaved versions.
+    if (this.process.stderr) {
+      const rlErr = createInterface({ input: this.process.stderr, crlfDelay: Infinity });
+      rlErr.on("line", (line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        process.stderr.write(`[gemini-acp] ${line}\n`);
+        if (trimmed.startsWith("{") && trimmed.includes('"jsonrpc"')) {
+          this.handleLine(trimmed);
+        }
+      });
+    }
 
     if (this.process.stdout) {
       const rl = createInterface({ input: this.process.stdout, crlfDelay: Infinity });
@@ -273,13 +317,23 @@ export class GeminiAcpClient extends EventEmitter<GeminiAcpClientEvents> {
         options?: { optionId: string; kind?: string }[];
       } | undefined;
       const options = params?.options ?? [];
+      // Prefer the broadest "allow_always" option available so subsequent
+      // tool calls in the same session don't require another round-trip per
+      // call. Gemini exposes variants like:
+      //   - proceed_always_server  → all tools from this MCP server
+      //   - proceed_always_tool    → this specific tool
+      //   - proceed_always         → this whole session
+      //   - proceed_once           → just this call
+      // Choosing "allow_always" with a server-scoped optionId lets the agent
+      // execute long tool chains without us having to ack every step.
+      const allowAlways = options.find((o) => o.kind === "allow_always");
       const chosen =
+        allowAlways ??
         options.find((o) => o.kind === "allow_once") ??
-        options.find((o) => o.kind === "allow_always") ??
         options[0];
 
       console.error(
-        `[GeminiAcpClient] Permission request id=${msg.id} — auto-approving with "${chosen?.optionId ?? "proceed_once"}"`,
+        `[GeminiAcpClient] Permission request id=${msg.id} — auto-approving with "${chosen?.optionId ?? "proceed_once"}" (kind=${chosen?.kind ?? "?"})`,
       );
 
       this.send({
@@ -350,6 +404,11 @@ export class GeminiAcpClient extends EventEmitter<GeminiAcpClientEvents> {
     const update = params?.update;
     if (!update || !this.activePrompt) return;
 
+    // Any session/update — message chunks, tool call updates, agent thoughts —
+    // counts as "Gemini is alive and working". Reset the idle timer so we don't
+    // cut off long-running turns that keep streaming progress.
+    this.activePrompt.resetIdle();
+
     if (update.sessionUpdate === "agent_message_chunk" && update.content?.text) {
       this.activePrompt.contentBuffer += update.content.text;
     }
@@ -357,8 +416,15 @@ export class GeminiAcpClient extends EventEmitter<GeminiAcpClientEvents> {
 
   // ── Initialization ───────────────────────────────────────────────────────────
 
-  private async performInitialize(): Promise<void> {
-    await this.sendRequest(
+  private async performInitialize(): Promise<InitializeResult> {
+    // Shape per https://agentclientprotocol.com/protocol/initialization
+    //
+    // We deliberately keep this MINIMAL and only declare capabilities that exist
+    // in the spec. Older versions of agent-bridge sent a non-standard `auth: {
+    // terminal: false }` field which some Gemini CLI builds reject silently —
+    // they parse the request but never write a response, causing the bridge to
+    // time out at 30 s. See docs/channel-reliability.md (Bug 12).
+    const result = (await this.sendRequest(
       "initialize",
       {
         protocolVersion: 1,
@@ -366,13 +432,51 @@ export class GeminiAcpClient extends EventEmitter<GeminiAcpClientEvents> {
         clientCapabilities: {
           fs: { readTextFile: false, writeTextFile: false },
           terminal: false,
-          auth: { terminal: false },
         },
       },
       this.initTimeoutMs,
-    );
+    )) as InitializeResult | null;
+
     this._initialized = true;
-    console.error("[GeminiAcpClient] Initialized");
+    const authCount = result?.authMethods?.length ?? 0;
+    console.error(
+      `[GeminiAcpClient] Initialized (protocolVersion=${result?.protocolVersion ?? "?"}, authMethods=${authCount})`,
+    );
+    return result ?? { protocolVersion: 1, authMethods: [] };
+  }
+
+  /** Per the ACP spec, the `initialize` response carries `authMethods: []`. An
+   *  empty array means the agent is already authenticated (env var, OAuth cache,
+   *  etc.). A non-empty array means the client MUST call `authenticate` before
+   *  any further request, or the agent will hang on `session/new`.
+   *
+   *  We pick the first listed method and try it. If the agent rejects it, we
+   *  surface a clear error so the operator can `export GEMINI_API_KEY=...` or
+   *  run `gemini` once in a TTY to set up OAuth — instead of staring at an
+   *  opaque 30 s timeout. */
+  private async maybeAuthenticate(initResult: InitializeResult): Promise<void> {
+    const methods = initResult.authMethods ?? [];
+    if (methods.length === 0) return;
+
+    const first = methods[0]!;
+    console.error(
+      `[GeminiAcpClient] Agent requires authentication; trying methodId=${first.id} (name=${first.name ?? "?"})`,
+    );
+    try {
+      await this.sendRequest(
+        "authenticate",
+        { methodId: first.id },
+        this.initTimeoutMs,
+      );
+      console.error("[GeminiAcpClient] Authenticated");
+    } catch (err) {
+      const allIds = methods.map((m) => m.id).join(", ");
+      throw new Error(
+        `Gemini ACP authenticate(${first.id}) failed: ${err instanceof Error ? err.message : String(err)}. ` +
+          `Available methods: [${allIds}]. Set GEMINI_API_KEY / GOOGLE_API_KEY in your environment, ` +
+          `or run \`gemini\` once in a TTY to complete OAuth.`,
+      );
+    }
   }
 
   private async openSession(): Promise<void> {
@@ -404,18 +508,56 @@ export class GeminiAcpClient extends EventEmitter<GeminiAcpClientEvents> {
     this.process.stdin.write(line);
   }
 
-  private sendRequest(method: string, params: unknown, timeoutMs = 30_000): Promise<unknown> {
+  private sendRequest(method: string, params: unknown, timeoutMs = 60_000): Promise<unknown> {
     return new Promise((resolve, reject) => {
       const id = this.nextRequestId++;
+      const startedAt = Date.now();
+
+      // Empirically Gemini's `config.initialize()` can take 30–60 s on a cold
+      // start (loading cached OAuth, refreshing tokens, etc.). Without progress
+      // output the operator sees a frozen terminal and assumes the bridge is
+      // broken. A 10 s heartbeat keeps the session feeling alive without
+      // spamming.
+      const heartbeat = setInterval(() => {
+        const elapsedMs = Date.now() - startedAt;
+        console.error(
+          `[GeminiAcpClient] ⏳ ${method} (id=${id}) still waiting after ${Math.round(elapsedMs / 1000)}s ` +
+            `(timeout in ${Math.max(0, Math.round((timeoutMs - elapsedMs) / 1000))}s)`,
+        );
+      }, 10_000);
 
       const timer = setTimeout(() => {
+        clearInterval(heartbeat);
         this.pendingRequests.delete(id);
-        reject(new Error(`Request ${method} (id=${id}) timed out after ${timeoutMs}ms`));
+        // For `initialize`, the most common cause of a timeout is that Gemini's
+        // `config.initialize()` is blocked waiting for credentials. Surface a
+        // hint instead of the bare timeout message so the operator doesn't have
+        // to reverse-engineer it.
+        const hint = method === "initialize"
+          ? `\n  Most likely cause: Gemini CLI is not authenticated and is hanging on credential setup.\n` +
+            `  Fix: export GEMINI_API_KEY=... (key from https://aistudio.google.com/apikey),\n` +
+            `       or run \`gemini\` once in a TTY to complete OAuth, then retry.`
+          : "";
+        reject(new Error(`Request ${method} (id=${id}) timed out after ${timeoutMs}ms${hint}`));
       }, timeoutMs);
 
       this.pendingRequests.set(id, {
-        resolve: (result) => { clearTimeout(timer); resolve(result); },
-        reject: (err) => { clearTimeout(timer); reject(err); },
+        resolve: (result) => {
+          clearTimeout(timer);
+          clearInterval(heartbeat);
+          const elapsedMs = Date.now() - startedAt;
+          if (elapsedMs > 1_000) {
+            // Only log timing for slow responses (>1 s). Fast hot-path requests
+            // don't need the noise.
+            console.error(`[GeminiAcpClient] ✓ ${method} (id=${id}) responded in ${elapsedMs}ms`);
+          }
+          resolve(result);
+        },
+        reject: (err) => {
+          clearTimeout(timer);
+          clearInterval(heartbeat);
+          reject(err);
+        },
       });
 
       this.send({ jsonrpc: "2.0", id, method, params });
