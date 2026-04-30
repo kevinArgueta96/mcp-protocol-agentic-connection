@@ -62,12 +62,11 @@ const $route = useRoute();
 const store = useRegistryStore();
 
 const rawStatus = computed(() => store.status);
-// Same filters as AgentGrid: exclude dashboard self and bridge daemons
+// Same filter as AgentGrid: exclude only the dashboard self-registration.
 const clientCount = computed(() =>
   store.agentList.filter(
     (a) =>
       a.entryType === "client" &&
-      a.clientInfo?.clientVersion !== "app-server-bridge" &&
       a.agentId !== store.dashboardClientId,
   ).length,
 );

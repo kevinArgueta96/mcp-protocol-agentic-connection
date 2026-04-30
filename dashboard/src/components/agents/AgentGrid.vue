@@ -59,12 +59,12 @@ import type { RegistryAgent } from "@/types";
 
 const store = useRegistryStore();
 const agentList = computed(() => store.agentList);
-// Filter out: bridge daemons (app-server-bridge) and the dashboard itself
+// Filter out only the dashboard itself. Bridge sessions are deliverable clients
+// and should remain visible in the registry view.
 const clientList = computed(() =>
   agentList.value.filter(
     (a) =>
       a.entryType === "client" &&
-      a.clientInfo?.clientVersion !== "app-server-bridge" &&
       a.agentId !== store.dashboardClientId,
   ),
 );

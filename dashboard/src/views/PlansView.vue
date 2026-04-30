@@ -249,8 +249,7 @@ const clientAgents = computed(() =>
   registryStore.agentList.filter(
     (a) =>
       a.entryType === "client" &&
-      a.agentId !== registryStore.dashboardClientId &&
-      a.clientInfo?.clientVersion !== "app-server-bridge",
+      a.agentId !== registryStore.dashboardClientId,
   ),
 );
 

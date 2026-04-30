@@ -42,8 +42,7 @@ const clientAgents = computed(() =>
   healthyAgents.value.filter(
     (a) =>
       a.entryType === "client" &&
-      a.agentId !== registryStore.dashboardClientId &&
-      a.clientInfo?.clientVersion !== "app-server-bridge",
+      a.agentId !== registryStore.dashboardClientId,
   ),
 );
 const selectedId = computed(() => chatStore.selectedClient?.agentId ?? "");
