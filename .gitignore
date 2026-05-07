@@ -30,3 +30,8 @@ dist/
 
 # Git worktrees
 .worktrees/
+.tinglemap.md
+
+# Open Agent Bridge runtime state (SQLite registry, session markers)
+.open-agent-bridge/
+.agent-bridge/
