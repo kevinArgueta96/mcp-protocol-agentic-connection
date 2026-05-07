@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { AgentMessage, ChannelMessage } from "../../types/messages.js";
-import type { ClientBehaviorProfile, ClientNotificationEnvelope, LegacyNotifyPayload } from "../client-profile-resolver.js";
+import type {
+  AcceptsChannelMessageContext,
+  ClientBehaviorProfile,
+  ClientNotificationEnvelope,
+  LegacyNotifyPayload,
+} from "../client-profile-resolver.js";
 
 function buildGeminiPayload(content: string, meta: Record<string, unknown>): ClientNotificationEnvelope {
   return {
@@ -36,8 +41,15 @@ export class GeminiClientProfile implements ClientBehaviorProfile {
   readonly id = "gemini";
   readonly deliveryMode = "inbox-first" as const;
 
-  acceptsChannelMessage(message: ChannelMessage, selfAgentId: string | null): boolean {
-    return !message.toAgentId || (selfAgentId != null && message.toAgentId === selfAgentId);
+  acceptsChannelMessage(
+    message: ChannelMessage,
+    selfAgentId: string | null,
+    ctx?: AcceptsChannelMessageContext,
+  ): boolean {
+    if (!message.toAgentId) return true;
+    if (selfAgentId != null && message.toAgentId === selfAgentId) return true;
+    if (ctx?.siblingBridgeAgentIds?.has(message.toAgentId)) return true;
+    return false;
   }
 
   mapChannelMessage(message: ChannelMessage): ClientNotificationEnvelope {

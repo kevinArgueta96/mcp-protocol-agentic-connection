@@ -17,10 +17,24 @@ export interface LegacyNotifyPayload {
   messageId?: string;
 }
 
+export interface AcceptsChannelMessageContext {
+  /**
+   * Set of agentIds belonging to bridge daemons that share the same project as
+   * the inner MCP client. When the adapter rewrites `toAgentId` to a sibling
+   * bridge via auto-redirect, the inner client must still accept the message
+   * locally so it can surface in `channel_inbox(pendingOnly=true)`.
+   */
+  siblingBridgeAgentIds?: ReadonlySet<string>;
+}
+
 export interface ClientBehaviorProfile {
   id: string;
   deliveryMode: "push" | "inbox-first";
-  acceptsChannelMessage(message: ChannelMessage, selfAgentId: string | null): boolean;
+  acceptsChannelMessage(
+    message: ChannelMessage,
+    selfAgentId: string | null,
+    ctx?: AcceptsChannelMessageContext,
+  ): boolean;
   mapChannelMessage(message: ChannelMessage): ClientNotificationEnvelope | null;
   mapLegacyNotify(payload: LegacyNotifyPayload): ClientNotificationEnvelope | null;
   mapTaskRequestMessage(message: AgentMessage): ClientNotificationEnvelope | null;

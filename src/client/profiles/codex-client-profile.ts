@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { AgentMessage, ChannelMessage } from "../../types/messages.js";
-import type { ClientBehaviorProfile, ClientNotificationEnvelope, LegacyNotifyPayload } from "../client-profile-resolver.js";
+import type {
+  AcceptsChannelMessageContext,
+  ClientBehaviorProfile,
+  ClientNotificationEnvelope,
+  LegacyNotifyPayload,
+} from "../client-profile-resolver.js";
 
 function buildCodexPayload(content: string, meta: Record<string, unknown>): ClientNotificationEnvelope {
   return {
@@ -20,8 +25,18 @@ export class CodexClientProfile implements ClientBehaviorProfile {
   readonly id = "codex";
   readonly deliveryMode = "push" as const;
 
-  acceptsChannelMessage(message: ChannelMessage, selfAgentId: string | null): boolean {
-    return !message.toAgentId || (selfAgentId != null && message.toAgentId === selfAgentId);
+  acceptsChannelMessage(
+    message: ChannelMessage,
+    selfAgentId: string | null,
+    ctx?: AcceptsChannelMessageContext,
+  ): boolean {
+    if (!message.toAgentId) return true;
+    if (selfAgentId != null && message.toAgentId === selfAgentId) return true;
+    // Auto-redirect rewrites toAgentId to the sibling bridge daemon. The inner
+    // MCP client must still surface the message so the agent can discover it
+    // via channel_inbox(pendingOnly=true).
+    if (ctx?.siblingBridgeAgentIds?.has(message.toAgentId)) return true;
+    return false;
   }
 
   mapChannelMessage(message: ChannelMessage): ClientNotificationEnvelope {

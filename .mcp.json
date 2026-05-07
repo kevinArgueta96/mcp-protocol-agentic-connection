@@ -3,27 +3,11 @@
     "agent-bridge": {
       "command": "node",
       "args": [
-        "/Users/kevs/Documents/DEV_PROJECTS/1. MCP/mcp-protocol-agentic-connection/dist/cli/index.js",
+        "/home/kevin-osigu/Documents/PROYECTOS_OSIGU/10. PERSONAL/open-agent-bridge/dist/cli/index.js",
         "mcp",
         "start",
-        "--claude",
         "--project",
-        "/Users/kevs/Documents/DEV_PROJECTS/1. MCP/mcp-protocol-agentic-connection"
-      ]
-    },
-    "chrome-devtools": {
-      "command": "pnpm",
-      "args": ["dlx", "chrome-devtools-mcp@latest"]
-    },
-    "github.com/upstash/context7-mcp": {
-      "autoApprove": [],
-      "disabled": false,
-      "timeout": 60,
-      "type": "stdio",
-      "command": "pnpm",
-      "args": [
-        "dlx",
-        "@upstash/context7-mcp"
+        "/home/kevin-osigu/Documents/PROYECTOS_OSIGU/10. PERSONAL/open-agent-bridge"
       ]
     }
   }

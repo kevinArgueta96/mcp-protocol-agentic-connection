@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { AgentMessage, ChannelMessage } from "../../types/messages.js";
-import type { ClientBehaviorProfile, ClientNotificationEnvelope, LegacyNotifyPayload } from "../client-profile-resolver.js";
+import type {
+  AcceptsChannelMessageContext,
+  ClientBehaviorProfile,
+  ClientNotificationEnvelope,
+  LegacyNotifyPayload,
+} from "../client-profile-resolver.js";
 
 function stringifyMeta(meta?: Record<string, unknown>): Record<string, string> {
   if (!meta) return {};
@@ -15,7 +20,13 @@ export class ClaudeClientProfile implements ClientBehaviorProfile {
   readonly id = "claude";
   readonly deliveryMode = "push" as const;
 
-  acceptsChannelMessage(message: ChannelMessage, selfAgentId: string | null): boolean {
+  acceptsChannelMessage(
+    message: ChannelMessage,
+    selfAgentId: string | null,
+    _ctx?: AcceptsChannelMessageContext,
+  ): boolean {
+    // Claude Code has no bridge daemon sibling — _ctx is accepted for signature
+    // parity with Codex/Gemini profiles but is intentionally ignored here.
     return (
       !message.toAgentId ||
       message.toAgentId === "claude" ||
