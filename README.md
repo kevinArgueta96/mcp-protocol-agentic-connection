@@ -347,7 +347,7 @@ The `mcp config` command writes absolute paths for the current machine. Commit t
 | Tool | Description |
 | :--- | :--- |
 | `agent_bridge_guide` | Built-in MCP usage guide. Returns setup, send/reply workflow, ACK semantics, and troubleshooting by topic. |
-| `list_agents` | Discover connected agents and client sessions. Client rows include peer labels like `[Claude Code]`, `[Codex inner]`, and `[Gemini inner]`; bridge routing is automatic. |
+| `list_agents` | Discover connected agents and client sessions. Client rows include peer labels like `[Claude Code]`, `[Codex inner]`, `[Gemini inner]` and the unique 8-char suffix of the agentId (e.g. `[3fdb0c6a]`) so two same-project peers stay visually distinct. Bridge routing is automatic. |
 | `channel_inbox` | Inspect pending channel conversations with full context and a `replyWith` hint for responding. |
 | `message_client_session` | Send a message to a named client session. Automatically resolves Codex/Gemini inner clients to their bridge daemon and infers `expectsResponse` when omitted. |
 | `reply` | Respond to an incoming channel message, correlating by `conversationId`. |
@@ -357,6 +357,18 @@ Check live tool and agent status at any time:
 ```bash
 pnpm run dev -- mcp status
 ```
+
+### Agent-bridge skill (Claude Code only)
+
+The MCP `instructions` block intentionally lists only the four tools above. The deeper guide — peer-type semantics, send/reply patterns, troubleshooting `delivered_to_bridge` stalls, Codex `--remote` setup — lives in a Claude Code skill that is loaded on demand:
+
+```
+marketplace/plugins/open-agent-bridge/skills/agent-bridge/SKILL.md
+```
+
+Claude Code picks up the skill automatically once the plugin is registered (see [`Configure MCP`](#3-configure-mcp)). Invoke it with `/skill agent-bridge` or by mentioning the plugin in a prompt; the LLM only pays the token cost when it actually needs the guidance, keeping the handshake light.
+
+The same content can also be queried at runtime from any client via the `agent_bridge_guide` MCP tool — useful for Codex and Gemini sessions that don't load Claude Code skills.
 
 ---
 
@@ -381,7 +393,7 @@ Conversation abc-123
 Key properties:
 - `conversationId` is stable for the entire thread — use it to continue an existing conversation.
 - `replyTo` links a message to the specific `messageId` it responds to.
-- `expectsResponse: true` marks a message as pending until a reply arrives. In MCP sends, omit it to let the adapter infer from the message text, or pass it explicitly for deterministic behavior.
+- `expectsResponse: true` marks a message as pending until a reply arrives. In MCP sends, the adapter **defaults to `true`** when you omit the field (agent-to-agent messages are a conversation, not a log stream). Only explicit fire-and-forget markers in the text — `FYI`, `no reply`, `sin respuesta`, `just letting you know`, etc. — downgrade it to `false`. Pass the flag explicitly for deterministic behavior.
 - `requiresAck: true` requests an explicit delivery acknowledgement from the recipient.
 - All messages and ACKs are persisted in SQLite and survive registry restarts.
 
@@ -402,7 +414,7 @@ interface ChannelMessage {
   createdAt:        number;    // Unix ms timestamp (set by registry)
   expiresAt?:       number;    // Expiry timestamp in ms
   requiresAck?:     boolean;   // Request delivery acknowledgement
-  expectsResponse?: boolean;   // Sender awaits a reply; MCP infers when omitted
+  expectsResponse?: boolean;   // Sender awaits a reply (default true; FYI markers downgrade to false)
   attemptCount?:    number;    // Delivery attempt counter (for retries)
 }
 ```
@@ -461,14 +473,17 @@ Parameters:
   conversationId? string — Continue an existing conversation thread
   replyTo?      string   — messageId this message responds to
   taskId?       string   — Associate with a task
-  expectsResponse? boolean — Whether you expect a reply. If omitted, the adapter infers from message text.
+  expectsResponse? boolean — Whether you expect a reply. Default: true. Only explicit
+                           FYI/no-reply markers in the text downgrade it to false.
   timeoutMs?    number   — Ms before the message expires without a reply
 ```
 
 `expectsResponse` controls whether the receiver should answer:
-- Use `true` for questions, review/validation requests, ack/confirmation prompts, and A/B/C decisions.
-- Use `false` for FYI/fire-and-forget messages.
-- If omitted, the MCP adapter infers it from the text. For deterministic workflows, pass it explicitly.
+- **Default is `true`.** Agent-to-agent channel messages are a conversation contract — the receiver should reply unless the sender opts out. A bare `"hola"` or `"build done"` will wake up Codex/Gemini's bridge with a "reply required" injection prompt, and Claude Code will surface it as a pending conversation.
+- **Pass `false`** (or include explicit FYI markers — `FYI`, `no reply`, `sin respuesta`, `just letting you know`, `for your information`, `no need to reply`) for fire-and-forget. The bridge daemon will inject the message as **informational** context and suppress the receiver's outbound reply.
+- For deterministic workflows pass the flag explicitly — text inference is a convenience for proactive sends, not a contract.
+
+The mapping from message text to the boolean lives in [`inferExpectsResponse`](src/mcp/adapter.ts) and is unit-tested under `src/__tests__/peer-type-label.test.ts`.
 
 **Target resolution order:**
 1. `clientId` provided → direct lookup, no further resolution
@@ -707,6 +722,21 @@ pnpm run dev -- codex tmux-bind      # bind current tmux pane to this session
 pnpm run dev -- codex tmux-sidecar   # poll and inject pending channel messages
 ```
 
+**Troubleshooting — `delivered_to_bridge` stuck without a Codex TUI**
+
+If Claude Code (or any sender) sees status `delivered_to_bridge` for a Codex peer but Codex never picks the turn up, the most common cause is that the Codex TUI is running in **isolated mode** (plain `codex`) instead of attached to the bridge's app-server. The bridge daemon's app-server has nothing to inject into. Fix by either:
+
+```bash
+# Option A — let the bridge launch and attach Codex for you
+pnpm run dev -- codex start --project /path/to/codex-project
+
+# Option B — start the bridge separately, then attach Codex manually
+pnpm run dev -- codex app-bridge --project /path/to/codex-project
+codex --remote ws://127.0.0.1:4500
+```
+
+The inner MCP client of an isolated `codex` session still registers with the registry, so `channel_inbox(pendingOnly=true)` will surface the message — but the agent has to call it manually instead of receiving an automatic turn injection. The full diagnosis ladder lives in the `agent-bridge` skill.
+
 ---
 
 ### Gemini bridge (ACP)
@@ -745,6 +775,46 @@ When `gemini --acp` is not available, fall back to tmux pane injection:
 pnpm run dev -- gemini tmux-bind     # bind current tmux pane to this Gemini session
 pnpm run dev -- gemini tmux-sidecar  # poll channel inbox and inject follow-ups as keystrokes
 ```
+
+---
+
+### Injection prompt format (Codex / Gemini)
+
+Both bridges share a single prompt template (`src/client/injection-prompt.ts`) that wraps every inbound channel message before injecting it as a turn. The wrapper exists so the receiving LLM can identify the sender, see the full content delimited from instructions, and copy a pre-filled `reply` call without having to derive any IDs.
+
+A reply-required injection looks like this:
+
+```
+[open-agent-bridge] Channel message — reply required
+===============================================
+From:          rcm-worker (3fdb0c6a)
+Conversation:  7734035a-2c10-4626-5761-13f6d02f6e45
+Message ID:    1d147308-a831-4525-aaf6-3c41614d5a20
+
+----- BEGIN MESSAGE -----
+<sender's content>
+----- END MESSAGE -----
+
+▶ Respond to the sender NOW with the agent-bridge MCP. The sender is
+  waiting on this turn — silence will block them.
+
+Tool call (copy each field verbatim — the adapter handles routing):
+
+  agent-bridge.reply
+    agentId:        "client-claude-code-2d1c3fdb0c6a"
+    conversationId: "7734035a-2c10-4626-5761-13f6d02f6e45"
+    replyTo:        "1d147308-a831-4525-aaf6-3c41614d5a20"
+    message:        "<your answer here>"
+
+How to compose the reply:
+  1. Do any local work the sender's message implies …
+  2. Put your answer or finding in the `message` field.
+  ...
+```
+
+When `expectsResponse` resolves to `false` (sender opted into FYI), the header switches to `Channel message — informational (no reply)` and the prompt instructs the receiver to NOT call `reply`. Claude Code peers do **not** receive this wrapper — they get a raw `<channel>` push event and decide what to do based on conversation context.
+
+Test contract: `src/__tests__/injection-prompt.test.ts` locks the structure (BEGIN/END markers, literal IDs in the call template, header wording) so future edits don't silently regress it.
 
 ---
 
