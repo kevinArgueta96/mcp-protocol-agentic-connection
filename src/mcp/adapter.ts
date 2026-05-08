@@ -104,36 +104,39 @@ export function getPeerTypeLabel(entry: RegistryEntry): string {
 
 /** Infer whether a proactive channel message is asking the recipient to answer.
  *  Explicit tool input still wins; this only handles omitted `expectsResponse`.
- *  The heuristic is intentionally conservative: questions, ack/confirm/review
- *  requests, and option prompts expect a reply; FYI/no-response phrasing does not. */
+ *
+ *  Default is **true** (reply expected). Agent-to-agent channel messages are a
+ *  conversation contract — the receiver should answer unless the sender
+ *  explicitly opted into fire-and-forget. This matches the previous behavior
+ *  pre-inference where `?? true` was the literal default in the adapter.
+ *
+ *  The earlier "look for question marks, confirma, ack…" approach inverted the
+ *  default and made plain conversational messages ("hola mundo", "el deploy
+ *  terminó") fall into informational/no-reply, leaving the sender hanging. */
 export function inferExpectsResponse(message: string): boolean {
   const normalized = message
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
 
+  // Only these explicit markers downgrade the message to informational.
+  // Anything else is treated as conversational and SHOULD be replied to.
   const noResponsePatterns = [
     /\bno (?:hace falta|necesito|requiero|requiere|respondas|responder|respuesta)\b/,
     /\b(?:sin|no) respuesta\b/,
     /\bno reply\b/,
     /\bno response (?:needed|required)\b/,
     /\bfyi\b/,
+    /\bf\.?y\.?i\.?\b/,
     /\bsolo inform(?:o|ativo|acion)\b/,
+    /\bjust (?:fyi|info|letting you know)\b/,
+    /\bfor your (?:information|info)\b/,
+    /\binformational only\b/,
+    /\b(?:no need|don'?t need)\s+to (?:reply|respond|answer)\b/,
   ];
   if (noResponsePatterns.some((pattern) => pattern.test(normalized))) return false;
 
-  const responseRequestPatterns = [
-    /[?¿]/,
-    /\b(?:responde|respondeme|respuesta|reply)\b/,
-    /\b(?:confirma|confirmame|confirmacion|confirmar)\b/,
-    /\b(?:ack|acuse|recibido)\b/,
-    /\b(?:necesito|requiero|solicito|pido)\b.{0,80}\b(?:confirmacion|respuesta|opinion|revision|validacion|ack|blocker|hallazgo)\b/,
-    /\b(?:valida|validame|revisa|review|verifica|verificame)\b/,
-    /\b(?:blocker|bloqueante|hallazgo critico)\b/,
-    /\b(?:elige|escoge|opcion|opciones)\b/,
-    /\([a-z]\)/,
-  ];
-  return responseRequestPatterns.some((pattern) => pattern.test(normalized));
+  return true;
 }
 
 type AgentBridgeGuideTopic =

@@ -8,6 +8,7 @@ import { ChannelTransport } from "./channel-transport.js";
 import { ChannelClientRuntime } from "./channel-client-runtime.js";
 import { BoundedIdSet } from "./bounded-id-set.js";
 import { RegistryClient } from "./registry-client.js";
+import { buildInjectionPrompt } from "./injection-prompt.js";
 import type { ChannelMessage } from "../types/messages.js";
 
 export interface CodexAppServerBridgeOptions {
@@ -441,7 +442,7 @@ export class CodexAppServerBridge extends EventEmitter {
       expectsResponse: message.expectsResponse === true,
     };
 
-    const prompt = this.buildInjectionPrompt(message);
+    const prompt = buildInjectionPrompt(message);
     const injected = this.client.injectMessage(prompt, ctx);
 
     if (!injected) {
@@ -517,25 +518,9 @@ export class CodexAppServerBridge extends EventEmitter {
     }
   }
 
-  private buildInjectionPrompt(message: ChannelMessage): string {
-    const sender = message.fromAgentName ?? message.fromAgentId;
-    const lines = [
-      `[open-agent-bridge] Mensaje de canal de ${sender}:`,
-      ``,
-      message.content,
-    ];
-    lines.push(
-      "",
-      message.expectsResponse === true
-        ? "Este mensaje solicita respuesta. Resuélvelo como una tarea normal: puedes usar herramientas locales si son necesarias (por ejemplo shell, lectura de archivos o búsqueda). Para devolver la respuesta al remitente, usa el MCP agent-bridge.reply con replyTo igual al messageId de este mensaje y conversationId igual al conversationId de este mensaje."
-        : "Este mensaje no solicita respuesta. No envíes una respuesta de canal; solo tenlo en cuenta como contexto.",
-    );
-    if (message.expectsResponse === true) {
-      lines.push("", `(conversationId: ${message.conversationId})`, `(replyTo/messageId: ${message.messageId})`);
-    }
-    if (message.taskId) lines.push(``, `(taskId: ${message.taskId})`);
-    return lines.join("\n");
-  }
+  // The injection prompt is built by the shared `injection-prompt` module so
+  // both bridges (codex-app-server-bridge, gemini-acp-bridge) emit identical,
+  // prompt-engineered text into their respective CLIs.
 
   // ── Reply sending ───────────────────────────────────────────────────────────
 

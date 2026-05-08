@@ -6,6 +6,7 @@ import { ChannelTransport } from "./channel-transport.js";
 import { ChannelClientRuntime } from "./channel-client-runtime.js";
 import { BoundedIdSet } from "./bounded-id-set.js";
 import { RegistryClient } from "./registry-client.js";
+import { buildInjectionPrompt } from "./injection-prompt.js";
 import type { ChannelMessage } from "../types/messages.js";
 
 export interface GeminiAcpBridgeOptions {
@@ -342,7 +343,7 @@ export class GeminiAcpBridge extends EventEmitter {
       expectsResponse: message.expectsResponse === true,
     };
 
-    const prompt = this.buildInjectionPrompt(message);
+    const prompt = buildInjectionPrompt(message);
 
     void this.client.sendPrompt(prompt, ctx).then((ok) => {
       if (!ok) {
@@ -392,26 +393,11 @@ export class GeminiAcpBridge extends EventEmitter {
     this.injectNow(item.message, item.retries);
   }
 
-  private buildInjectionPrompt(message: ChannelMessage): string {
-    const sender = message.fromAgentName ?? message.fromAgentId;
-    const lines = [
-      `[open-agent-bridge] Channel message from ${sender}:`,
-      "",
-      message.content,
-    ];
-    lines.push(
-      "",
-      message.expectsResponse === true
-        ? "This channel message asks for a reply. Solve it like a normal task; use local tools if needed. To send the answer back to the sender, call the agent-bridge.reply MCP tool with replyTo equal to this messageId and conversationId equal to this message conversationId."
-        : "This channel message does not ask for a reply. Do not send a channel response; treat it as context only.",
-    );
-    if (message.expectsResponse === true) {
-      lines.push("", `(conversationId: ${message.conversationId})`, `(replyTo/messageId: ${message.messageId})`);
-    }
-    if (message.taskId) lines.push("", `(taskId: ${message.taskId})`);
-    if (message.conversationId) lines.push("", `(conversationId: ${message.conversationId})`);
-    return lines.join("\n");
-  }
+  // The injection prompt is built by the shared `injection-prompt` module so
+  // both bridges (codex-app-server-bridge, gemini-acp-bridge) emit identical,
+  // prompt-engineered text into their respective CLIs. This also fixed a
+  // pre-existing bug where conversationId was emitted twice in the Gemini
+  // version.
 
   // ── Reply sending ───────────────────────────────────────────────────────────
 

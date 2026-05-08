@@ -133,9 +133,22 @@ describe("inferExpectsResponse", () => {
     expect(inferExpectsResponse("Revisa este diff y valida si hay hallazgo crítico.")).toBe(true);
   });
 
-  it("returns false for informational or no-response messages", () => {
+  it("returns true by default for conversational/ambiguous messages", () => {
+    // Agent-to-agent channel messages are a conversation — the receiver should
+    // reply unless the sender explicitly opted into fire-and-forget. A bare
+    // greeting or a declarative statement still expects an ack.
+    expect(inferExpectsResponse("hola mundo")).toBe(true);
+    expect(inferExpectsResponse("Actualicé la documentación del módulo.")).toBe(true);
+    expect(inferExpectsResponse("El build está listo.")).toBe(true);
+    expect(inferExpectsResponse("Ping.")).toBe(true);
+  });
+
+  it("returns false ONLY when the sender explicitly opts into fire-and-forget", () => {
     expect(inferExpectsResponse("FYI: el build quedó verde, no response needed.")).toBe(false);
     expect(inferExpectsResponse("Solo informo que el deploy terminó. Sin respuesta.")).toBe(false);
-    expect(inferExpectsResponse("Actualicé la documentación del módulo.")).toBe(false);
+    expect(inferExpectsResponse("Actualicé la documentación del módulo. FYI nomás.")).toBe(false);
+    expect(inferExpectsResponse("Just letting you know the migration is done.")).toBe(false);
+    expect(inferExpectsResponse("For your information: deploy completed.")).toBe(false);
+    expect(inferExpectsResponse("No need to reply — heads up that the linter passed.")).toBe(false);
   });
 });
