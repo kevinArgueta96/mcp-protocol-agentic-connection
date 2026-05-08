@@ -339,6 +339,7 @@ export class GeminiAcpBridge extends EventEmitter {
       conversationId: message.conversationId,
       messageId: message.messageId,
       fromAgentId: message.fromAgentId,
+      expectsResponse: message.expectsResponse === true,
     };
 
     const prompt = this.buildInjectionPrompt(message);
@@ -398,6 +399,15 @@ export class GeminiAcpBridge extends EventEmitter {
       "",
       message.content,
     ];
+    lines.push(
+      "",
+      message.expectsResponse === true
+        ? "This channel message asks for a reply. Solve it like a normal task; use local tools if needed. To send the answer back to the sender, call the agent-bridge.reply MCP tool with replyTo equal to this messageId and conversationId equal to this message conversationId."
+        : "This channel message does not ask for a reply. Do not send a channel response; treat it as context only.",
+    );
+    if (message.expectsResponse === true) {
+      lines.push("", `(conversationId: ${message.conversationId})`, `(replyTo/messageId: ${message.messageId})`);
+    }
     if (message.taskId) lines.push("", `(taskId: ${message.taskId})`);
     if (message.conversationId) lines.push("", `(conversationId: ${message.conversationId})`);
     return lines.join("\n");
@@ -406,6 +416,11 @@ export class GeminiAcpBridge extends EventEmitter {
   // ── Reply sending ───────────────────────────────────────────────────────────
 
   private async sendReplyToRegistry(text: string, ctx: InjectionContext): Promise<void> {
+    if (!ctx.expectsResponse) {
+      console.error(`[GeminiBridge] Suppressing channel reply for fire-and-forget message ${ctx.messageId}`);
+      return;
+    }
+
     try {
       await this.channelTransport.postChannelMessage({
         fromAgentId: this.clientAgentId!,

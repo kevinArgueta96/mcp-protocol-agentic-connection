@@ -102,6 +102,145 @@ export function getPeerTypeLabel(entry: RegistryEntry): string {
   }
 }
 
+/** Infer whether a proactive channel message is asking the recipient to answer.
+ *  Explicit tool input still wins; this only handles omitted `expectsResponse`.
+ *  The heuristic is intentionally conservative: questions, ack/confirm/review
+ *  requests, and option prompts expect a reply; FYI/no-response phrasing does not. */
+export function inferExpectsResponse(message: string): boolean {
+  const normalized = message
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+
+  const noResponsePatterns = [
+    /\bno (?:hace falta|necesito|requiero|requiere|respondas|responder|respuesta)\b/,
+    /\b(?:sin|no) respuesta\b/,
+    /\bno reply\b/,
+    /\bno response (?:needed|required)\b/,
+    /\bfyi\b/,
+    /\bsolo inform(?:o|ativo|acion)\b/,
+  ];
+  if (noResponsePatterns.some((pattern) => pattern.test(normalized))) return false;
+
+  const responseRequestPatterns = [
+    /[?¿]/,
+    /\b(?:responde|respondeme|respuesta|reply)\b/,
+    /\b(?:confirma|confirmame|confirmacion|confirmar)\b/,
+    /\b(?:ack|acuse|recibido)\b/,
+    /\b(?:necesito|requiero|solicito|pido)\b.{0,80}\b(?:confirmacion|respuesta|opinion|revision|validacion|ack|blocker|hallazgo)\b/,
+    /\b(?:valida|validame|revisa|review|verifica|verificame)\b/,
+    /\b(?:blocker|bloqueante|hallazgo critico)\b/,
+    /\b(?:elige|escoge|opcion|opciones)\b/,
+    /\([a-z]\)/,
+  ];
+  return responseRequestPatterns.some((pattern) => pattern.test(normalized));
+}
+
+type AgentBridgeGuideTopic =
+  | "overview"
+  | "setup"
+  | "send"
+  | "reply"
+  | "acks"
+  | "troubleshooting"
+  | "all";
+
+function buildAgentBridgeGuide(topic: AgentBridgeGuideTopic): string {
+  const sections: Record<Exclude<AgentBridgeGuideTopic, "all">, string> = {
+    overview: [
+      "# open-agent-bridge MCP guide",
+      "",
+      "Use this MCP server to send channel messages between Claude Code, Codex, and Gemini sessions.",
+      "",
+      "Tools:",
+      "- `agent_bridge_guide(topic?)`: read this usage guide.",
+      "- `list_agents(includeClients=true)`: discover peers. Client rows include labels such as `[Claude Code]`, `[Codex inner]`, `[Gemini inner]`.",
+      "- `message_client_session(...)`: proactively send a message to another client session.",
+      "- `channel_inbox(pendingOnly=true)`: inspect inbound pending conversations and get `replyWith` values.",
+      "- `reply(...)`: respond to an inbound pending message using `replyWith` verbatim.",
+      "",
+      "Codex/Gemini sessions can register two entries for the same project: an inner MCP client and a bridge daemon. You can target either one; send routing auto-redirects inner clients to the bridge daemon.",
+    ].join("\n"),
+    setup: [
+      "# Setup",
+      "",
+      "Claude Code:",
+      "- Configure `.mcp.json` with `open-agent-bridge mcp config --write`.",
+      "- Start Claude Code with the open-agent-bridge development channel enabled.",
+      "",
+      "Codex:",
+      "- Preferred: `open-agent-bridge codex start --project <path>`.",
+      "- Manual: run `open-agent-bridge codex app-bridge --project <path>`, then attach the TUI with `codex --remote ws://127.0.0.1:4500`.",
+      "- A plain `codex` session is isolated; the bridge cannot inject automatic turns into it.",
+      "",
+      "Gemini:",
+      "- Preferred: `open-agent-bridge gemini start --project <path>` or `open-agent-bridge gemini app-bridge --project <path>`.",
+      "- tmux sidecars are fallback paths when ACP/app-server delivery is unavailable.",
+    ].join("\n"),
+    send: [
+      "# Sending messages",
+      "",
+      "Workflow:",
+      "1. Call `list_agents(includeClients=true)`.",
+      "2. Pick a peer by `agentId`, project, or client type.",
+      "3. Call `message_client_session(clientId | project, message, expectsResponse?)`.",
+      "",
+      "`expectsResponse` contract:",
+      "- Pass `expectsResponse=true` when you need a reply.",
+      "- Pass `expectsResponse=false` for FYI/fire-and-forget messages.",
+      "- If omitted, the adapter infers the value from the message text. Questions, `ack`, `confirm`, `revisa`, `valida`, blockers, and A/B/C option prompts infer true. FYI/no-response phrasing infers false.",
+      "",
+      "Examples:",
+      "- Needs reply: `message_client_session(project=\"api\", message=\"Revisa este diff y confirma si hay blocker\", expectsResponse=true)`.",
+      "- No reply: `message_client_session(project=\"api\", message=\"FYI: build verde, no response needed\", expectsResponse=false)`.",
+    ].join("\n"),
+    reply: [
+      "# Replying to inbound messages",
+      "",
+      "Workflow:",
+      "1. Call `channel_inbox(pendingOnly=true, includeMessages=true)`.",
+      "2. Read the target conversation's `replyWith` block.",
+      "3. Call `reply(agentId=replyWith.agentId, conversationId=replyWith.conversationId, replyTo=replyWith.replyTo, message=...)`.",
+      "",
+      "Do not re-derive or substitute `replyWith.agentId`. For Codex/Gemini peers it may already be routed to the bridge daemon while preserving `originalFromAgentId` for traceability.",
+      "",
+      "`reply` is only for answering a pending inbound message. Use `message_client_session` to start or continue proactive work.",
+    ].join("\n"),
+    acks: [
+      "# Delivery states",
+      "",
+      "- `queued`: registry created the message row.",
+      "- `delivered_to_bridge`: recipient bridge/adapter received the WS event.",
+      "- `displayed_to_client`: message was submitted to the recipient runtime or pushed to the client.",
+      "- `answered`: recipient replied to the original message.",
+      "- `failed`: permanent delivery failure.",
+      "",
+      "`delivered_to_bridge` does not mean the peer LLM read the message. For Codex/Gemini, wait for `displayed_to_client` or `answered`; if Codex has no remote TUI attached, the bridge eventually marks the message failed with an actionable detail.",
+    ].join("\n"),
+    troubleshooting: [
+      "# Troubleshooting",
+      "",
+      "- No peers in `list_agents`: start registry/clients and pass `includeClients=true`.",
+      "- Message to Codex does not appear in TUI: use `open-agent-bridge codex start` or attach with `codex --remote ws://127.0.0.1:<port>`; plain `codex` is isolated.",
+      "- Stuck at `delivered_to_bridge`: bridge received the message but did not submit it to the runtime. Check Codex remote TUI, bridge logs, or long-running turns.",
+      "- `channel_inbox(pendingOnly=true)` is empty: message was fire-and-forget, already answered, expired/failed, or not addressed to this session.",
+      "- Agent answers when it should not: pass `expectsResponse=false` explicitly and phrase the message as FYI/no-response.",
+    ].join("\n"),
+  };
+
+  if (topic === "all") {
+    return [
+      sections.overview,
+      sections.setup,
+      sections.send,
+      sections.reply,
+      sections.acks,
+      sections.troubleshooting,
+    ].join("\n\n---\n\n");
+  }
+  return sections[topic];
+}
+
 function formatAgentsSummary(agents: RegistryEntry[]): string {
   if (agents.length === 0) {
     return "No agents currently connected. Start one with: open-agent-bridge start <project-path>";
@@ -125,7 +264,10 @@ function formatAgentsSummary(agents: RegistryEntry[]): string {
     ...runnableAgents.map((a) => {
       const skills = a.card.skills.map((s) => `    • ${s.id}: ${s.description}`).join("\n");
       return [
-        `Agent: ${a.name}  [${a.agentId.slice(0, 8)}]`,
+        // Use the agentId SUFFIX (unique hash), not the prefix — every client
+        // shares `client-{claude,codex,gemini,dashboard}-...` so slicing from
+        // the front would render every row as the same `[client-c]`.
+        `Agent: ${a.name}  [${a.agentId.slice(-8)}]`,
         `  Project: ${a.projectPath}`,
         `  Type:    ${a.projectType}${a.entryType === "client" ? " (client — no skills)" : ""}`,
         `  Status:  ${a.healthy ? "healthy" : "unhealthy"}`,
@@ -135,7 +277,10 @@ function formatAgentsSummary(agents: RegistryEntry[]): string {
     "",
     clients.length > 0 ? "Client sessions via channels:\n" : "Client sessions via channels:\n  (none)",
     ...clients.map((a) => [
-      `[${getPeerTypeLabel(a)}]  ${a.name}  [${a.agentId.slice(0, 8)}]`,
+      // See note above on `slice(-8)` — using the unique suffix lets the user
+      // tell two same-project peers (e.g. `[Claude Code]` and `[Codex inner]`)
+      // apart at a glance instead of both rendering as `[client-c]`.
+      `[${getPeerTypeLabel(a)}]  ${a.name}  [${a.agentId.slice(-8)}]`,
       `  agentId: ${a.agentId}`,
       `  Project: ${a.projectPath}`,
       `  Client:  ${a.clientInfo?.clientName ?? "unknown"} ${a.clientInfo?.clientVersion ?? ""}`.trimEnd(),
@@ -205,6 +350,7 @@ export class McpAgentBridge {
         instructions:
           "open-agent-bridge — multi-agent communication hub.\n\n" +
           "Tools:\n" +
+          "  • agent_bridge_guide(topic='all') — usage guide for setup, sending, replies, ACK states, and troubleshooting.\n" +
           "  • list_agents(includeClients=true) — discover peers; client-session rows include a peer-type label " +
           "such as `[Claude Code]`, `[Codex inner]`, or `[Gemini inner]`.\n" +
           "  • message_client_session(clientId | project, message) — open a new thread to a peer. " +
@@ -683,9 +829,31 @@ export class McpAgentBridge {
   // ── Meta-tools ─────────────────────────────────────────────────────────────
 
   private registerMetaTools(): void {
+    this.registerGuideTools();
     this.registerDiscoveryTools();
     this.registerConversationManagementTools();
     this.registerChannelMessagingTools();
+  }
+
+  /** agent_bridge_guide */
+  private registerGuideTools(): void {
+    this.server.registerTool(
+      "agent_bridge_guide",
+      {
+        description:
+          "Read the open-agent-bridge MCP usage guide. " +
+          "Use this when you need setup instructions, send/reply workflow, `expectsResponse` semantics, delivery ACK meanings, or troubleshooting.",
+        inputSchema: {
+          topic: z
+            .enum(["overview", "setup", "send", "reply", "acks", "troubleshooting", "all"])
+            .optional()
+            .describe("Guide section to return (default: all)."),
+        },
+      },
+      async ({ topic = "all" }) => ({
+        content: [{ type: "text" as const, text: buildAgentBridgeGuide(topic) }],
+      }),
+    );
   }
 
   /** list_agents */
@@ -695,15 +863,14 @@ export class McpAgentBridge {
       {
         description:
           "List all agents and client sessions connected to open-agent-bridge. " +
-          "Returns each entry's agentId, project path, type, health status, and available skills. " +
+          "Returns agentId, project path, health, skills, and client peer labels such as [Claude Code], [Codex inner], [Gemini inner]. " +
           "WORKFLOW: call this first to discover targets before using message_client_session. " +
-          "IMPORTANT: to see Codex/Gemini/Claude bridges (client sessions without HTTP skills), " +
-          "pass includeClients=true — they are hidden by default.",
+          "Pass includeClients=true to see Claude/Codex/Gemini client sessions; bridge daemons are internal and routing to them is automatic.",
         inputSchema: {
           skill: z.string().optional().describe("Filter agents with this skill (e.g. 'endpoint-find')"),
           project: z.string().optional().describe("Filter by project name or path substring"),
           healthyOnly: z.boolean().optional().describe("Only show healthy agents (default: true)"),
-          includeClients: z.boolean().optional().describe("Include client sessions (Codex/Gemini/Claude bridges) that have no HTTP skills (default: false). Set true when looking for a session to message."),
+          includeClients: z.boolean().optional().describe("Include Claude/Codex/Gemini client sessions that have no HTTP skills (default: false). Set true when looking for a session to message."),
         },
       },
       async ({ skill, project, healthyOnly = true, includeClients = false }) => {
@@ -893,6 +1060,8 @@ export class McpAgentBridge {
           "\n\nDELIVERY SEMANTICS by target type:" +
           "\n  • Claude Code  → message arrives as an immediate <channel> push event." +
           "\n  • Codex/Gemini → message is injected as a new turn prompt by the bridge daemon." +
+          "\n\nRESPONSE SEMANTICS: set expectsResponse=true only when you need a reply; set false for FYI/fire-and-forget. " +
+          "If omitted, the adapter infers it from the message text." +
           "\n\nROUTING (you do NOT need to know which agentId is the bridge): if you pass an inner " +
           "Codex/Gemini MCP-client agentId (e.g. client-codex-mcp-client-* or client-gemini-mcp-client-*), " +
           "the adapter auto-redirects the message to the bridge for the same project. So you can copy " +
@@ -907,7 +1076,7 @@ export class McpAgentBridge {
           conversationId: z.string().optional().describe("Continue an existing conversation thread by reusing its ID. Leave blank to start a new thread."),
           replyTo: z.string().optional().describe("messageId to thread this message as a reply to (optional, for in-thread continuations)"),
           taskId: z.string().optional().describe("Optional task ID to associate with this conversation"),
-          expectsResponse: z.boolean().optional().describe("Set true if you want to wait for the target to reply before this tool returns (default: true). Set false for fire-and-forget."),
+          expectsResponse: z.boolean().optional().describe("Set true if you require a reply, false for fire-and-forget. If omitted, the adapter infers it from the message text."),
           timeoutMs: z.coerce.number().optional().describe("How long to wait for a reply before reporting timeout (ms, default: 300000). Only used when expectsResponse=true."),
         },
       },
@@ -1208,7 +1377,7 @@ export class McpAgentBridge {
       // Codex/Gemini inner MCP clients can't act on push notifications; transparently
       // route the message through their bridge daemon instead.
       const client = await this.resolveDeliverableTarget(resolved);
-      const expectsResponse = params.expectsResponse ?? true;
+      const expectsResponse = params.expectsResponse ?? inferExpectsResponse(params.message);
       const expiresAt = expectsResponse ? Date.now() + (params.timeoutMs ?? 300_000) : undefined;
       // Use a deterministic conversationId so both sides always share the same thread.
       // This lets the recipient reply without needing to look up the conversationId.

@@ -17,6 +17,7 @@ export interface InjectionContext {
   conversationId: string;
   messageId: string;
   fromAgentId: string;
+  expectsResponse: boolean;
 }
 
 // ── Events ───────────────────────────────────────────────────────────────────
@@ -129,6 +130,7 @@ export class CodexAppServerClient extends EventEmitter<CodexAppServerClientEvent
     const requestId = this.nextRequestId++;
     this.injectionContexts.set(requestId, ctx);
     this.lastInjectionRequestId = requestId;
+    this._turnInProgress = true;
 
     this.send({
       method: "turn/start",
@@ -263,22 +265,39 @@ export class CodexAppServerClient extends EventEmitter<CodexAppServerClientEvent
 
   /**
    * Extract agent message text from a turn/start JSON-RPC response result.
-   * The result typically contains { output: [{ type: "agentMessage", content: [...] }] }.
+   * Known app-server builds have returned slightly different shapes:
+   * { output: [{ type: "agentMessage", content: [...] }] },
+   * { items: [...] }, or nested item/message objects. Keep this tolerant so a
+   * successful Codex answer is not lost just because the result shape changed.
    */
   private extractTurnResponseText(result: unknown): string {
-    if (!result || typeof result !== "object") return "";
-    const r = result as {
-      output?: Array<{
-        type?: string;
-        content?: Array<{ type?: string; text?: string }>;
-      }>;
-    };
-    return (r.output ?? [])
-      .filter((item) => item.type === "agentMessage")
-      .flatMap((item) => item.content ?? [])
-      .filter((c) => c.type === "output_text" && c.text)
-      .map((c) => c.text!)
-      .join("");
+    return this.extractAgentText(result);
+  }
+
+  private extractAgentText(value: unknown): string {
+    if (!value || typeof value !== "object") return "";
+    if (Array.isArray(value)) {
+      return value.map((item) => this.extractAgentText(item)).join("");
+    }
+
+    const obj = value as Record<string, unknown>;
+    const type = typeof obj["type"] === "string" ? obj["type"].toLowerCase() : "";
+    const role = typeof obj["role"] === "string" ? obj["role"].toLowerCase() : "";
+    const looksLikeAssistant =
+      type.includes("agent") ||
+      type.includes("assistant") ||
+      role === "assistant" ||
+      type === "output_text";
+
+    if (looksLikeAssistant && typeof obj["text"] === "string") {
+      return obj["text"];
+    }
+
+    let text = "";
+    for (const key of ["content", "output", "items", "message", "item", "data"]) {
+      if (key in obj) text += this.extractAgentText(obj[key]);
+    }
+    return text;
   }
 
   private handleServerRequest(msg: JsonRpcMessage): void {
@@ -403,44 +422,27 @@ export class CodexAppServerClient extends EventEmitter<CodexAppServerClientEvent
 
       case "item/completed": {
         const item = params?.item as Record<string, unknown> | undefined;
-        if (item?.type === "agentMessage" && item.id) {
-          const itemId = String(item.id);
-          const buffered = this.itemContentBuffers.get(itemId);
-          this.itemContentBuffers.delete(itemId);
+        if (item) {
+          const itemId = item.id ? String(item.id) : undefined;
+          const buffered = itemId ? this.itemContentBuffers.get(itemId) : undefined;
+          if (itemId) this.itemContentBuffers.delete(itemId);
 
-          // Extract text: prefer streaming buffer, fallback to item.content array
-          let text = buffered ?? "";
-          if (!text) {
-            const contentArr = item.content as
-              | Array<{ type: string; text?: string }>
-              | undefined;
-            text = (contentArr ?? [])
-              .filter((c) => c.type === "output_text" && c.text)
-              .map((c) => c.text ?? "")
-              .join("");
+          const text = buffered || this.extractAgentText(item);
+          const ctx =
+            text && this.lastInjectionRequestId !== null
+              ? (this.injectionContexts.get(this.lastInjectionRequestId) ??
+                  null)
+              : null;
+
+          if (text && ctx) {
+            this.injectionContexts.delete(this.lastInjectionRequestId!);
+            this.lastInjectionRequestId = null;
+            this.emit("agentMessage", text, ctx);
           }
 
-          if (text) {
-            const ctx =
-              this.lastInjectionRequestId !== null
-                ? (this.injectionContexts.get(this.lastInjectionRequestId) ??
-                    null)
-                : null;
-
-            if (ctx) {
-              this.injectionContexts.delete(this.lastInjectionRequestId!);
-              this.lastInjectionRequestId = null;
-            }
-
-            this.emit("agentMessage", text, ctx);
-            // Force-clear turn state when we captured our own injection's response.
-            // turn/completed may not be broadcast to non-owner connections (bridge is
-            // a second WS client, not the TUI that started the turn), so _turnInProgress
-            // can get stuck at true indefinitely without this.
-            if (ctx !== null && this._turnInProgress) {
-              this._turnInProgress = false;
-              this.emit("turnCompleted", "agentMessage-received");
-            }
+          if (text && this._turnInProgress) {
+            this._turnInProgress = false;
+            this.emit("turnCompleted", ctx ? "agentMessage-received" : "item-completed");
           }
         }
         break;

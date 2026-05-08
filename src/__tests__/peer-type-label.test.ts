@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getPeerType, getPeerTypeLabel } from "../mcp/adapter.js";
+import { getPeerType, getPeerTypeLabel, inferExpectsResponse } from "../mcp/adapter.js";
 import type { RegistryEntry } from "../types/messages.js";
 
 /**
@@ -123,5 +123,19 @@ describe("getPeerTypeLabel", () => {
     expect(
       getPeerTypeLabel(entry({ clientInfo: { clientName: "vscode-llm", clientVersion: "1.0" } })),
     ).toBe("vscode-llm");
+  });
+});
+
+describe("inferExpectsResponse", () => {
+  it("returns true for explicit questions and ack requests", () => {
+    expect(inferExpectsResponse("¿Estás recibiendo mis mensajes? Un simple ack alcanza.")).toBe(true);
+    expect(inferExpectsResponse("Necesito tu confirmación o último blocker.")).toBe(true);
+    expect(inferExpectsResponse("Revisa este diff y valida si hay hallazgo crítico.")).toBe(true);
+  });
+
+  it("returns false for informational or no-response messages", () => {
+    expect(inferExpectsResponse("FYI: el build quedó verde, no response needed.")).toBe(false);
+    expect(inferExpectsResponse("Solo informo que el deploy terminó. Sin respuesta.")).toBe(false);
+    expect(inferExpectsResponse("Actualicé la documentación del módulo.")).toBe(false);
   });
 });

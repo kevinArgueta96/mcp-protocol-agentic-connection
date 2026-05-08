@@ -438,6 +438,7 @@ export class CodexAppServerBridge extends EventEmitter {
       conversationId: message.conversationId,
       messageId: message.messageId,
       fromAgentId: message.fromAgentId,
+      expectsResponse: message.expectsResponse === true,
     };
 
     const prompt = this.buildInjectionPrompt(message);
@@ -523,6 +524,15 @@ export class CodexAppServerBridge extends EventEmitter {
       ``,
       message.content,
     ];
+    lines.push(
+      "",
+      message.expectsResponse === true
+        ? "Este mensaje solicita respuesta. Resuélvelo como una tarea normal: puedes usar herramientas locales si son necesarias (por ejemplo shell, lectura de archivos o búsqueda). Para devolver la respuesta al remitente, usa el MCP agent-bridge.reply con replyTo igual al messageId de este mensaje y conversationId igual al conversationId de este mensaje."
+        : "Este mensaje no solicita respuesta. No envíes una respuesta de canal; solo tenlo en cuenta como contexto.",
+    );
+    if (message.expectsResponse === true) {
+      lines.push("", `(conversationId: ${message.conversationId})`, `(replyTo/messageId: ${message.messageId})`);
+    }
     if (message.taskId) lines.push(``, `(taskId: ${message.taskId})`);
     return lines.join("\n");
   }
@@ -530,6 +540,11 @@ export class CodexAppServerBridge extends EventEmitter {
   // ── Reply sending ───────────────────────────────────────────────────────────
 
   private async sendReplyToRegistry(text: string, ctx: InjectionContext): Promise<void> {
+    if (!ctx.expectsResponse) {
+      console.error(`[Bridge] Suppressing channel reply for fire-and-forget message ${ctx.messageId}`);
+      return;
+    }
+
     try {
       await this.channelTransport.postChannelMessage({
         fromAgentId: this.clientAgentId!,

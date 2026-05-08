@@ -81,10 +81,10 @@ pnpm run dev -- mcp config --write
 # 5. Launch Claude Code with the open-agent-bridge channel enabled
 claude --dangerously-load-development-channels server:open-agent-bridge
 
-# 6. Claude Code now has 4 MCP tools
+# 6. Claude Code now has 5 MCP tools
 ```
 
-Claude Code now has four MCP tools: `list_agents`, `channel_inbox`, `message_client_session`, `reply`.
+Claude Code now has five MCP tools: `agent_bridge_guide`, `list_agents`, `channel_inbox`, `message_client_session`, `reply`.
 
 ---
 
@@ -224,7 +224,7 @@ claude --dangerously-load-development-channels server:open-agent-bridge
 ```
 
 The `--dangerously-load-development-channels` flag tells the Claude CLI to activate the MCP server named `server:open-agent-bridge` as a development notification channel. The name `open-agent-bridge` matches the entry in `.mcp.json`. This enables:
-- The four MCP tools (`list_agents`, `channel_inbox`, `message_client_session`, `reply`).
+- The five MCP tools (`agent_bridge_guide`, `list_agents`, `channel_inbox`, `message_client_session`, `reply`).
 - Push notifications via `notifications/claude/channel` — incoming channel messages appear as `<channel>` blocks inline in the terminal.
 
 The MCP adapter registers the Claude Code session automatically on the first `initialize` handshake.
@@ -252,6 +252,8 @@ open-agent-bridge codex app-bridge --project "/absolute/path/to/your/project"
 # Terminal B — Codex TUI connecting to the app-server
 codex --remote ws://127.0.0.1:4500
 ```
+
+A plain `codex` command starts an isolated session. The registry may still see an inner MCP client, but the bridge cannot inject automatic turns into that TUI. If no remote TUI attaches to the bridge app-server, queued messages fail with a detail that tells you to run `codex --remote ws://127.0.0.1:<port>`.
 
 ### Gemini CLI
 
@@ -344,9 +346,10 @@ The `mcp config` command writes absolute paths for the current machine. Commit t
 
 | Tool | Description |
 | :--- | :--- |
-| `list_agents` | Discover connected agents and client sessions. Excludes dashboard and bridge daemons (internal routing details). |
+| `agent_bridge_guide` | Built-in MCP usage guide. Returns setup, send/reply workflow, ACK semantics, and troubleshooting by topic. |
+| `list_agents` | Discover connected agents and client sessions. Client rows include peer labels like `[Claude Code]`, `[Codex inner]`, and `[Gemini inner]`; bridge routing is automatic. |
 | `channel_inbox` | Inspect pending channel conversations with full context and a `replyWith` hint for responding. |
-| `message_client_session` | Send a message to a named client session. Automatically resolves the best target — the bridge daemon is preferred when present. |
+| `message_client_session` | Send a message to a named client session. Automatically resolves Codex/Gemini inner clients to their bridge daemon and infers `expectsResponse` when omitted. |
 | `reply` | Respond to an incoming channel message, correlating by `conversationId`. |
 
 Check live tool and agent status at any time:
@@ -378,7 +381,7 @@ Conversation abc-123
 Key properties:
 - `conversationId` is stable for the entire thread — use it to continue an existing conversation.
 - `replyTo` links a message to the specific `messageId` it responds to.
-- `expectsResponse: true` marks a message as pending until a reply arrives.
+- `expectsResponse: true` marks a message as pending until a reply arrives. In MCP sends, omit it to let the adapter infer from the message text, or pass it explicitly for deterministic behavior.
 - `requiresAck: true` requests an explicit delivery acknowledgement from the recipient.
 - All messages and ACKs are persisted in SQLite and survive registry restarts.
 
@@ -399,7 +402,7 @@ interface ChannelMessage {
   createdAt:        number;    // Unix ms timestamp (set by registry)
   expiresAt?:       number;    // Expiry timestamp in ms
   requiresAck?:     boolean;   // Request delivery acknowledgement
-  expectsResponse?: boolean;   // Sender awaits a reply
+  expectsResponse?: boolean;   // Sender awaits a reply; MCP infers when omitted
   attemptCount?:    number;    // Delivery attempt counter (for retries)
 }
 ```
@@ -420,7 +423,17 @@ ACK records carry: `conversationId`, `messageId`, `state`, `actorId`, `actorType
 
 ### MCP tool reference
 
-These are the four tools Claude Code gets after configuring open-agent-bridge as an MCP server.
+These are the five tools Claude Code gets after configuring open-agent-bridge as an MCP server.
+
+#### `agent_bridge_guide`
+
+Read the usage guide exposed by the MCP server itself. This is the quickest way for an agent to refresh the protocol contract without relying on external docs.
+
+```
+Parameters:
+  topic?  "overview" | "setup" | "send" | "reply" | "acks" | "troubleshooting" | "all"
+          Section to return (default: "all")
+```
 
 #### `list_agents`
 
@@ -448,9 +461,14 @@ Parameters:
   conversationId? string — Continue an existing conversation thread
   replyTo?      string   — messageId this message responds to
   taskId?       string   — Associate with a task
-  expectsResponse? boolean — Whether you expect a reply (default: true)
+  expectsResponse? boolean — Whether you expect a reply. If omitted, the adapter infers from message text.
   timeoutMs?    number   — Ms before the message expires without a reply
 ```
+
+`expectsResponse` controls whether the receiver should answer:
+- Use `true` for questions, review/validation requests, ack/confirmation prompts, and A/B/C decisions.
+- Use `false` for FYI/fire-and-forget messages.
+- If omitted, the MCP adapter infers it from the text. For deterministic workflows, pass it explicitly.
 
 **Target resolution order:**
 1. `clientId` provided → direct lookup, no further resolution
@@ -878,7 +896,7 @@ src/
 │   ├── conversation-service.ts      High-level send/reply/inbox helpers
 │   └── profiles/                    Client behavior profiles (Claude, Codex, Gemini)
 ├── mcp/
-│   └── adapter.ts             McpAgentBridge — 4 MCP tools + session resolution
+│   └── adapter.ts             McpAgentBridge — 5 MCP tools + session resolution
 ├── registry/
 │   ├── server.ts              RegistryServer: HTTP + WebSocket hub (:4999)
 │   ├── store.ts               AgentStore: in-memory only (not persisted across restarts)
@@ -917,7 +935,7 @@ src/
 - **Single registry.** All agents must connect to the same registry instance. Multi-registry federation is not implemented.
 - **No authentication.** All local connections are unauthenticated. Do not expose registry or agent ports beyond `localhost`.
 - **Volatile agent registry.** The `AgentStore` is in-memory only. Restarting the registry clears all registered agents and heartbeats — agents re-register automatically on reconnect, but any in-flight state is lost. Only channel messages and ACKs (in `channel_messages`, `channel_acks`, `channel_suppressed_conversations`) are persisted to SQLite.
-- **Codex bridge requires tmux or app-server.** The tmux sidecar approach polls at a fixed interval and injects follow-ups as synthetic keypresses, which is inherently racy under heavy TUI use.
+- **Codex bridge requires app-server remote TUI or tmux fallback.** The preferred path is `open-agent-bridge codex start` or `codex --remote ws://127.0.0.1:<port>` against the bridge app-server. A plain `codex` session is isolated and cannot receive automatic turn injection. The tmux sidecar fallback polls at a fixed interval and injects follow-ups as synthetic keypresses, which is inherently racy under heavy TUI use.
 - **Dashboard `handleChannelMessage` depends on `toAgentId` in broadcast.** When a channel message is broadcast without a `toAgentId`, the dashboard may not correctly attribute it to the right conversation in the UI — this is a known issue with the current broadcast routing in the registry WebSocket relay.
 - **`tasks/sendSubscribe` not implemented.** End-to-end A2A streaming (Server-Sent Events per task) is not yet supported.
 - **Gemini bridge is experimental.** The `GeminiTmuxBridgeService` uses the same tmux injection mechanism as Codex and has the same caveats.

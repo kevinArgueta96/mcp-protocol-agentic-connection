@@ -23,6 +23,7 @@ export interface InjectionContext {
   conversationId: string;
   messageId: string;
   fromAgentId: string;
+  expectsResponse: boolean;
 }
 
 // ── Internal state ────────────────────────────────────────────────────────────
