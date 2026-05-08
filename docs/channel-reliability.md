@@ -231,6 +231,56 @@ Together with the periodic re-sync (Bug 9) and the receiver-side dedup (Bugs 2/3
 
 Tests cover: deletion of stale conversations, cascade to acks/suppression rows, conservation of mixed-age conversations (any recent message keeps the whole thread alive), and the no-op case.
 
+## Bug 12 — Gemini ACP `initialize` timed out at 30 s
+
+### Symptom
+
+Operators starting `agent-bridge gemini start` saw the bridge spawn `gemini --acp`, send the JSON-RPC `initialize` request, and then hang for 30 s before failing with `Request initialize (id=1) timed out after 30000ms`. The bridge had no useful diagnostic.
+
+### Root causes (two distinct, both in `src/client/gemini-acp-client.ts`)
+
+**1. Non-standard `clientCapabilities.auth` field**. The previous payload included an `auth: { terminal: false }` block that does not exist in the [ACP initialization spec](https://agentclientprotocol.com/protocol/initialization). Some Gemini CLI builds parse the request strictly and silently never write a response when the schema doesn't match. Removed; the new shape is exactly what the spec defines:
+
+```json
+{
+  "protocolVersion": 1,
+  "clientInfo": { "name": "agent-bridge", "version": "0.1.0" },
+  "clientCapabilities": {
+    "fs": { "readTextFile": false, "writeTextFile": false },
+    "terminal": false
+  }
+}
+```
+
+**2. Missing `authenticate` call when the agent requires it**. The ACP spec lists `authenticate` as a **core method**, and the `initialize` response carries `authMethods: []`. An empty array means the agent is already authenticated (env var, OAuth cache); a non-empty array means the client **must** call `authenticate({ methodId })` before any further request, or the agent hangs on `session/new`.
+
+The bridge previously discarded the `initialize` response and went straight to `session/new`. Now `connect()` runs:
+
+```
+spawn gemini --acp
+  → performInitialize()           // captures the response
+  → maybeAuthenticate(initResult) // calls authenticate(methodId) if authMethods is non-empty
+  → openSession()                 // session/new
+```
+
+Failures from `authenticate` produce a clear error message that names the available methods and tells the operator how to resolve it (`export GEMINI_API_KEY=...` or run `gemini` once in a TTY for OAuth).
+
+**3. Defensive: stderr is also scanned for JSON-RPC frames**. Some Gemini builds inconsistently mux stdout / stderr. Each stderr line is forwarded for visibility AND, if it parses as JSON-RPC, dispatched through the same `handleLine` as stdout. Well-behaved versions are unaffected.
+
+### Telemetry — official Gemini CLI debug env vars
+
+When `--debug` isn't enough, the [Gemini ACP doc](https://geminicli.com/docs/cli/acp-mode/) ships a structured telemetry channel that captures every ACP request and response to a file:
+
+```bash
+export GEMINI_TELEMETRY_ENABLED=true
+export GEMINI_TELEMETRY_TARGET=local
+export GEMINI_TELEMETRY_OUTFILE=/tmp/gemini-acp.log.json
+
+agent-bridge gemini start --project "..." --debug
+```
+
+`/tmp/gemini-acp.log.json` becomes the source of truth for the agent side — useful when the bridge logs and the agent disagree about whether a frame was sent.
+
 ## Tests
 
 Three test suites cover the critical paths:

@@ -248,18 +248,27 @@ export class GeminiAcpBridge extends EventEmitter {
       console.error(
         `[GeminiBridge] Channel message from ${message.fromAgentId} (conv: ${message.conversationId})`,
       );
+      void this.channelTransport.postChannelAck({
+        conversationId: message.conversationId,
+        messageId: message.messageId,
+        state: "delivered_to_bridge",
+        actorId: this.clientAgentId ?? "gemini-acp-bridge",
+        actorType: "bridge",
+        detail: "Gemini ACP bridge received channel message",
+      });
       this.enqueueOrInject(message);
     });
   }
 
   // ── Registry sync ───────────────────────────────────────────────────────────
 
-  /** Replay any messages from the registry that this bridge hasn't yet delivered.
+  /** Replay any messages from the registry that this bridge hasn't yet displayed.
    *
    *  Treats the registry's persisted ack ledger as the source of truth for
    *  "already injected": any ack from this bridge actor with state in
-   *  {`delivered_to_bridge`, `answered`, `failed`} marks the corresponding message
-   *  as handled. All others targeting us (or broadcast) are replayed. */
+   *  {`displayed_to_client`, `answered`, `failed`} marks the corresponding
+   *  message as handled. `delivered_to_bridge` is just receipt by the daemon,
+   *  so those messages stay replayable after an interrupted injection. */
   private async syncMissedMessages(): Promise<void> {
     if (this.syncInFlight) return;
     if (!this.clientAgentId) return;
@@ -274,7 +283,7 @@ export class GeminiAcpBridge extends EventEmitter {
         for (const ack of snapshot.acknowledgements ?? []) {
           if (
             ack.actorId === this.clientAgentId &&
-            (ack.state === "delivered_to_bridge" ||
+            (ack.state === "displayed_to_client" ||
               ack.state === "answered" ||
               ack.state === "failed")
           ) {
@@ -309,6 +318,10 @@ export class GeminiAcpBridge extends EventEmitter {
   // ── Message injection ───────────────────────────────────────────────────────
 
   private enqueueOrInject(message: ChannelMessage): void {
+    if (this.pendingQueue.some((item) => item.message.messageId === message.messageId)) {
+      console.error(`[GeminiBridge] Skipping already-queued ${message.messageId}`);
+      return;
+    }
     if (!this.client.turnInProgress && this.client.sessionReady) {
       this.injectNow(message);
     } else {
@@ -321,7 +334,7 @@ export class GeminiAcpBridge extends EventEmitter {
     }
   }
 
-  private injectNow(message: ChannelMessage): void {
+  private injectNow(message: ChannelMessage, retries = 0): void {
     const ctx: InjectionContext = {
       conversationId: message.conversationId,
       messageId: message.messageId,
@@ -334,7 +347,7 @@ export class GeminiAcpBridge extends EventEmitter {
       if (!ok) {
         console.error(`[GeminiBridge] Prompt failed, re-queuing ${message.messageId}`);
         setTimeout(() => {
-          this.pendingQueue.unshift({ message, retries: 1 });
+          this.pendingQueue.unshift({ message, retries: retries + 1 });
           this.drainQueue();
         }, RETRY_DELAY_MS);
         return;
@@ -346,10 +359,10 @@ export class GeminiAcpBridge extends EventEmitter {
       void this.channelTransport.postChannelAck({
         conversationId: message.conversationId,
         messageId: message.messageId,
-        state: "delivered_to_bridge",
+        state: "displayed_to_client",
         actorId: this.clientAgentId ?? "gemini-acp-bridge",
         actorType: "bridge",
-        detail: "Injected into Gemini via ACP session/prompt",
+        detail: "Submitted to Gemini via ACP session/prompt",
       });
     });
   }
@@ -375,7 +388,7 @@ export class GeminiAcpBridge extends EventEmitter {
       return;
     }
 
-    this.injectNow({ ...item.message });
+    this.injectNow(item.message, item.retries);
   }
 
   private buildInjectionPrompt(message: ChannelMessage): string {

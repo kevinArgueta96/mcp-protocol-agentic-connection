@@ -38,6 +38,70 @@ export interface McpAdapterOptions {
   projectPath?: string;
 }
 
+/**
+ * Canonical taxonomy of peers reachable through open-agent-bridge.
+ *
+ * - `claude-code`    Claude Code session (single registry entry per session).
+ * - `codex-bridge`   Codex daemon that injects messages as new turns into the
+ *                    Codex CLI. Always paired with `codex-inner` for the same
+ *                    `projectPath`.
+ * - `codex-inner`    Inner MCP client running inside a Codex session — used by
+ *                    Codex's LLM to call `reply` and to poll `channel_inbox`.
+ * - `gemini-bridge`  Gemini ACP bridge, analogous to `codex-bridge`.
+ * - `gemini-inner`   Inner MCP client inside a Gemini session.
+ * - `dashboard-ui`   The local dashboard web UI (never a valid send target).
+ * - `unknown`        Catch-all for anything that doesn't match the heuristics.
+ */
+export type PeerType =
+  | "claude-code"
+  | "codex-bridge"
+  | "codex-inner"
+  | "gemini-bridge"
+  | "gemini-inner"
+  | "dashboard-ui"
+  | "unknown";
+
+/** Classify a registry entry into one of the well-known peer types so callers
+ *  (and the LLM consuming `list_agents` / `channel_inbox` output) can tell at
+ *  a glance whether a row is Claude Code, a Codex/Gemini bridge daemon, or the
+ *  inner MCP client of one of those agents.
+ *
+ *  Heuristic: `clientVersion` is authoritative for bridges (`app-server-bridge`,
+ *  `acp-bridge`); for everything else we read `clientName`. The dashboard UI is
+ *  recognized by its stable agentId. Pure function — safe to import in tests. */
+export function getPeerType(entry: RegistryEntry): PeerType {
+  if (entry.agentId === "client-dashboard-ui") return "dashboard-ui";
+  const clientName = (entry.clientInfo?.clientName ?? "").toLowerCase();
+  const clientVersion = entry.clientInfo?.clientVersion ?? "";
+  if (clientName === "claude-code" || clientName === "claude") return "claude-code";
+  if (clientVersion === "app-server-bridge") return "codex-bridge";
+  if (clientVersion === "acp-bridge") return "gemini-bridge";
+  if (clientName.includes("codex")) return "codex-inner";
+  if (clientName.includes("gemini")) return "gemini-inner";
+  return "unknown";
+}
+
+/** Human-friendly label derived from the peer type — used as a `[Codex bridge]`
+ *  prefix in the textual rendering of `list_agents` / `channel_inbox`. */
+export function getPeerTypeLabel(entry: RegistryEntry): string {
+  switch (getPeerType(entry)) {
+    case "claude-code":
+      return "Claude Code";
+    case "codex-bridge":
+      return "Codex bridge";
+    case "codex-inner":
+      return "Codex inner";
+    case "gemini-bridge":
+      return "Gemini bridge";
+    case "gemini-inner":
+      return "Gemini inner";
+    case "dashboard-ui":
+      return "Dashboard UI";
+    default:
+      return entry.clientInfo?.clientName ?? "unknown";
+  }
+}
+
 function formatAgentsSummary(agents: RegistryEntry[]): string {
   if (agents.length === 0) {
     return "No agents currently connected. Start one with: open-agent-bridge start <project-path>";
@@ -45,14 +109,15 @@ function formatAgentsSummary(agents: RegistryEntry[]): string {
   const runnableAgents = agents.filter((a) => a.entryType !== "client" || a.card.skills.length > 0);
   // Exclude internal infrastructure from the visible client list:
   //   - dashboard UI (agentId: client-dashboard-ui)
-  //   - bridge daemons (clientVersion: app-server-bridge) — implementation detail, not a send target
-  const clients = agents.filter(
-    (a) =>
-      a.entryType === "client" &&
-      a.card.skills.length === 0 &&
-      a.agentId !== "client-dashboard-ui" &&
-      a.clientInfo?.clientVersion !== "app-server-bridge",
-  );
+  //   - bridge daemons (codex `app-server-bridge`, gemini `acp-bridge`) — they
+  //     pair 1:1 with an inner client that already represents the same session,
+  //     and routing to the bridge is handled automatically by `resolveDeliverableTarget`.
+  const clients = agents.filter((a) => {
+    if (a.entryType !== "client") return false;
+    if (a.card.skills.length !== 0) return false;
+    const peerType = getPeerType(a);
+    return peerType !== "dashboard-ui" && peerType !== "codex-bridge" && peerType !== "gemini-bridge";
+  });
 
   return [
     `${agents.length} entry(ies) connected via open-agent-bridge:\n`,
@@ -70,11 +135,12 @@ function formatAgentsSummary(agents: RegistryEntry[]): string {
     "",
     clients.length > 0 ? "Client sessions via channels:\n" : "Client sessions via channels:\n  (none)",
     ...clients.map((a) => [
-      `Client: ${a.name}  [${a.agentId.slice(0, 8)}]`,
+      `[${getPeerTypeLabel(a)}]  ${a.name}  [${a.agentId.slice(0, 8)}]`,
+      `  agentId: ${a.agentId}`,
       `  Project: ${a.projectPath}`,
       `  Client:  ${a.clientInfo?.clientName ?? "unknown"} ${a.clientInfo?.clientVersion ?? ""}`.trimEnd(),
       `  Status:  ${a.healthy ? "healthy" : "unhealthy"}`,
-      "  Use:     message_client_session",
+      "  Use:     message_client_session (routing to the bridge is automatic)",
     ].join("\n")),
   ].join("\n");
 }
@@ -101,6 +167,11 @@ export class McpAgentBridge {
    *  those rewritten messages as locally addressable so they surface in
    *  `channel_inbox(pendingOnly=true)`. Refreshed on every registry sync. */
   private siblingBridgeAgentIds: Set<string> = new Set();
+  /** The project path actually registered with the registry. Initialized to
+   *  the constructor default (cwd) and replaced in `setupClientDetection` once
+   *  the MCP roots protocol resolves the real path. Used to look up sibling
+   *  bridges without mutating `this.options.projectPath`. */
+  private resolvedProjectPath: string = process.cwd();
   /** Periodic sync as defense-in-depth: every 5 min the adapter pulls the
    *  registry's snapshot to recover any messages that slipped through the live
    *  WS path (e.g. half-open socket the runtime hasn't yet detected). */
@@ -132,27 +203,16 @@ export class McpAgentBridge {
       {
         capabilities: { experimental: { "claude/channel": {} } },
         instructions:
-          "You are connected to open-agent-bridge, a multi-agent communication hub.\n\n" +
-          "WORKFLOW:\n" +
-          "  • Discover targets:  list_agents(includeClients=true)\n" +
-          "  • Start a thread:    message_client_session(clientId|project, message)\n" +
-          "  • See pending:       channel_inbox(pendingOnly=true) — every entry has a `replyWith` block\n" +
-          "  • Respond:           reply(agentId, conversationId, replyTo, message) — copy fields from replyWith verbatim\n\n" +
-          "DELIVERY MODES (you do NOT need to manage routing — the adapter handles it):\n" +
-          "  • Claude Code peers: receive your message as an immediate <channel> push event.\n" +
-          "  • Codex / Gemini peers: each session has TWO registry entries — a bridge daemon\n" +
-          "    (`client-{codex,gemini}-bridge-*`) and an inner MCP client\n" +
-          "    (`client-{codex,gemini}-mcp-client-*`). The bridge injects the message as a new\n" +
-          "    turn in the CLI; the inner client also surfaces it in channel_inbox(pendingOnly=true)\n" +
-          "    so the agent can poll for pending work. Reply via the inner client's session.\n" +
-          "  • The adapter AUTO-REDIRECTS any inner-client agentId to its sibling bridge for\n" +
-          "    delivery, so copy `replyWith.agentId` from channel_inbox or `from_agent` from the\n" +
-          "    <channel> event verbatim — no manual lookup needed.\n\n" +
-          "VERIFYING DELIVERY:\n" +
-          "  • `delivered_to_bridge` means the daemon accepted the message but the peer LLM may\n" +
-          "    not have seen it yet (mid-turn or daemon offline). Wait for `displayed_to_client`\n" +
-          "    or `answered`. If stuck on `delivered_to_bridge` for >30s, call channel_inbox to\n" +
-          "    re-inspect; if still no reply, the bridge is offline — surface this to the user.",
+          "open-agent-bridge — multi-agent communication hub.\n\n" +
+          "Tools:\n" +
+          "  • list_agents(includeClients=true) — discover peers; client-session rows include a peer-type label " +
+          "such as `[Claude Code]`, `[Codex inner]`, or `[Gemini inner]`.\n" +
+          "  • message_client_session(clientId | project, message) — open a new thread to a peer. " +
+          "Routing is automatic; pass any agentId from the peer's pair (Codex/Gemini sessions register two — both work).\n" +
+          "  • channel_inbox(pendingOnly=true) — list pending conversations; each entry has a `replyWith` block.\n" +
+          "  • reply(agentId, conversationId, replyTo, message) — respond to a pending message; " +
+          "copy `replyWith` fields verbatim.\n\n" +
+          "For workflow patterns, peer-type semantics, and troubleshooting, load the `agent-bridge` skill.",
       },
     );
     this.setupChannelRuntime();
@@ -244,14 +304,21 @@ export class McpAgentBridge {
   }
 
   private deliverChannelMessage(channelMessage: ChannelMessage): void {
-    void this.postChannelAck({
-      conversationId: channelMessage.conversationId,
-      messageId: channelMessage.messageId,
-      state: "delivered_to_bridge",
-      actorId: this.clientAgentId ?? "mcp-adapter",
-      actorType: "bridge",
-      detail: "Message received by MCP bridge",
-    });
+    const isPassiveInnerClientMirror =
+      (this.clientProfile.id === "codex" || this.clientProfile.id === "gemini") &&
+      typeof channelMessage.toAgentId === "string" &&
+      this.siblingBridgeAgentIds.has(channelMessage.toAgentId);
+
+    if (!isPassiveInnerClientMirror) {
+      void this.postChannelAck({
+        conversationId: channelMessage.conversationId,
+        messageId: channelMessage.messageId,
+        state: "delivered_to_bridge",
+        actorId: this.clientAgentId ?? "mcp-adapter",
+        actorType: "bridge",
+        detail: "Message received by MCP bridge",
+      });
+    }
 
     const notification = this.clientProfile.mapChannelMessage(channelMessage);
     if (!notification) return;
@@ -262,14 +329,16 @@ export class McpAgentBridge {
         // failure would silently swallow the message (sync would skip it as "surfaced"
         // and the client would never see it).
         this.surfacedInboxMessageIds.add(channelMessage.messageId);
-        void this.postChannelAck({
-          conversationId: channelMessage.conversationId,
-          messageId: channelMessage.messageId,
-          state: "displayed_to_client",
-          actorId: this.clientAgentId ?? "mcp-adapter",
-          actorType: "bridge",
-          detail: "Message forwarded to client channel",
-        });
+        if (!isPassiveInnerClientMirror) {
+          void this.postChannelAck({
+            conversationId: channelMessage.conversationId,
+            messageId: channelMessage.messageId,
+            state: "displayed_to_client",
+            actorId: this.clientAgentId ?? "mcp-adapter",
+            actorType: "bridge",
+            detail: "Message forwarded to client channel",
+          });
+        }
       }
     });
   }
@@ -351,16 +420,18 @@ export class McpAgentBridge {
   }
 
   /** Repopulate `siblingBridgeAgentIds` with the bridge daemon entries that
-   *  share this MCP client's project path. Idempotent and best-effort: failure
-   *  to reach the registry leaves the previous snapshot in place. */
-  private async refreshSiblingBridgeAgentIds(): Promise<void> {
+   *  share the given project path. Idempotent and best-effort: failure to reach
+   *  the registry leaves the previous snapshot in place.
+   *
+   *  Caller passes `projectPath` explicitly so this method does not depend on
+   *  any mutable state in `this.options` — keeps the data flow explicit. */
+  private async refreshSiblingBridgeAgentIds(projectPath: string): Promise<void> {
     try {
       const all = await this.registry.listAgents();
-      const myProject = this.options.projectPath;
       const next = new Set<string>();
       for (const e of all) {
         if (e.entryType !== "client") continue;
-        if (e.projectPath !== myProject) continue;
+        if (e.projectPath !== projectPath) continue;
         if (e.agentId === this.clientAgentId) continue; // exclude self
         const cv = e.clientInfo?.clientVersion ?? "";
         if (cv === "app-server-bridge" || cv === "acp-bridge") {
@@ -389,7 +460,9 @@ export class McpAgentBridge {
     try {
       // Refresh sibling bridge ids first so the acceptsChannelMessage filter
       // below recognizes auto-redirected messages targeting our sibling bridge.
-      await this.refreshSiblingBridgeAgentIds();
+      // Uses the path that was registered with the registry (set in
+      // setupClientDetection after MCP roots resolution).
+      await this.refreshSiblingBridgeAgentIds(this.resolvedProjectPath);
 
       const entries = await this.registry.listChannelConversations();
       const unsurfacedMessages: ChannelMessage[] = [];
@@ -529,10 +602,13 @@ export class McpAgentBridge {
         }
 
         this.clientAgentId = this.buildStableClientAgentId(clientName, realProjectPath);
-        // Keep options in sync so downstream lookups (e.g. sibling bridge ids)
-        // match the project the client actually identified itself with via the
-        // MCP roots protocol, not the cwd-derived default from the constructor.
-        this.options.projectPath = realProjectPath;
+        // Persist the resolved project path so downstream lookups (sibling
+        // bridge ids, etc.) match what the client actually identified itself
+        // with via the MCP roots protocol, not the cwd-derived constructor
+        // default. We do NOT mutate `this.options.projectPath` — keeping the
+        // constructor argument immutable avoids side-effects in callers that
+        // may have captured the original options object.
+        this.resolvedProjectPath = realProjectPath;
 
         const registration = {
           agentId: this.clientAgentId,
@@ -731,6 +807,13 @@ export class McpAgentBridge {
               ? resolveReplyAgentId(latestInbound.fromAgentId)
               : undefined;
 
+            // Identify the peer on the other side of the conversation — uses the
+            // ORIGINAL fromAgentId (typically the inner MCP client for Codex/Gemini)
+            // so the label reflects the agent, not the bridge daemon plumbing.
+            const peerEntry = latestInbound ? agentById.get(latestInbound.fromAgentId) : undefined;
+            const peerType: PeerType | undefined = peerEntry ? getPeerType(peerEntry) : undefined;
+            const peerLabel = peerEntry ? getPeerTypeLabel(peerEntry) : undefined;
+
             return {
               conversationId: snapshot.conversation.conversationId,
               status: snapshot.status,
@@ -739,6 +822,10 @@ export class McpAgentBridge {
               lastUpdatedAt: snapshot.lastUpdatedAt,
               expiresAt: snapshot.lastMessage?.expiresAt,
               lastMessagePreview: snapshot.lastMessage?.content.slice(0, 160),
+              // peerType lets the LLM identify who is on the other end (Claude
+              // Code / Codex inner / Gemini inner / etc.) without parsing
+              // agentId prefixes manually.
+              ...(peerType ? { peerType, peerLabel } : {}),
               // Exact parameters to pass to the reply tool — no guesswork needed.
               // For Codex/Gemini peers, `agentId` is already the bridge so the message
               // is delivered as a turn prompt. The original sender's fromAgentId is
@@ -748,6 +835,7 @@ export class McpAgentBridge {
                     agentId: routedReplyAgentId!,
                     conversationId: snapshot.conversation.conversationId,
                     replyTo: latestInbound.messageId,
+                    ...(peerType ? { peerType } : {}),
                     ...(routedReplyAgentId !== latestInbound.fromAgentId
                       ? { originalFromAgentId: latestInbound.fromAgentId }
                       : {}),

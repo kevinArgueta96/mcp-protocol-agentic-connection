@@ -20,11 +20,14 @@ export interface CodexAppServerBridgeOptions {
 interface QueuedMessage {
   message: ChannelMessage;
   retries: number;
+  enqueuedAt: number;
 }
 
 const MAX_QUEUE_SIZE = 10;
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 5_000;
+const QUEUE_STALE_CHECK_MS = 5_000;
+const NO_TUI_QUEUE_TIMEOUT_MS = 30_000;
 
 /**
  * Full Codex app-server bridge daemon.
@@ -68,6 +71,10 @@ export class CodexAppServerBridge extends EventEmitter {
    *  registry's snapshot to recover any messages missed via the live WS path
    *  (e.g. half-open socket, lost broadcast). */
   private periodicSyncTimer: NodeJS.Timeout | null = null;
+  /** Checks queued messages that cannot be injected because no Codex TUI has
+   *  attached to the app-server thread yet. */
+  private queueHealthTimer: NodeJS.Timeout | null = null;
+  private noTuiWarningTimer: NodeJS.Timeout | null = null;
 
   constructor(options: CodexAppServerBridgeOptions = {}) {
     super();
@@ -128,6 +135,8 @@ export class CodexAppServerBridge extends EventEmitter {
 
     // 6. Periodic re-sync as defense-in-depth.
     this.startPeriodicSync();
+    this.startQueueHealthCheck();
+    this.scheduleNoTuiWarning();
 
     const appServerWsUrl = `ws://127.0.0.1:${this.appServerPort}`;
     console.error(`[Bridge] Ready. Start Codex TUI with:`);
@@ -141,11 +150,38 @@ export class CodexAppServerBridge extends EventEmitter {
     }, periodMs);
   }
 
+  private startQueueHealthCheck(periodMs = QUEUE_STALE_CHECK_MS): void {
+    if (this.queueHealthTimer) return;
+    this.queueHealthTimer = setInterval(() => {
+      void this.failStaleQueuedMessages();
+    }, periodMs);
+  }
+
+  private scheduleNoTuiWarning(delayMs = 10_000): void {
+    if (this.noTuiWarningTimer) return;
+    this.noTuiWarningTimer = setTimeout(() => {
+      this.noTuiWarningTimer = null;
+      if (this.stopped || this.client.currentThreadId) return;
+      console.error(
+        `[Bridge] WARN: No Codex TUI attached. Bridge will queue messages until you run:\n` +
+          `  codex --remote ws://127.0.0.1:${this.appServerPort}`,
+      );
+    }, delayMs);
+  }
+
   async stop(): Promise<void> {
     this.stopped = true;
     if (this.periodicSyncTimer) {
       clearInterval(this.periodicSyncTimer);
       this.periodicSyncTimer = null;
+    }
+    if (this.queueHealthTimer) {
+      clearInterval(this.queueHealthTimer);
+      this.queueHealthTimer = null;
+    }
+    if (this.noTuiWarningTimer) {
+      clearTimeout(this.noTuiWarningTimer);
+      this.noTuiWarningTimer = null;
     }
 
     this.client.disconnect();
@@ -308,18 +344,28 @@ export class CodexAppServerBridge extends EventEmitter {
       console.error(
         `[Bridge] Channel message received from ${message.fromAgentId} (conv: ${message.conversationId})`,
       );
+      void this.channelTransport.postChannelAck({
+        conversationId: message.conversationId,
+        messageId: message.messageId,
+        state: "delivered_to_bridge",
+        actorId: this.clientAgentId ?? "codex-app-bridge",
+        actorType: "bridge",
+        detail: "Codex app-server bridge received channel message",
+      });
       this.enqueueOrInject(message);
     });
   }
 
   // ── Registry sync ───────────────────────────────────────────────────────────
 
-  /** Replay any messages from the registry that this bridge hasn't yet delivered.
+  /** Replay any messages from the registry that this bridge hasn't yet displayed.
    *
-   *  We treat the registry's persisted ack ledger as the source of truth for "did
-   *  this bridge already inject this message?". A message is considered handled if
-   *  there's an ack for it from this bridge actor with a terminal state
-   *  (`delivered_to_bridge`, `answered`, or `failed`). All others are replayed. */
+   *  We treat the registry's persisted ack ledger as the source of truth for
+   *  "did this bridge already submit this message to Codex?". A message is
+   *  considered handled only after this bridge records `displayed_to_client`,
+   *  `answered`, or `failed`. `delivered_to_bridge` is intentionally not
+   *  terminal: it only means the daemon saw the channel message, and those are
+   *  exactly the messages sync must recover if injection was interrupted. */
   private async syncMissedMessages(): Promise<void> {
     if (this.syncInFlight) return;
     if (!this.clientAgentId) return;
@@ -335,7 +381,7 @@ export class CodexAppServerBridge extends EventEmitter {
         for (const ack of snapshot.acknowledgements ?? []) {
           if (
             ack.actorId === this.clientAgentId &&
-            (ack.state === "delivered_to_bridge" ||
+            (ack.state === "displayed_to_client" ||
               ack.state === "answered" ||
               ack.state === "failed")
           ) {
@@ -371,6 +417,10 @@ export class CodexAppServerBridge extends EventEmitter {
   // ── Message injection ───────────────────────────────────────────────────────
 
   private enqueueOrInject(message: ChannelMessage): void {
+    if (this.pendingQueue.some((item) => item.message.messageId === message.messageId)) {
+      console.error(`[Bridge] Skipping already-queued ${message.messageId}`);
+      return;
+    }
     if (!this.client.turnInProgress && this.client.currentThreadId) {
       this.injectNow(message);
     } else {
@@ -378,12 +428,12 @@ export class CodexAppServerBridge extends EventEmitter {
         const dropped = this.pendingQueue.shift();
         console.error(`[Bridge] Queue full, dropping oldest: ${dropped?.message.messageId}`);
       }
-      this.pendingQueue.push({ message, retries: 0 });
+      this.pendingQueue.push({ message, retries: 0, enqueuedAt: Date.now() });
       console.error(`[Bridge] Queued message (queue size: ${this.pendingQueue.length})`);
     }
   }
 
-  private injectNow(message: ChannelMessage): void {
+  private injectNow(message: ChannelMessage, retries = 0): void {
     const ctx: InjectionContext = {
       conversationId: message.conversationId,
       messageId: message.messageId,
@@ -395,7 +445,7 @@ export class CodexAppServerBridge extends EventEmitter {
 
     if (!injected) {
       console.error(`[Bridge] Injection failed, re-queuing ${message.messageId}`);
-      this.pendingQueue.unshift({ message, retries: (message as { _retries?: number })._retries ?? 0 });
+      this.pendingQueue.unshift({ message, retries: retries + 1, enqueuedAt: Date.now() });
       setTimeout(() => this.drainQueue(), RETRY_DELAY_MS);
     } else {
       // Record the injection BEFORE the ack so a re-broadcast that races with the
@@ -404,10 +454,10 @@ export class CodexAppServerBridge extends EventEmitter {
       void this.channelTransport.postChannelAck({
         conversationId: message.conversationId,
         messageId: message.messageId,
-        state: "delivered_to_bridge",
+        state: "displayed_to_client",
         actorId: this.clientAgentId ?? "codex-app-bridge",
         actorType: "bridge",
-        detail: "Injected into Codex app-server via turn/start",
+        detail: "Submitted to Codex app-server via turn/start",
       });
     }
   }
@@ -431,7 +481,38 @@ export class CodexAppServerBridge extends EventEmitter {
         });
         return;
       }
-      this.injectNow({ ...item.message });
+      this.injectNow(item.message, item.retries);
+    }
+  }
+
+  private async failStaleQueuedMessages(now = Date.now()): Promise<void> {
+    if (this.pendingQueue.length === 0) return;
+    if (this.client.currentThreadId) return;
+
+    const stillPending: QueuedMessage[] = [];
+    const stale: QueuedMessage[] = [];
+    for (const item of this.pendingQueue) {
+      if (now - item.enqueuedAt >= NO_TUI_QUEUE_TIMEOUT_MS) stale.push(item);
+      else stillPending.push(item);
+    }
+
+    if (stale.length === 0) return;
+    this.pendingQueue.length = 0;
+    this.pendingQueue.push(...stillPending);
+
+    const detail =
+      `No Codex TUI attached to bridge app-server. Run: ` +
+      `codex --remote ws://127.0.0.1:${this.appServerPort}`;
+    for (const item of stale) {
+      console.error(`[Bridge] Failing queued message ${item.message.messageId}: ${detail}`);
+      await this.channelTransport.postChannelAck({
+        conversationId: item.message.conversationId,
+        messageId: item.message.messageId,
+        state: "failed",
+        actorId: this.clientAgentId ?? "codex-app-bridge",
+        actorType: "bridge",
+        detail,
+      });
     }
   }
 

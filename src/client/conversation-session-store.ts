@@ -55,7 +55,16 @@ export class ConversationSessionStore {
     }
 
     session.state.lastMessageId = message.messageId;
-    if (message.expectsResponse) {
+    // A message is treated as needing a response UNLESS the sender explicitly
+    // opted into fire-and-forget by setting `expectsResponse: false`. Without
+    // this default, callers that simply omit the field (the common case for
+    // clients that just want to deliver a chat through `message_client_session`)
+    // would never surface the message in `channel_inbox(pendingOnly=true)` on
+    // the receiver — leaving Codex/Gemini unable to discover the inbound work
+    // via polling. The bridge daemon's turn injection is independent of this
+    // flag, so we never hide an inbound message from the agent loop.
+    const treatsAsPending = message.expectsResponse !== false;
+    if (treatsAsPending) {
       this.addPendingMessageId(session.state, message.messageId);
       // Reset stale terminal ack state so waitForAcknowledgement() doesn't return
       // the previous exchange's "answered"/"failed" as if this new message is done.
