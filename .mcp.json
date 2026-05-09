@@ -3,11 +3,11 @@
     "agent-bridge": {
       "command": "node",
       "args": [
-        "/home/kevin-osigu/Documents/PROYECTOS_OSIGU/10. PERSONAL/open-agent-bridge/dist/cli/index.js",
+        "/Users/kevs/Documents/DEV_PROJECTS/1. MCP/open-agent-bridge/dist/cli/index.js",
         "mcp",
         "start",
         "--project",
-        "/home/kevin-osigu/Documents/PROYECTOS_OSIGU/10. PERSONAL/open-agent-bridge"
+        "/Users/kevs/Documents/DEV_PROJECTS/1. MCP/open-agent-bridge"
       ]
     }
   }
