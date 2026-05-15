@@ -1,7 +1,5 @@
 # open-agent-bridge
 
-<!-- TODO: Add SVG logo/hero image here -->
-
 <div style="text-align: center;">
   <img alt="version" src="https://img.shields.io/badge/version-0.1.0-blue?style=for-the-badge" />
   <img alt="node" src="https://img.shields.io/badge/node-%3E%3D22-brightgreen?style=for-the-badge&logo=node.js" />
@@ -58,6 +56,8 @@
 - [CLI reference](#cli-reference)
 - [Scripts](#scripts)
 - [Architecture](#architecture)
+- [Feature status](#feature-status)
+- [Testing](#testing)
 - [Limitations](#limitations)
 - [Contributing](#contributing)
 - [License](#license)
@@ -403,15 +403,14 @@ pnpm run dev -- mcp status
 
 ### Agent-bridge skill (Claude Code only)
 
-The MCP `instructions` block intentionally stays compact. The deeper guide — peer-type semantics, send/reply patterns, troubleshooting `delivered_to_bridge` stalls, OpenCode plugin setup, and Codex `--remote` setup — lives in a Claude Code skill that is loaded on demand:
+The MCP `instructions` block intentionally stays compact. The deeper guide — peer-type semantics, send/reply patterns, troubleshooting `delivered_to_bridge` stalls, OpenCode plugin setup, and Codex `--remote` setup — lives in skill files loaded on demand by each client:
 
-```
-marketplace/plugins/open-agent-bridge/skills/agent-bridge/SKILL.md
-```
+- **OpenCode:** `.opencode/skills/open-agent-bridge/SKILL.md` (project-local, auto-scanned by OpenCode)
+- **Codex:** `~/.codex/skills/open-agent-bridge/SKILL.md` (global Codex skill)
 
-Claude Code picks up the skill automatically once the plugin is registered (see [`Configure MCP`](#3-configure-mcp)). Invoke it with `/skill agent-bridge` or by mentioning the plugin in a prompt; the LLM only pays the token cost when it actually needs the guidance, keeping the handshake light.
+Each skill file includes a `references/` folder with peer-type taxonomy, send/reply patterns, delivery states, routing rules, troubleshooting ladder, and the injection prompt contract.
 
-The same content can also be queried at runtime from any client via the `agent_bridge_guide` MCP tool — useful for OpenCode, Codex, and Gemini sessions that don't load Claude Code skills.
+The same content can also be queried at runtime from any client via the `agent_bridge_guide` MCP tool — useful for agents that don't load skill files.
 
 ---
 
@@ -1071,6 +1070,38 @@ src/
 
 ---
 
+## Feature status
+
+| Feature | Status |
+| :--- | :--- |
+| Registry HTTP + WS + SQLite | stable |
+| MCP adapter — 5 tools | stable |
+| Claude Code push bridge | stable |
+| OpenCode plugin push bridge | stable |
+| Codex app-server bridge | stable |
+| Gemini ACP bridge | stable |
+| Dashboard Vue SPA | stable |
+| 6 built-in skills | stable |
+| HTTP SSE MCP mode (`mcp server`, port 6000) | stable |
+| Dynamic skills (run-script, run-tests, docker-build, code-review) | stable — require `--claude` |
+| `tasks/sendSubscribe` — A2A SSE streaming | **stub — not implemented** |
+| StateGraph skill composition | implemented, unused in production |
+| Gemini tmux fallback | experimental |
+| `ask --stream` CLI flag | declared, not implemented |
+
+---
+
+## Testing
+
+```bash
+pnpm run test   # vitest — runs all 11 test files once
+pnpm run lint   # biome — lint and style check
+```
+
+Test coverage includes: injection prompt contract (`injection-prompt.test.ts`), peer-type label generation (`peer-type-label.test.ts`), `inferExpectsResponse` text inference, conversation ID determinism, ACK state transitions, and MCP adapter routing.
+
+---
+
 ## Limitations
 
 - **Local only.** The registry, agents, and bridges all run on `localhost`. No remote or cloud deployment is supported in v0.1.
@@ -1080,7 +1111,8 @@ src/
 - **Codex bridge requires app-server remote TUI or tmux fallback.** The preferred path is `open-agent-bridge codex start` or `codex --remote ws://127.0.0.1:<port>` against the bridge app-server. A plain `codex` session is isolated and cannot receive automatic turn injection. The tmux sidecar fallback polls at a fixed interval and injects follow-ups as synthetic keypresses, which is inherently racy under heavy TUI use.
 - **OpenCode push requires the local plugin.** OpenCode can call the MCP tools without the plugin, but automatic turn injection depends on `open-agent-bridge opencode install-plugin` and an OpenCode restart. Without the plugin bridge, inbound work must be discovered through `channel_inbox`.
 - **Dashboard `handleChannelMessage` depends on `toAgentId` in broadcast.** When a channel message is broadcast without a `toAgentId`, the dashboard may not correctly attribute it to the right conversation in the UI — this is a known issue with the current broadcast routing in the registry WebSocket relay.
-- **`tasks/sendSubscribe` not implemented.** End-to-end A2A streaming (Server-Sent Events per task) is not yet supported.
+- **`tasks/sendSubscribe` not implemented.** End-to-end A2A streaming (Server-Sent Events per task) is not yet supported. The method is a stub — it is not announced in the Agent Card.
+- **`ask --stream` flag is a no-op.** The `--stream` option is declared in the CLI but the handler never reads it. Streaming task output is not implemented.
 - **Gemini tmux fallback is experimental.** The preferred Gemini path is the ACP bridge (`gemini --acp`). The `GeminiTmuxBridgeService` uses the same tmux injection mechanism as Codex and has the same caveats.
 
 ---
