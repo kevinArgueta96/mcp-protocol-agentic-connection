@@ -3,6 +3,10 @@ import { CodexAppServerClient } from "../client/codex-app-server-client.js";
 
 type Extractor = {
   extractTurnResponseText: (result: unknown) => string;
+  handleNotification: (message: unknown) => void;
+  currentThreadId: string | null;
+  turnInProgress: boolean;
+  on: (event: string, listener: (...args: unknown[]) => void) => void;
 };
 
 describe("CodexAppServerClient response extraction", () => {
@@ -45,5 +49,34 @@ describe("CodexAppServerClient response extraction", () => {
         },
       }),
     ).toBe("recibido");
+  });
+
+  it("tracks the active status thread instead of keeping a stale thread/started id", () => {
+    const subject = new CodexAppServerClient() as unknown as Extractor;
+    const detectedThreads: unknown[] = [];
+    const completedTurns: unknown[] = [];
+    subject.on("threadDetected", (threadId) => detectedThreads.push(threadId));
+    subject.on("turnCompleted", (turnId) => completedTurns.push(turnId));
+
+    subject.handleNotification({
+      method: "thread/started",
+      params: { thread: { id: "stale-thread" } },
+    });
+    expect(subject.currentThreadId).toBe("stale-thread");
+
+    subject.handleNotification({
+      method: "thread/status/changed",
+      params: { threadId: "active-thread", status: { type: "active" } },
+    });
+    expect(subject.currentThreadId).toBe("active-thread");
+    expect(subject.turnInProgress).toBe(true);
+
+    subject.handleNotification({
+      method: "thread/status/changed",
+      params: { threadId: "active-thread", status: { type: "idle" } },
+    });
+    expect(subject.turnInProgress).toBe(false);
+    expect(detectedThreads).toEqual(["stale-thread", "active-thread"]);
+    expect(completedTurns).toEqual(["status-idle"]);
   });
 });

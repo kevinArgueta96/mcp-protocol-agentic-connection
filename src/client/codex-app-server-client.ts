@@ -351,22 +351,27 @@ export class CodexAppServerClient extends EventEmitter<CodexAppServerClientEvent
         const status = params?.status as Record<string, unknown> | undefined;
         const statusType = status?.type as string | undefined;
 
-        // Detect threadId even if we missed thread/started
-        if (threadId && !this._currentThreadId) {
+        // Codex can emit thread/started for one thread and then status changes
+        // for the TUI's active thread. Track the latest status thread as the
+        // injection target; otherwise messages can sit forever behind a stale
+        // thread id.
+        if (threadId && threadId !== this._currentThreadId) {
           this._currentThreadId = threadId;
           console.error(`[CodexClient] Thread detected via status/changed: ${threadId}`);
           this.emit("threadDetected", threadId);
           void this.subscribeToThread(threadId);
         }
 
-        if (statusType === "idle") {
-          if (this._turnInProgress) {
-            this._turnInProgress = false;
-            // Emit a synthetic turnCompleted so the bridge drains its queue
-            this.emit("turnCompleted", "status-idle");
+        if (!threadId || threadId === this._currentThreadId) {
+          if (statusType === "idle") {
+            if (this._turnInProgress) {
+              this._turnInProgress = false;
+              // Emit a synthetic turnCompleted so the bridge drains its queue
+              this.emit("turnCompleted", "status-idle");
+            }
+          } else if (statusType === "active") {
+            this._turnInProgress = true;
           }
-        } else if (statusType === "active") {
-          this._turnInProgress = true;
         }
 
         console.error(`[CodexClient] Thread status: ${statusType}`);
