@@ -12,6 +12,7 @@ import { registerMcpCommand } from "./commands/mcp.js";
 import { registerDashboardCommand } from "./commands/dashboard.js";
 import { registerCodexCommand } from "./commands/codex.js";
 import { registerGeminiCommand } from "./commands/gemini.js";
+import { registerOpenCodeCommand } from "./commands/opencode.js";
 
 const program = new Command();
 
@@ -32,5 +33,6 @@ registerMcpCommand(program);
 registerDashboardCommand(program);
 registerCodexCommand(program);
 registerGeminiCommand(program);
+registerOpenCodeCommand(program);
 
 program.parse(process.argv);
