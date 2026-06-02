@@ -7,9 +7,11 @@
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.x-3178c6?style=for-the-badge&logo=typescript" />
 </div>
 
-**Let Claude Code, OpenCode, Codex, and Gemini CLI talk to each other — over MCP, locally, bidirectionally.**
+**Let Claude Code, OpenCode, Codex, and Antigravity (`agy`) talk to each other — over MCP, locally, bidirectionally.**
 
-`open-agent-bridge` is a local communication hub for AI agents. It provides service discovery, bidirectional messaging, and MCP tool exposure so that Claude Code, OpenCode, Codex, and Gemini CLI running in separate projects can delegate tasks, exchange context, and coordinate work without leaving the local machine.
+`open-agent-bridge` is a local communication hub for AI agents. It provides service discovery, bidirectional messaging, and MCP tool exposure so that Claude Code, OpenCode, Codex, and Google Antigravity CLI (`agy`) running in separate projects can delegate tasks, exchange context, and coordinate work without leaving the local machine.
+
+Sessions can be **scoped by `--identity`**: every launcher accepts an identity namespace, and agents only see channel messages from peers sharing the same namespace (default `global`). This gives each ticket/agent its own private inbox.
 
 ---
 
@@ -29,7 +31,8 @@
   - [Claude Code](#claude-code)
   - [OpenCode](#opencode)
   - [Codex](#codex)
-  - [Gemini CLI](#gemini-cli)
+  - [Antigravity (agy)](#antigravity-agy)
+  - [Identity scoping (--identity)](#identity-scoping---identity)
   - [Dashboard](#dashboard-1)
 - [MCP integration](#mcp-integration)
   - [.mcp.json](#mcpjson)
@@ -46,8 +49,7 @@
   - [Claude Code bridge (push)](#claude-code-bridge-push)
   - [OpenCode bridge (plugin push)](#opencode-bridge-plugin-push)
   - [Codex bridge (app-server)](#codex-bridge-app-server)
-  - [Gemini bridge (ACP)](#gemini-bridge-acp)
-  - [Gemini bridge (tmux fallback)](#gemini-bridge-tmux-fallback)
+  - [Antigravity bridge (Cascade Language Server push)](#antigravity-bridge-cascade-language-server-push)
   - [Delivery mode comparison](#delivery-mode-comparison)
 - [Dashboard](#dashboard)
 - [Skills](#skills)
@@ -84,10 +86,10 @@ pnpm run dev -- mcp config --write
 # 5. Launch Claude Code with the open-agent-bridge channel enabled
 claude --dangerously-load-development-channels server:open-agent-bridge
 
-# 6. Claude Code now has 5 MCP tools
+# 6. Claude Code now has 6 MCP tools
 ```
 
-Claude Code now has five MCP tools: `agent_bridge_guide`, `list_agents`, `channel_inbox`, `message_client_session`, `reply`.
+Claude Code now has six MCP tools: `agent_bridge_guide`, `list_agents`, `channel_inbox`, `channel_clear`, `message_client_session`, `reply`.
 
 For OpenCode, add the same MCP server command to OpenCode's MCP config and install the push plugin:
 
@@ -100,18 +102,20 @@ pnpm run dev -- opencode install-plugin --project .
 ## Why open-agent-bridge?
 
 - **Local-first, zero infrastructure.** Everything runs on `localhost`. No cloud relay, no auth tokens, no subscriptions. The registry binds to `:4999`; agents bind to `:5001+`.
-- **Native MCP integration.** Exposes the agent network as first-class MCP tools via `stdio` transport, so Claude Code, OpenCode, Codex, Gemini, and other MCP clients can use the same bridge tools.
+- **Native MCP integration.** Exposes the agent network as first-class MCP tools via `stdio` transport, so Claude Code, OpenCode, Codex, Antigravity, and other MCP clients can use the same bridge tools.
 - **Bidirectional channel, not fire-and-forget.** Messages carry a `conversationId`, delivery ACKs are tracked in SQLite, and the `reply` tool closes the loop back to the sender. Claude Code can ask Codex a question and receive the answer in the same conversation thread.
+- **Per-identity inboxes.** Every launcher accepts `--identity <ns>`. Sessions only see channel messages from peers in the same namespace — a hard wall, even for directed messages. `list_agents` is filtered to the namespace too. Default namespace is `global`.
+- **Bounded inbox, no saturation.** `channel_inbox` is capped (`limit=25`, previews only by default) so a flood of pending messages never buries new ones, and `channel_clear` plus an automatic terminal sweep keep each inbox light.
 - **OpenCode plugin bridge.** The `opencode install-plugin` command installs a local OpenCode plugin that registers an OpenCode bridge client, opens a registry WebSocket, and injects incoming channel messages into the active OpenCode session with `session.prompt_async`.
 - **Codex app-server bridge.** `CodexAppServerBridge` injects incoming channel messages directly into the Codex app-server via `turn/start` JSON-RPC, so Codex actually processes requests rather than just receiving raw text.
-- **Gemini ACP bridge.** `GeminiAcpBridge` spawns `gemini --acp` and drives it over JSON-RPC 2.0 (stdin/stdout). Incoming channel messages are delivered as `session/prompt` calls; Gemini's replies come back programmatically — no tmux scraping needed.
+- **Antigravity native push.** `AntigravityLsBridgeService` (`antigravity ls-push`) delivers channel messages straight into a live `agy` TUI through its Cascade Language Server (`SendUserCascadeMessage`) — native push, no tmux, no manual "check inbox".
 
 ---
 
 ## How it works
 
 ```
-Claude Code / OpenCode / Codex / Gemini CLI / Dashboard
+Claude Code / OpenCode / Codex / Antigravity (agy) / Dashboard
               |
               v
     ┌─────────────────────────────────────┐
@@ -126,8 +130,9 @@ Claude Code / OpenCode / Codex / Gemini CLI / Dashboard
   │  AgentServer   │  │  McpAgentBridge (stdio)   │
   │  :5001+        │  │  list_agents              │
   │  A2A JSON-RPC  │  │  channel_inbox            │
-  │  Skills        │  │  message_client_session   │
-  │  AG-UI SSE     │  │  reply                    │
+  │  Skills        │  │  channel_clear            │
+  │  AG-UI SSE     │  │  message_client_session   │
+  │                │  │  reply                    │
   └────────────────┘  └──────────────────────────┘
 
   ┌──────────────────────────────────────────────┐
@@ -143,9 +148,16 @@ Claude Code / OpenCode / Codex / Gemini CLI / Dashboard
   │  Connects: WS to registry                     │
   │  Injects via session.prompt_async             │
   └──────────────────────────────────────────────┘
+
+  ┌──────────────────────────────────────────────┐
+  │  AntigravityLsBridgeService (ls-push daemon)  │
+  │  Discovers agy's Cascade Language Server port │
+  │  Connects: WS to registry                     │
+  │  Injects via SendUserCascadeMessage (live TUI)│
+  └──────────────────────────────────────────────┘
 ```
 
-Runtime components — `AgentServer`, `McpAgentBridge`, `CodexAppServerBridge`, `GeminiAcpBridge`, and the OpenCode plugin bridge — connect independently to the registry. None depends on the others being present.
+Runtime components — `AgentServer`, `McpAgentBridge`, `CodexAppServerBridge`, `AntigravityLsBridgeService`, and the OpenCode plugin bridge — connect independently to the registry. None depends on the others being present.
 
 **Message flow — Claude Code delegates a task to Codex:**
 
@@ -174,7 +186,7 @@ Claude Code
 - pnpm >= 9
 - (Optional) OpenCode for OpenCode bridge features
 - (Optional) `codex` CLI in `$PATH` for Codex bridge features
-- (Optional) `gemini` CLI in `$PATH` for Gemini bridge features
+- (Optional) `agy` (Google Antigravity CLI) in `$PATH` for Antigravity bridge features
 
 ### Install
 
@@ -242,7 +254,7 @@ claude --dangerously-load-development-channels server:open-agent-bridge
 ```
 
 The `--dangerously-load-development-channels` flag tells the Claude CLI to activate the MCP server named `server:open-agent-bridge` as a development notification channel. The name `open-agent-bridge` matches the entry in `.mcp.json`. This enables:
-- The five MCP tools (`agent_bridge_guide`, `list_agents`, `channel_inbox`, `message_client_session`, `reply`).
+- The six MCP tools (`agent_bridge_guide`, `list_agents`, `channel_inbox`, `channel_clear`, `message_client_session`, `reply`).
 - Push notifications via `notifications/claude/channel` — incoming channel messages appear as `<channel>` blocks inline in the terminal.
 
 The MCP adapter registers the Claude Code session automatically on the first `initialize` handshake.
@@ -298,33 +310,55 @@ codex --remote ws://127.0.0.1:4500
 
 A plain `codex` command starts an isolated session. The registry may still see an inner MCP client, but the bridge cannot inject automatic turns into that TUI. If no remote TUI attaches to the bridge app-server, queued messages fail with a detail that tells you to run `codex --remote ws://127.0.0.1:<port>`.
 
-### Gemini CLI
+### Antigravity (agy)
 
-The preferred path is the **ACP bridge** — it drives `gemini --acp` over JSON-RPC 2.0, giving the same bidirectional, programmatic delivery as the Codex app-server bridge:
+Google's Antigravity CLI (`agy`) connects through native MCP plus a **Cascade Language Server push** daemon. There is no ACP and no tmux scraping — `agy` loads the bridge as an MCP server, and `ls-push` injects channel messages straight into the live TUI.
 
-```bash
-open-agent-bridge gemini start --project "/absolute/path/to/your/project"
-```
-
-Or start the bridge daemon separately:
+**1. Install the MCP config into the workspace:**
 
 ```bash
-open-agent-bridge gemini app-bridge --project "/absolute/path/to/your/project"
+open-agent-bridge antigravity install-plugin --project "/absolute/path/to/your/project"
+# add --identity ticket-123 for a private namespace
+# add --global to install into ~/.gemini/antigravity-cli instead of the workspace .agents/
 ```
 
-This spawns `gemini --acp`, performs the ACP handshake, registers the Gemini session in the registry, and wires channel messages to `session/prompt` calls.
+This writes `.agents/mcp_config.json` pointing `agy` at `open-agent-bridge mcp start`. Restart `agy` in the workspace so it loads the server. (No `hooks.json` is written — `agy`'s hook schema differs and the Stop-hook path is superseded by `ls-push`.)
 
-**Fallback — tmux pane injection** (when `--acp` mode is unavailable):
+**2. Start the native push daemon** so messages arrive in the live TUI automatically:
 
 ```bash
-# In a tmux pane running Gemini, bind it:
-open-agent-bridge gemini tmux-bind
-
-# In a sidecar pane, poll and inject:
-open-agent-bridge gemini tmux-sidecar
+open-agent-bridge antigravity ls-push --project "/absolute/path/to/your/project"
+# match the identity used at install: --identity ticket-123
 ```
 
-The `.gemini/settings.json` at the repo root contains a reference MCP config for Gemini CLI.
+`ls-push` discovers `agy`'s Cascade Language Server port (from `~/.gemini/antigravity-cli/log/cli-*.log`, with an `ss` fallback), resolves the active `cascadeId`, and on each pending channel message calls `SendUserCascadeMessage` so `agy` processes it as a real user turn — no manual "check inbox".
+
+> **Requires an open conversation.** `agy` must be running with an active trajectory in the workspace for the language server to accept an injected turn. Occasionally `agy`'s model executor errors mid-turn (an `agy`-internal limitation) and the user nudges it with a plain `ok`.
+
+There are also `antigravity hook-stop` / `antigravity hook-session-start` subcommands available for hook-driven setups, but `ls-push` is the recommended delivery path.
+
+### Identity scoping (`--identity`)
+
+By default every session lives in the `global` namespace and sees all `global` channel traffic. Passing `--identity <name>` puts a session in a **private namespace**: it only sees messages from peers that share the exact same identity, and only those peers appear in its `list_agents`. This is a **hard wall** — even a message addressed directly to an agentId is dropped if the namespaces differ.
+
+```bash
+# MCP launcher (Claude Code, generic clients) — also honours AGENT_BRIDGE_IDENTITY env var
+open-agent-bridge mcp start --project /path --identity ticket-123
+
+# Antigravity (install + push must share the identity)
+open-agent-bridge antigravity install-plugin --project /path --identity ticket-123
+open-agent-bridge antigravity ls-push        --project /path --identity ticket-123
+
+# Codex
+open-agent-bridge codex start --project /path --identity ticket-123
+```
+
+How it works:
+- `identity` is folded into the stable agentId hash (`name + project + identity`), so each `(client, project, identity)` is a distinct registry entry — two sessions of the same client/project no longer collide.
+- The hard wall is enforced in every client profile's `acceptsChannelMessage`; the inbox reads the local store, which is only populated with accepted (same-namespace) messages.
+- Outbound messages are stamped with the sender's identity, so a `ticket-123` reply stays inside `ticket-123`.
+
+> **Implication:** to delegate to an `agy` running in `ticket-123`, the sender must also run in `ticket-123`. A multi-ticket coordinator would have to send per namespace.
 
 ### Dashboard
 
@@ -390,9 +424,10 @@ The `mcp config` command writes absolute paths for the current machine. Commit t
 | Tool | Description |
 | :--- | :--- |
 | `agent_bridge_guide` | Built-in MCP usage guide. Returns setup, send/reply workflow, ACK semantics, and troubleshooting by topic. |
-| `list_agents` | Discover connected agents and client sessions. Client rows include peer labels like `[Claude Code]`, `[OpenCode]`, `[OpenCode bridge]`, `[Codex inner]`, `[Codex bridge]`, `[Gemini inner]`, and `[Gemini bridge]`, plus the unique 8-char suffix of the agentId (e.g. `[3fdb0c6a]`) so two same-project peers stay visually distinct. Bridge routing is automatic. |
-| `channel_inbox` | Inspect pending channel conversations with full context and a `replyWith` hint for responding. |
-| `message_client_session` | Send a message to a named client session. Automatically resolves OpenCode/Codex/Gemini inner clients to their bridge daemon when available and infers `expectsResponse` when omitted. |
+| `list_agents` | Discover connected agents and client sessions in the current identity namespace. Client rows include peer labels like `[Claude Code]`, `[OpenCode]`, `[OpenCode bridge]`, `[Codex inner]`, `[Codex bridge]`, and `[Antigravity inner]`, plus the unique 8-char suffix of the agentId (e.g. `[3fdb0c6a]`) so two same-project peers stay visually distinct. Bridge routing is automatic. |
+| `channel_inbox` | Inspect channel conversations. Bounded by default (`limit=25`, previews only) so a flood of pending messages never buries new ones; the response carries a `summary` block and a `replyWith` hint per pending entry. |
+| `channel_clear` | Clear handled conversations from the inbox so new ones keep surfacing. Scope `answered` / `failed` / `all` (never bulk-clears unanswered work) or a specific `conversationId`. |
+| `message_client_session` | Send a message to a named client session. Automatically resolves OpenCode/Codex inner clients to their bridge daemon when available and infers `expectsResponse` when omitted. |
 | `reply` | Respond to an incoming channel message, correlating by `conversationId`. |
 
 Check live tool and agent status at any time:
@@ -416,7 +451,7 @@ The same content can also be queried at runtime from any client via the `agent_b
 
 ## Channels
 
-Channels are the bidirectional messaging layer of open-agent-bridge. They let any agent or client session — Claude Code, OpenCode, Codex, Gemini CLI, the dashboard — send and receive structured conversational messages through the registry, with full delivery tracking and SQLite persistence.
+Channels are the bidirectional messaging layer of open-agent-bridge. They let any agent or client session — Claude Code, OpenCode, Codex, Antigravity (`agy`), the dashboard — send and receive structured conversational messages through the registry, with full delivery tracking and SQLite persistence.
 
 This is the core feature of the project. Everything else (MCP tools, bridge daemons, dashboard chat) is built on top of it.
 
@@ -477,7 +512,7 @@ ACK records carry: `conversationId`, `messageId`, `state`, `actorId`, `actorType
 
 ### MCP tool reference
 
-These are the five tools Claude Code gets after configuring open-agent-bridge as an MCP server.
+These are the six tools Claude Code gets after configuring open-agent-bridge as an MCP server.
 
 #### `agent_bridge_guide`
 
@@ -511,7 +546,7 @@ Parameters:
   project?      string   — Project name or path to identify the target session
   clientId?     string   — Exact agentId of the target (skips all resolution)
   clientType?   string   — Disambiguate when a project has multiple sessions
-                           ("claude-code" | "opencode" | "codex" | "gemini")
+                           ("claude-code" | "opencode" | "codex" | "antigravity")
   conversationId? string — Continue an existing conversation thread
   replyTo?      string   — messageId this message responds to
   taskId?       string   — Associate with a task
@@ -521,7 +556,7 @@ Parameters:
 ```
 
 `expectsResponse` controls whether the receiver should answer:
-- **Default is `true`.** Agent-to-agent channel messages are a conversation contract — the receiver should reply unless the sender opts out. A bare `"hola"` or `"build done"` will wake up OpenCode/Codex/Gemini's bridge with a "reply required" injection prompt, and Claude Code will surface it as a pending conversation.
+- **Default is `true`.** Agent-to-agent channel messages are a conversation contract — the receiver should reply unless the sender opts out. A bare `"hola"` or `"build done"` will wake up OpenCode/Codex's bridge (or push into a live `agy` TUI) with a "reply required" prompt, and Claude Code will surface it as a pending conversation.
 - **Pass `false`** (or include explicit FYI markers — `FYI`, `no reply`, `sin respuesta`, `just letting you know`, `for your information`, `no need to reply`) for fire-and-forget. The bridge daemon will inject the message as **informational** context and suppress the receiver's outbound reply.
 - For deterministic workflows pass the flag explicitly — text inference is a convenience for proactive sends, not a contract.
 
@@ -531,36 +566,64 @@ The mapping from message text to the boolean lives in [`inferExpectsResponse`](s
 1. `clientId` provided → direct lookup, no further resolution
 2. No `clientId` and no `project`, but `conversationId` provided → resolves from conversation history
 3. `project` provided → filter by project path/name match
-4. Multiple matches → sorted by client type priority: bridge daemons first (`app-server-bridge`, `acp-bridge`, `opencode-plugin-bridge`), then `claude-code` > `claude` > `opencode` > `gemini-cli` > `gemini` > `codex-cli` > `codex`
+4. Multiple matches → sorted by client type priority: bridge daemons first (`app-server-bridge`, `opencode-plugin-bridge`), then `claude-code` > `claude` > `opencode` > `codex-cli` > `codex` > `antigravity`
 
 Returns: `toAgentId`, `conversationId`, `messageId`, `deliveryState`.
 
 #### `channel_inbox`
 
-Inspect pending conversations — messages that arrived but haven't been replied to yet.
+Inspect channel conversations. By default it shows only pending (awaiting-reply) conversations and is **bounded** so a backlog of messages can never saturate the agent's context and bury new arrivals.
 
 ```
 Parameters:
-  pendingOnly?    boolean — Only show conversations awaiting reply (default: true)
+  pendingOnly?    boolean — Only show conversations awaiting reply (default: true).
+                            Set false for the GLOBAL view of all tracked conversations.
   expiredOnly?    boolean — Only show conversations past their expiry
-  limit?          number  — Max conversations when pendingOnly=false (default: 10)
-  includeMessages? boolean — Include full message history per conversation
+  limit?          number  — Max conversations returned (default: 25). Applies to ALL views.
+  includeMessages? boolean — Include each conversation's full message history
+                            (default: false — only previews + replyWith are returned, to keep
+                            the inbox light). Set true, ideally with a narrow view, to read threads.
 ```
 
-Returns an array of conversation entries. Each entry includes a `replyWith` object with the exact values to pass to `reply`:
+The response is wrapped with a `summary` block plus the `conversations` array. When the result is truncated, the summary hints at `channel_clear` and the global view:
 
 ```json
 {
-  "conversationId": "abc-123",
-  "status": "pending",
-  "lastMessagePreview": "Review src/api/routes.ts for N+1 queries",
-  "replyWith": {
-    "agentId": "client-codex-bridge-xyz",
-    "conversationId": "abc-123",
-    "replyTo": "msg-456"
-  }
+  "summary": {
+    "view": "pending",
+    "total": 42,
+    "shown": 25,
+    "truncated": true,
+    "hint": "Use channel_clear({scope:'answered'|'failed'|'all'}) to clear handled threads so new ones surface, or raise `limit`. Use channel_inbox(pendingOnly=false) for the global view."
+  },
+  "conversations": [
+    {
+      "conversationId": "abc-123",
+      "status": "pending",
+      "lastMessagePreview": "Review src/api/routes.ts for N+1 queries",
+      "replyWith": {
+        "agentId": "client-codex-bridge-xyz",
+        "conversationId": "abc-123",
+        "replyTo": "msg-456"
+      }
+    }
+  ]
 }
 ```
+
+#### `channel_clear`
+
+Clear handled conversations from this agent's inbox so saturation never buries new messages. Suppresses them from `channel_inbox` (reversible at the registry) and removes them from the local store. Only ever touches the calling agent's own tracked conversations.
+
+```
+Parameters:
+  scope  string — "answered"  → clear only answered threads
+                  "failed"    → clear failed + locally-expired threads
+                  "all"       → clear every NON-pending thread (never bulk-clears unanswered work)
+                  <conversationId> → clear exactly that one, even if pending (explicit intent)
+```
+
+In addition to manual clearing, the registry runs an automatic **terminal sweep**: answered/failed conversations older than the retention window are pruned periodically so every inbox stays light without intervention.
 
 #### `reply`
 
@@ -752,7 +815,7 @@ At runtime the plugin:
 4. Injects inbound channel messages with `ctx.client.session.prompt_async`.
 5. Sends delivery ACKs and periodically re-syncs missed pending messages from `/channel/conversations`.
 
-The injected prompt mirrors the Codex/Gemini format. If `expectsResponse !== false`, OpenCode receives a "reply required" turn with the exact `agent-bridge.reply` fields to copy. Informational messages are marked "no reply" and tell the receiving agent not to call `reply`.
+The injected prompt mirrors the Codex format. If `expectsResponse !== false`, OpenCode receives a "reply required" turn with the exact `agent-bridge.reply` fields to copy. Informational messages are marked "no reply" and tell the receiving agent not to call `reply`.
 
 OpenCode can also connect to the MCP adapter as a normal MCP client. In that case `OpenCodeClientProfile` accepts direct messages for the OpenCode MCP session and sibling bridge messages for the same project, so `channel_inbox(pendingOnly=true)` still works even when auto-routing chooses the plugin bridge.
 
@@ -807,48 +870,36 @@ The inner MCP client of an isolated `codex` session still registers with the reg
 
 ---
 
-### Gemini bridge (ACP)
+### Antigravity bridge (Cascade Language Server push)
 
-Gemini CLI exposes an `--acp` mode that communicates over JSON-RPC 2.0 on stdin/stdout. `GeminiAcpBridge` uses this to drive Gemini programmatically — the same pattern as the Codex app-server bridge:
+Antigravity (`agy`) has no ACP and no app-server. It does, however, spawn a **Cascade Language Server** (Codeium/Windsurf lineage) on a random localhost port whenever it runs. `AntigravityLsBridgeService` uses that to push channel messages into the live TUI:
 
-1. Spawns `gemini --acp` as a subprocess.
-2. Sends `initialize` + `session/new` handshake.
-3. Registers as a client in the registry (`clientName: "gemini"`, `clientVersion: "acp-bridge"`).
-4. On incoming `channel.message` → calls `session/prompt` on the ACP session.
-5. Gemini processes the turn and responds; the reply is sent back through the channel.
+1. Discovers the language server's HTTP port — parses the newest `~/.gemini/antigravity-cli/log/cli-*.log` (`listening on random port at <N> for HTTP`), with an `ss`-based fallback, and verifies it via `GetWorkspaceInfos`.
+2. Resolves the active `cascadeId` for the workspace (via `GetAllCascadeTrajectories`).
+3. On each pending channel message, calls `SendUserCascadeMessage` (`POST …/exa.language_server_pb.LanguageServerService/SendUserCascadeMessage`) so `agy` processes it as a **real user turn** — not a passive notification.
+4. Deduplicates by message ID and applies a per-message re-injection blackout (state file `.open-agent-bridge/antigravity-ls-state.json`).
 
-Permission requests from Gemini (`session/request_permission`) are auto-approved by the bridge.
+The bridge runs as a poller registered as a client (`clientName: "antigravity"`). It is identity-aware: it resolves the agy session by `project + identity` and only injects pending messages for that namespace.
 
-**One-command startup (registry + ACP bridge):**
-
-```bash
-open-agent-bridge gemini start --project "/absolute/path/to/your/project"
-```
-
-**Bridge daemon only:**
+**Setup:**
 
 ```bash
-open-agent-bridge gemini app-bridge --project "/absolute/path/to/your/project"
+# 1. Install the MCP config (and restart agy so it loads the server)
+open-agent-bridge antigravity install-plugin --project "/abs/path" [--identity ticket-123]
+
+# 2. Run the push daemon (match the identity)
+open-agent-bridge antigravity ls-push --project "/abs/path" [--identity ticket-123]
 ```
 
-Available options: `--registry-url <url>`, `--gemini-command <cmd>` (default: `gemini`), `--debug`.
+Options for `ls-push`: `--registry-url <url>`, `--identity <id>`, `--client-id <id>`, `--poll-interval-ms <n>` (default `2000`), `--retry-interval-ms <n>` (default `30000`), `--once`, `--verbose`.
 
-**Queue behaviour:** up to 10 messages are buffered while Gemini is mid-turn; each is retried up to 3 times with a 5 s delay.
-
-### Gemini bridge (tmux fallback)
-
-When `gemini --acp` is not available, fall back to tmux pane injection:
-
-```bash
-pnpm run dev -- gemini tmux-bind     # bind current tmux pane to this Gemini session
-pnpm run dev -- gemini tmux-sidecar  # poll channel inbox and inject follow-ups as keystrokes
-```
+**Limitations** (both `agy`-internal): the language server only accepts an injected turn when `agy` has an **open/active conversation** in the workspace; and occasionally `agy`'s model executor errors mid-turn (`neither PlanModel nor RequestedModel specified`), which the user clears with a plain `ok`. `SendAgentMessage` returns 200 but does **not** trigger a turn — `SendUserCascadeMessage` is the one that works. Because this is an undocumented internal RPC, it is fully isolated in `antigravity-ls-client.ts` to bound the blast radius across `agy` versions.
 
 ---
 
-### Injection prompt format (OpenCode / Codex / Gemini)
+### Injection prompt format (OpenCode / Codex)
 
-The Codex and Gemini bridge daemons share a single prompt template (`src/client/injection-prompt.ts`) that wraps every inbound channel message before injecting it as a turn. The OpenCode plugin carries the same contract in its local plugin file. The wrapper exists so the receiving LLM can identify the sender, see the full content delimited from instructions, and copy a pre-filled `reply` call without having to derive any IDs.
+The Codex bridge daemon uses a prompt template (`src/client/injection-prompt.ts`) that wraps every inbound channel message before injecting it as a turn. The OpenCode plugin carries the same contract in its local plugin file. (Antigravity uses the language-server push instead, with its own concise wrapper.) The wrapper exists so the receiving LLM can identify the sender, see the full content delimited from instructions, and copy a pre-filled `reply` call without having to derive any IDs.
 
 A reply-required injection looks like this:
 
@@ -893,8 +944,7 @@ Test contract: `src/__tests__/injection-prompt.test.ts` locks the structure (BEG
 | **Claude Code** | Built-in MCP push | `<channel>` block in terminal via `notifications/claude/channel` | No — part of MCP adapter |
 | **OpenCode** | Local plugin bridge | `session.prompt_async` → OpenCode processes as a prompt turn | No separate process — plugin runs inside OpenCode |
 | **Codex** | App-server daemon | `turn/start` JSON-RPC → Codex processes as a prompt turn | Yes — `codex app-bridge` |
-| **Gemini CLI** | ACP bridge (preferred) | `session/prompt` JSON-RPC → Gemini processes as a prompt turn | Yes — `gemini app-bridge` |
-| **Gemini CLI** | tmux sidecar (fallback) | Keystrokes injected into the active tmux pane | Yes — `gemini tmux-sidecar` |
+| **Antigravity (`agy`)** | Cascade Language Server push | `SendUserCascadeMessage` → agy processes as a user turn in the live TUI | Yes — `antigravity ls-push` |
 | **Dashboard** | WebSocket | Chat panel updates via `channel.message` WS event | No — built into registry WS |
 
 All paths share the same channel protocol (`ChannelMessage`, `ChannelAck`, `conversationId`). The bridge layer is just the last-mile delivery mechanism.
@@ -903,7 +953,7 @@ All paths share the same channel protocol (`ChannelMessage`, `ChannelAck`, `conv
 
 ## Dashboard
 
-The dashboard is a Vue 3 SPA served by the registry at `http://localhost:4999/dashboard`. It shows live agent status, channel conversations, and task events.
+The dashboard is a Vue 3 SPA served by the registry at `http://localhost:4999/dashboard`. It shows live agent status, channel conversations, and task events. Agents display an **identity badge** and are grouped by their identity namespace, so multi-ticket setups stay legible at a glance.
 
 Build the dashboard:
 
@@ -968,7 +1018,7 @@ All commands run via `node dist/cli/index.js <command>` (built) or `pnpm run dev
 | `find <query>` | Search agents by skill or project type. |
 | `delegate <skill-id> <message>` | Send a task to the healthiest agent exposing a given skill. |
 | `broadcast <message>` | Send a message to all healthy agents. |
-| `mcp start` | Start the MCP adapter in `stdio` mode (used by Claude Code, OpenCode, Codex, Gemini, and other MCP clients). |
+| `mcp start` | Start the MCP adapter in `stdio` mode (used by Claude Code, OpenCode, Codex, Antigravity, and other MCP clients). Accepts `--identity <ns>` (or `AGENT_BRIDGE_IDENTITY`). |
 | `mcp config [--write] [--global]` | Print or write `.mcp.json` configuration. |
 | `mcp status` | Show live agents and registered MCP tools. |
 | `mcp server` | Start the MCP adapter in HTTP/SSE mode (port 6000). |
@@ -977,10 +1027,10 @@ All commands run via `node dist/cli/index.js <command>` (built) or `pnpm run dev
 | `codex app-bridge` | Start the Codex app-server bridge daemon only. |
 | `codex tmux-bind` | Bind the current tmux pane to the active Codex session. |
 | `codex tmux-sidecar` | Poll and inject pending channel messages into a tmux pane. |
-| `gemini start` | One-command: registry + Gemini ACP bridge. |
-| `gemini app-bridge` | Start the Gemini ACP bridge daemon only (`gemini --acp`). |
-| `gemini tmux-bind` | Bind the current Gemini CLI session to a tmux pane (tmux fallback). |
-| `gemini tmux-sidecar` | Poll and inject pending channel messages into a Gemini tmux pane (tmux fallback). |
+| `antigravity install-plugin` | Write the `agy` MCP config (`.agents/mcp_config.json`) into a workspace or globally. Accepts `--identity`. |
+| `antigravity ls-push` | Push pending channel messages into a live `agy` TUI via its Cascade Language Server. Accepts `--identity`, `--poll-interval-ms`, `--once`. |
+| `antigravity hook-stop` | Stop-hook handler: deliver pending messages (hook-driven setups). |
+| `antigravity hook-session-start` | SessionStart-hook handler: surface pending messages as context. |
 | `dashboard` | Print or open the dashboard URL in the browser. |
 
 ---
@@ -1018,7 +1068,7 @@ src/
 ├── client/
 │   ├── a2a-client.ts                A2AClient: HTTP + WS client for agent-to-agent calls
 │   ├── registry-client.ts           RegistryClient: HTTP client for the registry REST API
-│   ├── client-profile-resolver.ts   Resolves delivery profile by client type (Claude/OpenCode/Codex/Gemini)
+│   ├── client-profile-resolver.ts   Resolves delivery profile by client type (Claude/OpenCode/Codex/Antigravity)
 │   ├── conversation-session-store.ts In-memory conversation state with ACK tracking
 │   ├── codex-app-server-bridge.ts   CodexAppServerBridge daemon
 │   ├── codex-app-server-client.ts   WS client for the Codex app-server protocol
@@ -1026,22 +1076,25 @@ src/
 │   ├── codex-session-files.ts       Read/write active Codex session marker
 │   ├── codex-tmux.ts                Low-level tmux pane helpers for Codex
 │   ├── codex-tmux-bridge-service.ts tmux-based Codex injection sidecar
-│   ├── gemini-acp-client.ts         JSON-RPC 2.0 client for `gemini --acp` (spawns process)
-│   ├── gemini-acp-bridge.ts         Full ACP bridge daemon (spawn + register + inject + reply)
-│   ├── gemini-runtime-discovery.ts  Detect running Gemini CLI process
-│   ├── gemini-session-files.ts      Read/write active Gemini session marker
-│   ├── gemini-tmux-bridge-service.ts tmux-based Gemini injection sidecar (fallback)
+│   ├── antigravity-ls-client.ts     Cascade Language Server client (port discovery + SendUserCascadeMessage)
+│   ├── antigravity-ls-bridge-service.ts  ls-push poller — inject pending messages into live agy TUI
+│   ├── antigravity-pending.ts       collectPendingForClient helper (identity-scoped)
+│   ├── antigravity-runtime-discovery.ts  Detect running agy process
+│   ├── antigravity-history.ts       Read agy conversation/history storage
+│   ├── antigravity-agents-file.ts   Append original-request context for agy hooks
+│   ├── antigravity-hooks.ts         Build Stop / SessionStart hook outputs
 │   ├── opencode-plugin/             OpenCode local plugin source copied by `opencode install-plugin`
-│   ├── channel-transport.ts         WebSocket transport to registry
+│   ├── channel-transport.ts         WebSocket transport to registry (stamps identity)
 │   ├── channel-client-runtime.ts    WS runtime with reconnect + event bus
 │   ├── conversation-service.ts      High-level send/reply/inbox helpers
-│   └── profiles/                    Client behavior profiles (Claude, OpenCode, Codex, Gemini)
+│   └── profiles/                    Client behavior profiles (Claude, OpenCode, Codex, Antigravity) — identity hard wall
 ├── mcp/
-│   └── adapter.ts             McpAgentBridge — 5 MCP tools + session resolution
+│   ├── adapter.ts             McpAgentBridge — 6 MCP tools + session resolution + identity + shutdown
+│   └── clear-scope.ts         Pure scope selector for channel_clear
 ├── registry/
-│   ├── server.ts              RegistryServer: HTTP + WebSocket hub (:4999)
-│   ├── store.ts               AgentStore: in-memory only (not persisted across restarts)
-│   ├── channel-store.ts       SQLite persistence for channel messages and ACKs
+│   ├── server.ts              RegistryServer: HTTP + WebSocket hub (:4999) + terminal-conversation sweep
+│   ├── store.ts               AgentStore: in-memory only (dedup keyed by client+project+identity)
+│   ├── channel-store.ts       SQLite persistence for channel messages and ACKs (+ terminal cleanup)
 │   └── events.ts              RegistryEventBus
 ├── skills/
 │   ├── framework.ts           BaseSkill, SkillRegistry
@@ -1075,18 +1128,19 @@ src/
 | Feature | Status |
 | :--- | :--- |
 | Registry HTTP + WS + SQLite | stable |
-| MCP adapter — 5 tools | stable |
+| MCP adapter — 6 tools | stable |
 | Claude Code push bridge | stable |
 | OpenCode plugin push bridge | stable |
 | Codex app-server bridge | stable |
-| Gemini ACP bridge | stable |
-| Dashboard Vue SPA | stable |
+| Antigravity native push (Cascade Language Server, `ls-push`) | stable — requires an open agy conversation |
+| Identity scoping (`--identity`, per-namespace inbox + `list_agents`) | stable |
+| Inbox bounding + `channel_clear` + terminal sweep | stable |
+| Dashboard Vue SPA (identity badges + grouping) | stable |
 | 6 built-in skills | stable |
 | HTTP SSE MCP mode (`mcp server`, port 6000) | stable |
 | Dynamic skills (run-script, run-tests, docker-build, code-review) | stable — require `--claude` |
 | `tasks/sendSubscribe` — A2A SSE streaming | **stub — not implemented** |
 | StateGraph skill composition | implemented, unused in production |
-| Gemini tmux fallback | experimental |
 | `ask --stream` CLI flag | declared, not implemented |
 
 ---
@@ -1094,11 +1148,11 @@ src/
 ## Testing
 
 ```bash
-pnpm run test   # vitest — runs all 11 test files once
+pnpm run test   # vitest — runs the full suite (60 test files, 420 tests) once
 pnpm run lint   # biome — lint and style check
 ```
 
-Test coverage includes: injection prompt contract (`injection-prompt.test.ts`), peer-type label generation (`peer-type-label.test.ts`), `inferExpectsResponse` text inference, conversation ID determinism, ACK state transitions, and MCP adapter routing.
+Test coverage includes: injection prompt contract (`injection-prompt.test.ts`), peer-type label generation (`peer-type-label.test.ts`), `inferExpectsResponse` text inference, conversation ID determinism, ACK state transitions, MCP adapter routing, identity scoping (`identity-scoping.test.ts`, `stable-agent-id.test.ts`), `channel_clear` scope selection (`channel-clear-select.test.ts`), the Antigravity language-server client (`antigravity-ls-client.test.ts`), and the Antigravity history/hooks/profile/runtime modules.
 
 ---
 
@@ -1113,7 +1167,8 @@ Test coverage includes: injection prompt contract (`injection-prompt.test.ts`), 
 - **Dashboard `handleChannelMessage` depends on `toAgentId` in broadcast.** When a channel message is broadcast without a `toAgentId`, the dashboard may not correctly attribute it to the right conversation in the UI — this is a known issue with the current broadcast routing in the registry WebSocket relay.
 - **`tasks/sendSubscribe` not implemented.** End-to-end A2A streaming (Server-Sent Events per task) is not yet supported. The method is a stub — it is not announced in the Agent Card.
 - **`ask --stream` flag is a no-op.** The `--stream` option is declared in the CLI but the handler never reads it. Streaming task output is not implemented.
-- **Gemini tmux fallback is experimental.** The preferred Gemini path is the ACP bridge (`gemini --acp`). The `GeminiTmuxBridgeService` uses the same tmux injection mechanism as Codex and has the same caveats.
+- **Antigravity push needs a live conversation + occasional nudge.** `antigravity ls-push` injects via `agy`'s Cascade Language Server, which only accepts a turn when `agy` has an open/active conversation in the workspace. The underlying RPC (`SendUserCascadeMessage`) is undocumented and may change between `agy` versions (isolated in `antigravity-ls-client.ts`). `agy`'s model executor also errors mid-turn intermittently (`neither PlanModel nor RequestedModel specified`), which the user clears with a plain `ok`.
+- **Identity is a hard wall.** Cross-namespace delegation is intentionally impossible — the sender must run in the same `--identity` as the recipient. A multi-ticket coordinator has to send per namespace. The registry storage remains a global pool; isolation is enforced by inbox/`list_agents` filtering, not at the registry API.
 
 ---
 

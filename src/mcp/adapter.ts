@@ -29,6 +29,7 @@ import { ChannelClientRuntime } from "../client/channel-client-runtime.js";
 import { ConversationService } from "../client/conversation-service.js";
 import { DefaultClientProfileResolver, type ClientBehaviorProfile } from "../client/client-profile-resolver.js";
 import { BoundedIdSet } from "../client/bounded-id-set.js";
+import { selectConversationsToClear } from "./clear-scope.js";
 import { RegistryServer } from "../registry/server.js";
 import type { RegistryEntry, AgentMessage, ChannelMessage, AgentRegistration } from "../types/messages.js";
 
@@ -1152,21 +1153,26 @@ export class McpAgentBridge {
           "Syncs automatically from the registry before returning so the view is always current.",
         inputSchema: {
           expiredOnly: z.boolean().optional().describe("Show only locally expired conversations awaiting reply"),
-          pendingOnly: z.boolean().optional().describe("Show only conversations awaiting reply (default: true)"),
-          limit: z.coerce.number().optional().describe("Maximum number of conversations to show when pendingOnly=false (default: 10)"),
-          includeMessages: z.boolean().optional().describe("Include full message history for each pending conversation (default: true)"),
+          pendingOnly: z.boolean().optional().describe("Show only conversations awaiting reply (default: true). Set false for the GLOBAL view of all tracked conversations."),
+          limit: z.coerce.number().optional().describe("Max conversations returned (default: 25). Protects against context saturation when many are pending."),
+          includeMessages: z.boolean().optional().describe("Include each conversation's FULL message history (default: false — only previews + replyWith are returned, to keep the inbox light). Set true (ideally with a narrow view) to read full threads."),
         },
       },
-      async ({ expiredOnly = false, pendingOnly = true, limit = 10, includeMessages = true }) => {
+      async ({ expiredOnly = false, pendingOnly = true, limit = 25, includeMessages = false }) => {
         try {
           // Always sync from registry so inbox shows current state even when WS was interrupted
           await this.syncRegistryToLocalStore();
 
-          const conversations = expiredOnly
+          const allConversations = expiredOnly
             ? this.conversationService.listExpiredSnapshots(limit)
             : pendingOnly
               ? this.conversationService.listPendingSnapshots()
               : this.conversationService.listRecentSnapshots(limit);
+          // Bound the payload: even with hundreds pending, never flood the agent's
+          // context. Newest-first so the most relevant are shown; the rest are
+          // summarized as a count with a pointer to channel_clear / global view.
+          const totalCount = allConversations.length;
+          const conversations = allConversations.slice(0, limit);
           if (conversations.length === 0) {
             return {
               content: [{
@@ -1274,8 +1280,83 @@ export class McpAgentBridge {
             };
           });
 
+          const view = expiredOnly ? "expired" : pendingOnly ? "pending" : "all";
+          const truncated = totalCount > conversations.length;
+          const result = {
+            summary: {
+              view,
+              total: totalCount,
+              shown: conversations.length,
+              truncated,
+              ...(truncated
+                ? {
+                    hint:
+                      `Showing the ${conversations.length} most recent of ${totalCount}. ` +
+                      "Use channel_clear({scope:'answered'|'failed'|'all'}) to clear handled threads so new ones surface, " +
+                      "or raise `limit`. Use channel_inbox(pendingOnly=false) for the global view.",
+                  }
+                : {}),
+            },
+            conversations: payload,
+          };
+
           return {
-            content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }],
+            content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+          };
+        } catch (err) {
+          return {
+            content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+            isError: true,
+          };
+        }
+      }
+    );
+
+    // ── channel_clear ──────────────────────────────────────────────────────
+    this.server.registerTool(
+      "channel_clear",
+      {
+        description:
+          "Clear handled conversations from THIS agent's inbox so a saturated inbox " +
+          "never buries new messages. Suppresses them from channel_inbox (reversible " +
+          "server-side) and drops them locally. NEVER clears still-unanswered " +
+          "(pending) threads in bulk — only via an explicit conversationId. " +
+          "Scopes: 'answered' (replied), 'failed' (failed + expired), 'all' (every " +
+          "non-pending thread), or a specific conversationId.",
+        inputSchema: {
+          scope: z
+            .string()
+            .describe("'answered' | 'failed' | 'all' | a specific conversationId"),
+        },
+      },
+      async ({ scope }) => {
+        try {
+          await this.syncRegistryToLocalStore();
+          const tracked = this.conversationService
+            .listRecentSnapshots(1000)
+            .map((s) => ({ conversationId: s.conversation.conversationId, status: s.status }));
+          const ids = selectConversationsToClear(tracked, scope);
+
+          let cleared = 0;
+          for (const id of ids) {
+            try {
+              await this.registry.suppressChannelConversation(id);
+            } catch {
+              // best-effort: still drop locally
+            }
+            try {
+              this.conversationService.deleteConversation(id);
+            } catch {
+              /* ignore */
+            }
+            cleared++;
+          }
+
+          return {
+            content: [{
+              type: "text" as const,
+              text: `Cleared ${cleared} conversation(s) from the inbox (scope: ${scope}).`,
+            }],
           };
         } catch (err) {
           return {

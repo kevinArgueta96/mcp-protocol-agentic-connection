@@ -20,6 +20,10 @@ const HEALTH_CHECK_INTERVAL_MS = 60_000;
 const ACK_SWEEP_INTERVAL_MS = 60_000;
 const CONVERSATION_CLEANUP_INTERVAL_MS = 60 * 60_000; // hourly
 const CONVERSATION_RETENTION_MS = 30 * 24 * 60 * 60_000; // 30 days
+// Resolved (answered/failed) threads are pruned aggressively so a burst of
+// handled traffic never buries or stalls fresh messages in any inbox.
+const TERMINAL_SWEEP_INTERVAL_MS = 5 * 60_000; // every 5 min
+const TERMINAL_RETENTION_MS = 60 * 60_000; // keep resolved threads 60 min
 
 const dashboardDir = new URL("../../dashboard/dist", import.meta.url).pathname;
 
@@ -32,6 +36,7 @@ export class RegistryServer {
   private healthCheckTimer: NodeJS.Timeout | null = null;
   private ackSweepTimer: NodeJS.Timeout | null = null;
   private conversationCleanupTimer: NodeJS.Timeout | null = null;
+  private terminalSweepTimer: NodeJS.Timeout | null = null;
   private wsClients = new Set<WebSocket>();
   private agentWsMap = new Map<string, WebSocket>();
 
@@ -655,6 +660,14 @@ export class RegistryServer {
       CONVERSATION_CLEANUP_INTERVAL_MS,
     );
 
+    // Terminal sweep: every few minutes, delete answered/failed threads older
+    // than the short terminal-retention window so resolved traffic can't
+    // saturate inboxes or slow the per-call conversation scan.
+    this.terminalSweepTimer = setInterval(
+      () => this.sweepTerminalConversations(),
+      TERMINAL_SWEEP_INTERVAL_MS,
+    );
+
     console.error(`[Registry] Listening on http://localhost:${this.port}`);
     console.error(`[Registry] Dashboard: http://localhost:${this.port}/dashboard`);
   }
@@ -693,6 +706,18 @@ export class RegistryServer {
     }
   }
 
+  private sweepTerminalConversations(): void {
+    try {
+      const cutoff = Date.now() - TERMINAL_RETENTION_MS;
+      const removed = this.channelStore.deleteTerminalConversationsOlderThan(cutoff);
+      if (removed > 0) {
+        console.error(`[Registry] Terminal sweep removed ${removed} resolved conversation(s) older than ${TERMINAL_RETENTION_MS / 60_000} min`);
+      }
+    } catch (err: unknown) {
+      console.error("[Registry] Terminal sweep failed:", err instanceof Error ? err.message : err);
+    }
+  }
+
   private sweepExpiredAcks(): void {
     try {
       const expired = this.channelStore.findExpiredAwaitingReply(Date.now());
@@ -728,6 +753,9 @@ export class RegistryServer {
     }
     if (this.conversationCleanupTimer) {
       clearInterval(this.conversationCleanupTimer);
+    }
+    if (this.terminalSweepTimer) {
+      clearInterval(this.terminalSweepTimer);
     }
 
     // Close all WS clients

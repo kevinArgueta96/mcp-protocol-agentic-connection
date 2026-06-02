@@ -1148,3 +1148,78 @@ a {
     max-width: 100%;
   }
 }
+
+/* ════════════════════════════════════════════════════════════════════
+   Visual polish v2 — deepen the "analog mission control" character.
+   Appended & override-safe: overlays, ::after markers, full re-decls.
+   ════════════════════════════════════════════════════════════════════ */
+
+/* Interior vignette glow inside the glass frame (re-declares box-shadow
+   with the original layers + a soft inset for depth). */
+.app-frame {
+  box-shadow:
+    0 1px 0 0 rgba(255, 255, 255, 0.5) inset,
+    0 0 130px rgba(46, 32, 22, 0.1) inset,
+    0 4px 32px rgba(0, 0, 0, 0.18);
+}
+
+/* Signal-bar equalizer — the brand mark reads as live telemetry. */
+.brand-mark-bars span {
+  transform-origin: bottom;
+  animation: brand-eq 1.6s ease-in-out infinite;
+}
+.brand-mark-bars span:nth-child(2) { animation-delay: 0.22s; }
+.brand-mark-bars span:nth-child(3) { animation-delay: 0.44s; }
+@keyframes brand-eq {
+  0%, 100% { transform: scaleY(0.55); opacity: 0.62; }
+  50%      { transform: scaleY(1);    opacity: 1; }
+}
+
+/* A channel-marker tick under every serif panel heading. */
+.panel-label::after {
+  content: "";
+  display: block;
+  width: 34px;
+  height: 3px;
+  margin-top: 9px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--sky), rgba(124, 229, 212, 0));
+}
+
+/* Card lift + accent edge on hover, tinted by each card's --card-accent. */
+.sig-card {
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+.sig-card:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 16px 34px rgba(18, 13, 10, 0.22),
+    0 0 0 1px color-mix(in srgb, var(--card-accent, var(--sky)) 55%, transparent);
+}
+
+/* Namespace (identity) chip — promoted to a shared token. */
+.chip-identity {
+  background: rgba(120, 200, 255, 0.14);
+  color: #8fd0ff;
+  border: 1px solid rgba(120, 200, 255, 0.3);
+}
+
+/* Crisper scrollbar feedback + an accessible, on-theme focus ring. */
+.scrollable::-webkit-scrollbar-thumb:hover {
+  background: rgba(72, 55, 46, 0.36);
+}
+:focus-visible {
+  outline: 2px solid var(--sky);
+  outline-offset: 2px;
+}
+
+/* Respect reduced-motion: silence ambient + telemetry animations. */
+@media (prefers-reduced-motion: reduce) {
+  body,
+  .brand-mark-bars span,
+  .pulse-healthy,
+  .pulse-working,
+  .pulse-error {
+    animation: none !important;
+  }
+}

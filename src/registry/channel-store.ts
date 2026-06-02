@@ -181,6 +181,33 @@ export class ChannelStore {
     return stale.length;
   }
 
+  /** Delete conversations that have reached a TERMINAL status (`answered` or
+   *  `failed`) and whose last activity is older than `cutoff`. Keeps the store
+   *  (and therefore every agent's inbox + the per-call scan) small so a burst of
+   *  handled traffic never buries or stalls fresh messages. Returns the count.
+   *
+   *  Distinct from `deleteConversationsOlderThan` (a long retention backstop):
+   *  this targets already-resolved threads on a much shorter horizon. */
+  deleteTerminalConversationsOlderThan(cutoff: number): number {
+    const candidates: string[] = [];
+    for (const entry of this.listConversations()) {
+      if (entry.status !== "answered" && entry.status !== "failed") continue;
+      if ((entry.lastMessage?.createdAt ?? 0) >= cutoff) continue;
+      candidates.push(entry.conversationId);
+    }
+    if (candidates.length === 0) return 0;
+
+    const deleteMessages = this.db.prepare(`DELETE FROM channel_messages WHERE conversation_id = ?`);
+    const deleteAcks = this.db.prepare(`DELETE FROM channel_acks WHERE conversation_id = ?`);
+    const deleteSuppressed = this.db.prepare(`DELETE FROM channel_suppressed_conversations WHERE conversation_id = ?`);
+    for (const id of candidates) {
+      deleteMessages.run(id);
+      deleteAcks.run(id);
+      deleteSuppressed.run(id);
+    }
+    return candidates.length;
+  }
+
   /** Find messages that are awaiting a reply but whose `expiresAt` deadline has
    *  passed without ever receiving a terminal ack (`answered` or `failed`). Used
    *  by the registry's ack sweeper to mark stuck conversations as failed and
