@@ -9,6 +9,7 @@ import {
   buildStopHookOutput,
 } from "../../client/antigravity-hooks.js";
 import { collectPendingForClient } from "../../client/antigravity-pending.js";
+import { AntigravityLsBridgeService } from "../../client/antigravity-ls-bridge-service.js";
 import { RegistryClient } from "../../client/registry-client.js";
 
 /** Read all of stdin (hook event payload). Resolves "" if nothing is piped. */
@@ -84,26 +85,21 @@ export function registerAntigravityCommand(program: Command): void {
         "utf8",
       );
 
-      const identityArg = options.identity ? ` --identity ${options.identity}` : "";
-      const hookCmd = (sub: string) =>
-        `${options.bridgeCommand} antigravity ${sub} --project "${options.project}" --registry-url ${options.registryUrl}${identityArg}`;
-      const hooksConfig = {
-        Stop: [{ handlers: [{ type: "command", command: hookCmd("hook-stop") }] }],
-        SessionStart: [{ handlers: [{ type: "command", command: hookCmd("hook-session-start") }] }],
-      };
-      writeFileSync(
-        join(targetDir, "hooks.json"),
-        `${JSON.stringify(hooksConfig, null, 2)}\n`,
-        "utf8",
-      );
+      // NOTE: we intentionally do NOT write hooks.json. agy's hooks schema
+      // (jsonhook.JSONHookSpec) differs from what we generated and failed to
+      // parse, and the Stop-hook auto-arrival is superseded by `ls-push`
+      // (native push into the live TUI via the Cascade Language Server).
+      const idArg = options.identity ? ` --identity ${options.identity}` : "";
 
-      console.log(chalk.green("✓") + " Antigravity plugin installed");
+      console.log(chalk.green("✓") + " Antigravity MCP config installed");
       console.log(`  Target:   ${targetDir}`);
       console.log(`  Registry: ${options.registryUrl}`);
-      console.log("  Files:    mcp_config.json, hooks.json");
+      console.log("  File:     mcp_config.json");
       console.log(
         chalk.dim(
-          "\n  Restart `agy` in this workspace so it loads the MCP server and hooks.",
+          "\n  1. Restart `agy` in this workspace so it loads the MCP server.\n" +
+            `  2. For automatic delivery into the live TUI, run the push daemon:\n` +
+            `       open-agent-bridge antigravity ls-push --project "${options.project}"${idArg}`,
         ),
       );
     });
@@ -168,5 +164,43 @@ export function registerAntigravityCommand(program: Command): void {
         console.error("[antigravity hook-session-start]", err instanceof Error ? err.message : err);
         emitHookOutput({});
       }
+    });
+
+  // ── antigravity ls-push ──────────────────────────────────────────────────────
+  antigravity
+    .command("ls-push")
+    .description(
+      "Auto-deliver channel messages into a LIVE agy TUI via its Cascade Language " +
+        "Server (SendUserCascadeMessage) — no tmux, no manual 'check inbox'. Requires " +
+        "agy running with an open conversation in the workspace.",
+    )
+    .option("--project <path>", "Workspace path", process.cwd())
+    .option("--registry-url <url>", "Registry URL", "http://localhost:4999")
+    .option("--identity <id>", "Channel namespace of the agy session (default: global)")
+    .option("--client-id <id>", "Explicit Antigravity client session ID")
+    .option("--poll-interval-ms <n>", "Polling interval in ms", "2000")
+    .option("--retry-interval-ms <n>", "Re-injection blackout per message in ms", "30000")
+    .option("--once", "Run a single poll cycle and exit")
+    .option("--verbose", "Verbose logs")
+    .action(async (options) => {
+      const service = new AntigravityLsBridgeService({
+        projectPath: options.project,
+        registryUrl: options.registryUrl,
+        identity: options.identity,
+        clientId: options.clientId,
+        pollIntervalMs: Number(options.pollIntervalMs),
+        retryIntervalMs: Number(options.retryIntervalMs),
+        verbose: options.verbose ?? true,
+      });
+      if (options.once) {
+        const n = await service.runOnce();
+        console.error(`[antigravity ls-push] injected ${n} message(s)`);
+        return;
+      }
+      console.error(
+        chalk.green("✓") +
+          ` Antigravity ls-push running (project: ${options.project}, identity: ${options.identity ?? "global"}). Ctrl-C to stop.`,
+      );
+      await service.start();
     });
 }
