@@ -60,7 +60,7 @@ export function registerAntigravityCommand(program: Command): void {
         mcpServers: {
           "agent-bridge": {
             command: options.bridgeCommand,
-            args: ["mcp", "--registry-url", options.registryUrl],
+            args: ["mcp", "start", "--registry-url", options.registryUrl, "--project", options.project],
           },
         },
       };

@@ -1,5 +1,5 @@
 /**
- * MCP Adapter — Bridges the channel system as MCP tools for Claude Code, OpenCode, Codex, and Gemini, OpenCode, Codex, and Gemini
+ * MCP Adapter — Bridges the channel system as MCP tools for Claude Code, OpenCode, Codex, and Antigravity
  *
  * AUTO MODE (default):
  *   If no registry is running at localhost:4999, starts one in-process.
@@ -19,7 +19,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createHash } from "node:crypto";
-import { basename } from "node:path";
+import { writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, join } from "node:path";
 import { z } from "zod";
 import { RegistryClient } from "../client/registry-client.js";
 import { ChannelTransport } from "../client/channel-transport.js";
@@ -58,6 +60,16 @@ export interface McpAdapterOptions {
  * - `dashboard-ui`     The local dashboard web UI (never a valid send target).
  * - `unknown`          Catch-all for anything that doesn't match the heuristics.
  */
+/** Subset of MCP client capabilities we care about for server→client push.
+ *  `sampling` lets the bridge call `createMessage` (autonomous delegation);
+ *  `elicitation` lets it inject an interaction into the live agent flow. */
+export interface ClientCapabilitiesSnapshot {
+  sampling?: unknown;
+  elicitation?: unknown;
+  roots?: unknown;
+  [key: string]: unknown;
+}
+
 export type PeerType =
   | "claude-code"
   | "codex-bridge"
@@ -321,6 +333,10 @@ export class McpAgentBridge {
   private options: Required<McpAdapterOptions>;
   private clientAgentId: string | null = null;
   private clientActivating = false;
+  /** MCP capabilities the connected client declared at initialize. Used to
+   *  decide whether server→client push is possible (sampling/elicitation) for
+   *  non-Claude clients like Antigravity. Empty until oninitialized runs. */
+  private clientCapabilities: ClientCapabilitiesSnapshot = {};
   private embeddedRegistry: RegistryServer | null = null;
   private surfacedInboxMessageIds = new BoundedIdSet(5_000);
   private pendingPreInitMessages: ChannelMessage[] = [];
@@ -490,6 +506,34 @@ export class McpAgentBridge {
     const notification = this.clientProfile.mapChannelMessage(channelMessage);
     if (!notification) return;
 
+    // Antigravity native push: agy declares the `elicitation` capability but not
+    // `sampling`, and it ignores `notifications/message`. So instead of waiting
+    // for a turn (hook-driven), push the message as an `elicitation/create`
+    // request — agy surfaces it as a live interaction even when idle, and its
+    // answer is relayed straight back to the channel. Falls back to the
+    // notification path if the elicit is declined / times out / unsupported.
+    if (this.clientProfile.id === "antigravity" && this.clientCapabilities.elicitation) {
+      void this.tryElicitPush(channelMessage).then((delivered) => {
+        if (delivered) {
+          this.surfacedInboxMessageIds.add(channelMessage.messageId);
+        } else {
+          this.pushNotificationAndAck(notification, channelMessage, isPassiveInnerClientMirror);
+        }
+      });
+      return;
+    }
+
+    this.pushNotificationAndAck(notification, channelMessage, isPassiveInnerClientMirror);
+  }
+
+  /** Push a channel message as a log-style MCP notification and, on success,
+   *  mark it surfaced + ack `displayed_to_client`. The default delivery path for
+   *  clients without a real-time push capability. */
+  private pushNotificationAndAck(
+    notification: { method: string; params: Record<string, unknown> },
+    channelMessage: ChannelMessage,
+    isPassiveInnerClientMirror: boolean,
+  ): void {
     void this.tryPushNotification(notification, channelMessage).then((success) => {
       if (success) {
         // Mark surfaced ONLY after the push succeeded — otherwise a permanent push
@@ -508,6 +552,52 @@ export class McpAgentBridge {
         }
       }
     });
+  }
+
+  /** Push a channel message to an Antigravity client via MCP `elicitation/create`
+   *  and relay its answer back to the channel as a reply. Returns true only when
+   *  agy accepted and provided a reply (so the caller can mark it surfaced);
+   *  false on decline/cancel/timeout/error so the caller falls back. */
+  private async tryElicitPush(channelMessage: ChannelMessage): Promise<boolean> {
+    const sender = channelMessage.fromAgentName ?? channelMessage.fromAgentId;
+    try {
+      const result = await this.server.server.elicitInput({
+        message:
+          `📨 New open-agent-bridge channel message from ${sender}:\n\n` +
+          `${channelMessage.content}\n\n` +
+          "Type your reply below to send it back through the channel.",
+        requestedSchema: {
+          type: "object",
+          properties: {
+            reply: {
+              type: "string",
+              description: "Your reply to send back to the sender via the channel",
+            },
+          },
+          required: ["reply"],
+        },
+      });
+
+      if (result.action !== "accept") return false;
+      const reply = (result.content as { reply?: string } | undefined)?.reply;
+      if (!reply || !reply.trim()) return false;
+
+      await this.conversationService.replyAndAcknowledge({
+        agentId: channelMessage.fromAgentId,
+        conversationId: channelMessage.conversationId,
+        replyTo: channelMessage.messageId,
+        kind: "chat",
+        message: reply,
+        requiresAck: true,
+        expectsResponse: false,
+        acknowledgementState: "answered",
+        acknowledgementDetail: "Reply sent via Antigravity elicitation push",
+      });
+      return true;
+    } catch (err) {
+      console.error(`[MCP] elicitation push failed for ${channelMessage.messageId}: ${String(err)}`);
+      return false;
+    }
   }
 
   private async tryPushNotification(
@@ -748,6 +838,35 @@ export class McpAgentBridge {
         const clientName: string = clientVersion.name;
         const version: string = clientVersion.version ?? "unknown";
         this.clientProfile = this.profileResolver.resolve({ clientName });
+
+        // ── Capability probe ──────────────────────────────────────────────
+        // Server→client push for non-Claude clients depends on which MCP
+        // capabilities the client declared at initialize. Log + persist them so
+        // we can confirm whether `agy` supports sampling/elicitation (the native
+        // push/auto-delegation vectors). Best-effort; never blocks activation.
+        try {
+          const caps = innerServer.getClientCapabilities?.() ?? {};
+          this.clientCapabilities = caps as ClientCapabilitiesSnapshot;
+          const summary = {
+            clientName,
+            version,
+            sampling: Boolean((caps as Record<string, unknown>).sampling),
+            elicitation: Boolean((caps as Record<string, unknown>).elicitation),
+            roots: Boolean((caps as Record<string, unknown>).roots),
+            raw: caps,
+          };
+          console.error(`[MCP] client capabilities: ${JSON.stringify(summary)}`);
+          // Per-client filename so concurrent clients (Claude + agy) don't clobber
+          // each other's snapshot in the shared dir.
+          const safeName = clientName.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+          writeFileSync(
+            join(homedir(), ".gemini", "antigravity-cli", `oab-caps-${safeName}.json`),
+            `${JSON.stringify(summary, null, 2)}\n`,
+            "utf8",
+          );
+        } catch (err) {
+          console.error(`[MCP] capability probe failed: ${String(err)}`);
+        }
 
         // Resolve real project path from client's workspace roots (MCP roots protocol)
         let realProjectPath = this.options.projectPath;

@@ -1,0 +1,22 @@
+{
+  "Stop": [
+    {
+      "handlers": [
+        {
+          "type": "command",
+          "command": "open-agent-bridge antigravity hook-stop --project \"/home/kevin-osigu/Documents/PROYECTOS_OSIGU/10. PERSONAL/open-agent-bridge\" --registry-url http://localhost:4999"
+        }
+      ]
+    }
+  ],
+  "SessionStart": [
+    {
+      "handlers": [
+        {
+          "type": "command",
+          "command": "open-agent-bridge antigravity hook-session-start --project \"/home/kevin-osigu/Documents/PROYECTOS_OSIGU/10. PERSONAL/open-agent-bridge\" --registry-url http://localhost:4999"
+        }
+      ]
+    }
+  ]
+}
