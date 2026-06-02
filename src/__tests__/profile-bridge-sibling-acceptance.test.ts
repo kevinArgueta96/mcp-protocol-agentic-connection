@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ClaudeClientProfile } from "../client/profiles/claude-client-profile.js";
 import { CodexClientProfile } from "../client/profiles/codex-client-profile.js";
-import { GeminiClientProfile } from "../client/profiles/gemini-client-profile.js";
 import type { ChannelMessage } from "../types/messages.js";
 
 /**
@@ -19,8 +18,6 @@ import type { ChannelMessage } from "../types/messages.js";
 
 const CODEX_INNER = "client-codex-mcp-client-aaaa";
 const CODEX_BRIDGE = "client-codex-bridge-aaaa";
-const GEMINI_INNER = "client-gemini-mcp-client-bbbb";
-const GEMINI_BRIDGE = "client-gemini-bridge-bbbb";
 
 function makeMessage(toAgentId: string | undefined): ChannelMessage {
   return {
@@ -69,30 +66,6 @@ describe("CodexClientProfile.acceptsChannelMessage — sibling bridge", () => {
         siblingBridgeAgentIds: new Set([CODEX_BRIDGE]),
       }),
     ).toBe(false);
-  });
-});
-
-describe("GeminiClientProfile.acceptsChannelMessage — sibling bridge", () => {
-  const profile = new GeminiClientProfile();
-
-  it("regression guard: without ctx, rejects messages addressed to the sibling bridge", () => {
-    expect(profile.acceptsChannelMessage(makeMessage(GEMINI_BRIDGE), GEMINI_INNER)).toBe(false);
-  });
-
-  it("with ctx.siblingBridgeAgentIds, accepts messages addressed to the sibling bridge", () => {
-    expect(
-      profile.acceptsChannelMessage(makeMessage(GEMINI_BRIDGE), GEMINI_INNER, {
-        siblingBridgeAgentIds: new Set([GEMINI_BRIDGE]),
-      }),
-    ).toBe(true);
-  });
-
-  it("accepts broadcast even with ctx", () => {
-    expect(
-      profile.acceptsChannelMessage(makeMessage(undefined), GEMINI_INNER, {
-        siblingBridgeAgentIds: new Set([GEMINI_BRIDGE]),
-      }),
-    ).toBe(true);
   });
 });
 

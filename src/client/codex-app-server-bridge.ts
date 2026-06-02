@@ -518,9 +518,8 @@ export class CodexAppServerBridge extends EventEmitter {
     }
   }
 
-  // The injection prompt is built by the shared `injection-prompt` module so
-  // both bridges (codex-app-server-bridge, gemini-acp-bridge) emit identical,
-  // prompt-engineered text into their respective CLIs.
+  // The injection prompt is built by the shared `injection-prompt` module so the
+  // bridge emits consistent, prompt-engineered text into the Codex CLI.
 
   // ── Reply sending ───────────────────────────────────────────────────────────
 

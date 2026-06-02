@@ -1,18 +1,20 @@
-import { listTmuxPanes, getTmuxPaneInfo } from "./codex-runtime-discovery.js";
+import { getTmuxPaneInfo, listTmuxPanes } from "./codex-runtime-discovery.js";
 import type { TmuxPaneInfo } from "./codex-runtime-discovery.js";
 
 export type { TmuxPaneInfo };
 export { getTmuxPaneInfo };
 
-// "gemini" is the binary name; "node" catches npm-linked / npx invocations.
-const ACTIVE_PANE_COMMANDS = new Set(["gemini", "node"]);
+// "agy" is the Antigravity CLI binary; "antigravity" covers full-name launches.
+const ACTIVE_PANE_COMMANDS = new Set(["agy", "antigravity"]);
 
-export function isInteractiveGeminiPane(pane: TmuxPaneInfo | undefined): boolean {
+export function isInteractiveAntigravityPane(pane: TmuxPaneInfo | undefined): boolean {
   if (!pane) return false;
   return ACTIVE_PANE_COMMANDS.has(pane.currentCommand.toLowerCase());
 }
 
-export async function discoverGeminiPaneForProject(projectPath: string): Promise<TmuxPaneInfo | undefined> {
+export async function discoverAntigravityPaneForProject(
+  projectPath: string,
+): Promise<TmuxPaneInfo | undefined> {
   const panes = await listTmuxPanes();
 
   const exactProjectPane = panes.find(

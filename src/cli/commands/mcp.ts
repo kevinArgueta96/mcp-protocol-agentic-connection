@@ -1,4 +1,4 @@
-// open-agent-bridge mcp — MCP adapter for Claude Code, Codex, Gemini CLI
+// open-agent-bridge mcp — MCP adapter for Claude Code, Codex, Antigravity CLI
 import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { Command } from "commander";
@@ -6,7 +6,7 @@ import chalk from "chalk";
 import { McpAgentBridge } from "../../mcp/adapter.js";
 
 export function registerMcpCommand(program: Command): void {
-  const mcp = program.command("mcp").description("MCP adapter — connect open-agent-bridge to Claude Code, Codex, or Gemini CLI");
+  const mcp = program.command("mcp").description("MCP adapter — connect open-agent-bridge to Claude Code, Codex, or Antigravity CLI");
 
   // ── mcp start ─────────────────────────────────────────────────────────────
   mcp

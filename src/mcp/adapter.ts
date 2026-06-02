@@ -47,8 +47,9 @@ export interface McpAdapterOptions {
  *                    `projectPath`.
  * - `codex-inner`    Inner MCP client running inside a Codex session — used by
  *                    Codex's LLM to call `reply` and to poll `channel_inbox`.
- * - `gemini-bridge`  Gemini ACP bridge, analogous to `codex-bridge`.
- * - `gemini-inner`   Inner MCP client inside a Gemini session.
+ * - `antigravity-inner` Inner MCP client inside an Antigravity (`agy`) session.
+ *                    Antigravity has no bridge daemon — it reaches the channel
+ *                    via MCP tools plus its native Stop/SessionStart hooks.
  * - `dashboard-ui`   The local dashboard web UI (never a valid send target).
  * - `unknown`        Catch-all for anything that doesn't match the heuristics.
  */
@@ -56,28 +57,27 @@ export type PeerType =
   | "claude-code"
   | "codex-bridge"
   | "codex-inner"
-  | "gemini-bridge"
-  | "gemini-inner"
+  | "antigravity-inner"
   | "dashboard-ui"
   | "unknown";
 
 /** Classify a registry entry into one of the well-known peer types so callers
  *  (and the LLM consuming `list_agents` / `channel_inbox` output) can tell at
- *  a glance whether a row is Claude Code, a Codex/Gemini bridge daemon, or the
- *  inner MCP client of one of those agents.
+ *  a glance whether a row is Claude Code, a Codex bridge daemon, or the inner
+ *  MCP client of one of those agents.
  *
- *  Heuristic: `clientVersion` is authoritative for bridges (`app-server-bridge`,
- *  `acp-bridge`); for everything else we read `clientName`. The dashboard UI is
- *  recognized by its stable agentId. Pure function — safe to import in tests. */
+ *  Heuristic: `clientVersion` is authoritative for the Codex bridge
+ *  (`app-server-bridge`); for everything else we read `clientName`. The
+ *  dashboard UI is recognized by its stable agentId. Pure function — safe to
+ *  import in tests. */
 export function getPeerType(entry: RegistryEntry): PeerType {
   if (entry.agentId === "client-dashboard-ui") return "dashboard-ui";
   const clientName = (entry.clientInfo?.clientName ?? "").toLowerCase();
   const clientVersion = entry.clientInfo?.clientVersion ?? "";
   if (clientName === "claude-code" || clientName === "claude") return "claude-code";
   if (clientVersion === "app-server-bridge") return "codex-bridge";
-  if (clientVersion === "acp-bridge") return "gemini-bridge";
   if (clientName.includes("codex")) return "codex-inner";
-  if (clientName.includes("gemini")) return "gemini-inner";
+  if (clientName.includes("antigravity") || clientName === "agy") return "antigravity-inner";
   return "unknown";
 }
 
@@ -91,10 +91,8 @@ export function getPeerTypeLabel(entry: RegistryEntry): string {
       return "Codex bridge";
     case "codex-inner":
       return "Codex inner";
-    case "gemini-bridge":
-      return "Gemini bridge";
-    case "gemini-inner":
-      return "Gemini inner";
+    case "antigravity-inner":
+      return "Antigravity inner";
     case "dashboard-ui":
       return "Dashboard UI";
     default:
@@ -153,16 +151,16 @@ function buildAgentBridgeGuide(topic: AgentBridgeGuideTopic): string {
     overview: [
       "# open-agent-bridge MCP guide",
       "",
-      "Use this MCP server to send channel messages between Claude Code, Codex, and Gemini sessions.",
+      "Use this MCP server to send channel messages between Claude Code, Codex, and Antigravity sessions.",
       "",
       "Tools:",
       "- `agent_bridge_guide(topic?)`: read this usage guide.",
-      "- `list_agents(includeClients=true)`: discover peers. Client rows include labels such as `[Claude Code]`, `[Codex inner]`, `[Gemini inner]`.",
+      "- `list_agents(includeClients=true)`: discover peers. Client rows include labels such as `[Claude Code]`, `[Codex inner]`, `[Antigravity inner]`.",
       "- `message_client_session(...)`: proactively send a message to another client session.",
       "- `channel_inbox(pendingOnly=true)`: inspect inbound pending conversations and get `replyWith` values.",
       "- `reply(...)`: respond to an inbound pending message using `replyWith` verbatim.",
       "",
-      "Codex/Gemini sessions can register two entries for the same project: an inner MCP client and a bridge daemon. You can target either one; send routing auto-redirects inner clients to the bridge daemon.",
+      "A Codex session can register two entries for the same project: an inner MCP client and a bridge daemon. You can target either one; send routing auto-redirects inner clients to the bridge daemon. Antigravity (`agy`) registers a single inner MCP client and receives messages through its native Stop/SessionStart hooks.",
     ].join("\n"),
     setup: [
       "# Setup",
@@ -176,9 +174,9 @@ function buildAgentBridgeGuide(topic: AgentBridgeGuideTopic): string {
       "- Manual: run `open-agent-bridge codex app-bridge --project <path>`, then attach the TUI with `codex --remote ws://127.0.0.1:4500`.",
       "- A plain `codex` session is isolated; the bridge cannot inject automatic turns into it.",
       "",
-      "Gemini:",
-      "- Preferred: `open-agent-bridge gemini start --project <path>` or `open-agent-bridge gemini app-bridge --project <path>`.",
-      "- tmux sidecars are fallback paths when ACP/app-server delivery is unavailable.",
+      "Antigravity (`agy`):",
+      "- Run `open-agent-bridge antigravity install-plugin --project <path>` to write the MCP config + Stop/SessionStart hooks, then (re)start `agy` in that workspace.",
+      "- Inbound messages are appended to `.agents/ORIGINAL_REQUEST.md` and the Stop hook makes `agy` continue to read its inbox and reply.",
     ].join("\n"),
     send: [
       "# Sending messages",
@@ -205,7 +203,7 @@ function buildAgentBridgeGuide(topic: AgentBridgeGuideTopic): string {
       "2. Read the target conversation's `replyWith` block.",
       "3. Call `reply(agentId=replyWith.agentId, conversationId=replyWith.conversationId, replyTo=replyWith.replyTo, message=...)`.",
       "",
-      "Do not re-derive or substitute `replyWith.agentId`. For Codex/Gemini peers it may already be routed to the bridge daemon while preserving `originalFromAgentId` for traceability.",
+      "Do not re-derive or substitute `replyWith.agentId`. For Codex peers it may already be routed to the bridge daemon while preserving `originalFromAgentId` for traceability.",
       "",
       "`reply` is only for answering a pending inbound message. Use `message_client_session` to start or continue proactive work.",
     ].join("\n"),
@@ -218,7 +216,7 @@ function buildAgentBridgeGuide(topic: AgentBridgeGuideTopic): string {
       "- `answered`: recipient replied to the original message.",
       "- `failed`: permanent delivery failure.",
       "",
-      "`delivered_to_bridge` does not mean the peer LLM read the message. For Codex/Gemini, wait for `displayed_to_client` or `answered`; if Codex has no remote TUI attached, the bridge eventually marks the message failed with an actionable detail.",
+      "`delivered_to_bridge` does not mean the peer LLM read the message. For Codex, wait for `displayed_to_client` or `answered`; if Codex has no remote TUI attached, the bridge eventually marks the message failed with an actionable detail.",
     ].join("\n"),
     troubleshooting: [
       "# Troubleshooting",
@@ -251,14 +249,14 @@ function formatAgentsSummary(agents: RegistryEntry[]): string {
   const runnableAgents = agents.filter((a) => a.entryType !== "client" || a.card.skills.length > 0);
   // Exclude internal infrastructure from the visible client list:
   //   - dashboard UI (agentId: client-dashboard-ui)
-  //   - bridge daemons (codex `app-server-bridge`, gemini `acp-bridge`) — they
-  //     pair 1:1 with an inner client that already represents the same session,
-  //     and routing to the bridge is handled automatically by `resolveDeliverableTarget`.
+  //   - the Codex bridge daemon (`app-server-bridge`) — it pairs 1:1 with an
+  //     inner client that already represents the same session, and routing to
+  //     the bridge is handled automatically by `resolveDeliverableTarget`.
   const clients = agents.filter((a) => {
     if (a.entryType !== "client") return false;
     if (a.card.skills.length !== 0) return false;
     const peerType = getPeerType(a);
-    return peerType !== "dashboard-ui" && peerType !== "codex-bridge" && peerType !== "gemini-bridge";
+    return peerType !== "dashboard-ui" && peerType !== "codex-bridge";
   });
 
   return [
@@ -268,7 +266,7 @@ function formatAgentsSummary(agents: RegistryEntry[]): string {
       const skills = a.card.skills.map((s) => `    • ${s.id}: ${s.description}`).join("\n");
       return [
         // Use the agentId SUFFIX (unique hash), not the prefix — every client
-        // shares `client-{claude,codex,gemini,dashboard}-...` so slicing from
+        // shares `client-{claude,codex,antigravity,dashboard}-...` so slicing from
         // the front would render every row as the same `[client-c]`.
         `Agent: ${a.name}  [${a.agentId.slice(-8)}]`,
         `  Project: ${a.projectPath}`,
@@ -308,8 +306,8 @@ export class McpAgentBridge {
   private surfacedInboxMessageIds = new BoundedIdSet(5_000);
   private pendingPreInitMessages: ChannelMessage[] = [];
   private syncInFlight = false;
-  /** AgentIds of bridge daemons (`client-{codex,gemini}-bridge-*`) that share
-   *  this MCP client's project path. Codex/Gemini sessions register two entries
+  /** AgentIds of bridge daemons (`client-codex-bridge-*`) that share
+   *  this MCP client's project path. A Codex session registers two entries
    *  — the bridge and the inner MCP client — and the auto-redirect rewrites
    *  outbound `toAgentId` to the bridge. The inner client must still recognize
    *  those rewritten messages as locally addressable so they surface in
@@ -355,9 +353,9 @@ export class McpAgentBridge {
           "Tools:\n" +
           "  • agent_bridge_guide(topic='all') — usage guide for setup, sending, replies, ACK states, and troubleshooting.\n" +
           "  • list_agents(includeClients=true) — discover peers; client-session rows include a peer-type label " +
-          "such as `[Claude Code]`, `[Codex inner]`, or `[Gemini inner]`.\n" +
+          "such as `[Claude Code]`, `[Codex inner]`, or `[Antigravity inner]`.\n" +
           "  • message_client_session(clientId | project, message) — open a new thread to a peer. " +
-          "Routing is automatic; pass any agentId from the peer's pair (Codex/Gemini sessions register two — both work).\n" +
+          "Routing is automatic; for a Codex session pass any agentId from its pair (it registers two — both work).\n" +
           "  • channel_inbox(pendingOnly=true) — list pending conversations; each entry has a `replyWith` block.\n" +
           "  • reply(agentId, conversationId, replyTo, message) — respond to a pending message; " +
           "copy `replyWith` fields verbatim.\n\n" +
@@ -454,7 +452,7 @@ export class McpAgentBridge {
 
   private deliverChannelMessage(channelMessage: ChannelMessage): void {
     const isPassiveInnerClientMirror =
-      (this.clientProfile.id === "codex" || this.clientProfile.id === "gemini") &&
+      (this.clientProfile.id === "codex" || this.clientProfile.id === "antigravity") &&
       typeof channelMessage.toAgentId === "string" &&
       this.siblingBridgeAgentIds.has(channelMessage.toAgentId);
 
@@ -866,14 +864,14 @@ export class McpAgentBridge {
       {
         description:
           "List all agents and client sessions connected to open-agent-bridge. " +
-          "Returns agentId, project path, health, skills, and client peer labels such as [Claude Code], [Codex inner], [Gemini inner]. " +
+          "Returns agentId, project path, health, skills, and client peer labels such as [Claude Code], [Codex inner], [Antigravity inner]. " +
           "WORKFLOW: call this first to discover targets before using message_client_session. " +
-          "Pass includeClients=true to see Claude/Codex/Gemini client sessions; bridge daemons are internal and routing to them is automatic.",
+          "Pass includeClients=true to see Claude/Codex/Antigravity client sessions; bridge daemons are internal and routing to them is automatic.",
         inputSchema: {
           skill: z.string().optional().describe("Filter agents with this skill (e.g. 'endpoint-find')"),
           project: z.string().optional().describe("Filter by project name or path substring"),
           healthyOnly: z.boolean().optional().describe("Only show healthy agents (default: true)"),
-          includeClients: z.boolean().optional().describe("Include Claude/Codex/Gemini client sessions that have no HTTP skills (default: false). Set true when looking for a session to message."),
+          includeClients: z.boolean().optional().describe("Include Claude/Codex/Antigravity client sessions that have no HTTP skills (default: false). Set true when looking for a session to message."),
         },
       },
       async ({ skill, project, healthyOnly = true, includeClients = false }) => {
@@ -940,7 +938,7 @@ export class McpAgentBridge {
           }
 
           // Prefetch the agents list once and build a (projectPath → bridge) index so
-          // we can resolve `replyWith.agentId` to the bridge agentId for Codex/Gemini
+          // we can resolve `replyWith.agentId` to the bridge agentId for Codex
           // peers without doing N HTTP lookups inside the conversation loop.
           let bridgeByProject = new Map<string, RegistryEntry>();
           let agentById = new Map<string, RegistryEntry>();
@@ -949,7 +947,7 @@ export class McpAgentBridge {
             for (const entry of allAgents) {
               agentById.set(entry.agentId, entry);
               const cv = entry.clientInfo?.clientVersion;
-              if (cv === "app-server-bridge" || cv === "acp-bridge") {
+              if (cv === "app-server-bridge") {
                 bridgeByProject.set(entry.projectPath, entry);
               }
             }
@@ -961,9 +959,9 @@ export class McpAgentBridge {
             if (!entry) return rawAgentId;
             const cv = entry.clientInfo?.clientVersion ?? "";
             const cn = (entry.clientInfo?.clientName ?? "").toLowerCase();
-            const isBridge = cv === "app-server-bridge" || cv === "acp-bridge";
-            const isCodexOrGemini = cn.includes("codex") || cn.includes("gemini");
-            if (!isCodexOrGemini || isBridge) return rawAgentId;
+            const isBridge = cv === "app-server-bridge";
+            const isCodex = cn.includes("codex");
+            if (!isCodex || isBridge) return rawAgentId;
             return bridgeByProject.get(entry.projectPath)?.agentId ?? rawAgentId;
           };
 
@@ -978,7 +976,7 @@ export class McpAgentBridge {
               : undefined;
 
             // Identify the peer on the other side of the conversation — uses the
-            // ORIGINAL fromAgentId (typically the inner MCP client for Codex/Gemini)
+            // ORIGINAL fromAgentId (typically the inner MCP client for Codex)
             // so the label reflects the agent, not the bridge daemon plumbing.
             const peerEntry = latestInbound ? agentById.get(latestInbound.fromAgentId) : undefined;
             const peerType: PeerType | undefined = peerEntry ? getPeerType(peerEntry) : undefined;
@@ -993,11 +991,11 @@ export class McpAgentBridge {
               expiresAt: snapshot.lastMessage?.expiresAt,
               lastMessagePreview: snapshot.lastMessage?.content.slice(0, 160),
               // peerType lets the LLM identify who is on the other end (Claude
-              // Code / Codex inner / Gemini inner / etc.) without parsing
+              // Code / Codex inner / Antigravity inner / etc.) without parsing
               // agentId prefixes manually.
               ...(peerType ? { peerType, peerLabel } : {}),
               // Exact parameters to pass to the reply tool — no guesswork needed.
-              // For Codex/Gemini peers, `agentId` is already the bridge so the message
+              // For Codex peers, `agentId` is already the bridge so the message
               // is delivered as a turn prompt. The original sender's fromAgentId is
               // preserved in `originalFromAgentId` for traceability.
               replyWith: latestInbound
@@ -1052,21 +1050,22 @@ export class McpAgentBridge {
       "message_client_session",
       {
         description:
-          "Initiate or continue a channel message thread with a client session (Claude Code, Codex, Gemini). " +
+          "Initiate or continue a channel message thread with a client session (Claude Code, Codex, Antigravity). " +
           "USE THIS when you want to proactively send a message or task to another agent. " +
           "DO NOT USE THIS to reply to a pending inbound message — use the reply tool for that instead. " +
           "\n\nWORKFLOW: (1) call list_agents(includeClients=true) to find the target's agentId, " +
           "(2) call message_client_session(clientId=<agentId>, message=<text>). " +
           "Target resolution order when clientId is not provided: " +
           "(a) conversationId participant lookup, (b) project name/path match; " +
-          "when a project has multiple sessions, claude-code > gemini > codex (override with clientType). " +
+          "when a project has multiple sessions, claude-code > antigravity > codex (override with clientType). " +
           "\n\nDELIVERY SEMANTICS by target type:" +
           "\n  • Claude Code  → message arrives as an immediate <channel> push event." +
-          "\n  • Codex/Gemini → message is injected as a new turn prompt by the bridge daemon." +
+          "\n  • Codex        → message is injected as a new turn prompt by the bridge daemon." +
+          "\n  • Antigravity  → message is appended to .agents/ORIGINAL_REQUEST.md and surfaced by the Stop/SessionStart hooks." +
           "\n\nRESPONSE SEMANTICS: set expectsResponse=true only when you need a reply; set false for FYI/fire-and-forget. " +
           "If omitted, the adapter infers it from the message text." +
           "\n\nROUTING (you do NOT need to know which agentId is the bridge): if you pass an inner " +
-          "Codex/Gemini MCP-client agentId (e.g. client-codex-mcp-client-* or client-gemini-mcp-client-*), " +
+          "Codex MCP-client agentId (e.g. client-codex-mcp-client-*), " +
           "the adapter auto-redirects the message to the bridge for the same project. So you can copy " +
           "the `from_agent` of an inbound <channel> event or `replyWith.agentId` from channel_inbox " +
           "directly — routing is fixed transparently. This avoids the failure mode where a message " +
@@ -1074,7 +1073,7 @@ export class McpAgentBridge {
         inputSchema: {
           clientId: z.string().optional().describe("Exact agentId of the target client session (from list_agents). Most reliable — use this whenever possible."),
           project: z.string().optional().describe("Project name or path substring to resolve the target session. Use when you don't have the exact agentId."),
-          clientType: z.string().optional().describe("Filter by client type when project matches multiple sessions: 'claude-code', 'codex', or 'gemini'. Ignored when clientId is set."),
+          clientType: z.string().optional().describe("Filter by client type when project matches multiple sessions: 'claude-code', 'codex', or 'antigravity'. Ignored when clientId is set."),
           message: z.string().describe("Message text to send to the target session"),
           conversationId: z.string().optional().describe("Continue an existing conversation thread by reusing its ID. Leave blank to start a new thread."),
           replyTo: z.string().optional().describe("messageId to thread this message as a reply to (optional, for in-thread continuations)"),
@@ -1098,7 +1097,7 @@ export class McpAgentBridge {
           "(3) call reply(agentId=replyWith.agentId, conversationId=replyWith.conversationId, replyTo=replyWith.replyTo, message=<your response>). " +
           "All three routing fields (agentId, conversationId, replyTo) are REQUIRED — copy them exactly from replyWith. " +
           "After calling this, the conversation is marked 'answered' and the sender receives your reply." +
-          "\n\nROUTING: if `agentId` is a Codex/Gemini inner MCP client (which is what their `reply` tool " +
+          "\n\nROUTING: if `agentId` is a Codex inner MCP client (which is what its `reply` tool " +
           "stamps as `fromAgentId` of their replies), the adapter auto-redirects to the project's bridge " +
           "daemon so the agent receives your reply as a turn prompt. You should always copy " +
           "`replyWith.agentId` verbatim — do NOT try to substitute a bridge agentId yourself.",
@@ -1116,9 +1115,9 @@ export class McpAgentBridge {
           // Sync store before reply so resolveReplyContext has fresh data
           await this.syncRegistryToLocalStore();
 
-          // Auto-redirect: if `agentId` is a Codex/Gemini inner MCP client (which is
+          // Auto-redirect: if `agentId` is a Codex inner MCP client (which is
           // typically what `replyWith.agentId` returns when the inbound message came
-          // from one of those agents), route the reply through the project's bridge
+          // from that agent), route the reply through the project's bridge
           // so the agent actually receives it as a turn prompt.
           let routedAgentId = agentId;
           try {
@@ -1189,35 +1188,32 @@ export class McpAgentBridge {
 
   // ── Helpers ────────────────────────────────────────────────────────────────
 
-  /** Auto-redirect to a bridge daemon when the user-supplied target is a Codex/Gemini
+  /** Auto-redirect to a bridge daemon when the user-supplied target is a Codex
    *  inner MCP client.
    *
-   *  Why: Codex and Gemini sessions register TWO entries in the registry —
-   *    1. the bridge daemon (`client-codex-bridge-*` / `client-gemini-bridge-*`),
-   *    2. the inner MCP client running inside the agent (`client-codex-mcp-client-*` /
-   *       `client-gemini-mcp-client-*`).
+   *  Why: a Codex session registers TWO entries in the registry —
+   *    1. the bridge daemon (`client-codex-bridge-*`),
+   *    2. the inner MCP client running inside the agent (`client-codex-mcp-client-*`).
    *
    *  The bridge is the primary delivery path: it injects the content as a new turn
-   *  prompt into the CLI, which is the only way Codex/Gemini will react to the
-   *  message in real time. The inner client also stores the message locally so the
-   *  agent can poll for it via `channel_inbox(pendingOnly=true)` — see
-   *  `siblingBridgeAgentIds` and the `acceptsChannelMessage` profiles for how
-   *  rewritten `toAgentId`s are recognized by the inner client.
+   *  prompt into the CLI, which is the only way Codex will react to the message in
+   *  real time. The inner client also stores the message locally so the agent can
+   *  poll for it via `channel_inbox(pendingOnly=true)` — see `siblingBridgeAgentIds`
+   *  and the `acceptsChannelMessage` profiles for how rewritten `toAgentId`s are
+   *  recognized by the inner client.
    *
-   *  This used to require the caller to know the bridge agentId. We now auto-redirect
-   *  transparently so any inner-client agentId you pass (including the `fromAgentId`
-   *  of an inbound reply or `replyWith.agentId` from channel_inbox) routes to the
-   *  bridge of the same project.
+   *  Antigravity (`agy`) registers no bridge daemon, so it never redirects: it
+   *  receives messages via its native Stop/SessionStart hooks plus `channel_inbox`.
    *
-   *  Returns the original entry unchanged for Claude Code targets and for entries
-   *  that are already a bridge. */
+   *  Returns the original entry unchanged for Claude Code / Antigravity targets and
+   *  for entries that are already a bridge. */
   private async resolveDeliverableTarget(target: RegistryEntry): Promise<RegistryEntry> {
     const clientVersion = target.clientInfo?.clientVersion ?? "";
     const clientName = (target.clientInfo?.clientName ?? "").toLowerCase();
-    const isBridge = clientVersion === "app-server-bridge" || clientVersion === "acp-bridge";
-    const isCodexOrGemini = clientName.includes("codex") || clientName.includes("gemini");
+    const isBridge = clientVersion === "app-server-bridge";
+    const isCodex = clientName.includes("codex");
 
-    if (!isCodexOrGemini || isBridge) return target;
+    if (!isCodex || isBridge) return target;
 
     try {
       const all = await this.registry.listAgents();
@@ -1330,7 +1326,7 @@ export class McpAgentBridge {
       );
     }
 
-    // 4. Optionally filter by clientType (e.g. "claude-code", "codex", "gemini")
+    // 4. Optionally filter by clientType (e.g. "claude-code", "codex", "antigravity")
     if (params.clientType) {
       const typeFiltered = matches.filter((e) =>
         e.clientInfo?.clientName?.toLowerCase().includes(params.clientType!.toLowerCase())
@@ -1340,7 +1336,7 @@ export class McpAgentBridge {
 
     // 5. Multiple matches → prefer by priority instead of throwing an error
     if (matches.length > 1) {
-      const CLIENT_PRIORITY = ["claude-code", "claude", "gemini-cli", "gemini", "codex-cli", "codex"];
+      const CLIENT_PRIORITY = ["claude-code", "claude", "antigravity", "agy", "codex-cli", "codex"];
       const getPriority = (e: RegistryEntry) => {
         // App-server bridge daemons always win — they inject messages as turns into the
         // running app-server, which is exactly what we want when multiple Codex sessions
@@ -1377,7 +1373,7 @@ export class McpAgentBridge {
         clientType: params.clientType,
         conversationId: params.conversationId,
       });
-      // Codex/Gemini inner MCP clients can't act on push notifications; transparently
+      // Codex inner MCP clients can't act on push notifications; transparently
       // route the message through their bridge daemon instead.
       const client = await this.resolveDeliverableTarget(resolved);
       const expectsResponse = params.expectsResponse ?? inferExpectsResponse(params.message);
@@ -1428,9 +1424,9 @@ export class McpAgentBridge {
       //   Return fast (≤3s) so Claude Code is not blocked when the reply notification arrives.
       //   If we block Claude here, the incoming reply notification cannot be processed.
       //
-      // • Codex/Gemini → `notifications/message` is only a log line; the AI agent does NOT
-      //   react to it once the tool call has returned. The only way to surface the reply is
-      //   in-band while the tool is still running. So we keep waiting for "answered".
+      // • Codex/Antigravity → `notifications/message` is only a log line; the AI agent does
+      //   NOT react to it once the tool call has returned. The only way to surface the reply
+      //   is in-band while the tool is still running. So we keep waiting for "answered".
       const isClaudeClient = this.clientProfile.id === "claude";
 
       // Phase 1 – always wait briefly for any delivery confirmation

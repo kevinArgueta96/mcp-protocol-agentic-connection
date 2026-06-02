@@ -63,16 +63,16 @@ describe("getPeerType", () => {
     ).toBe("codex-inner");
   });
 
-  it("classifies Gemini bridge by clientVersion 'acp-bridge'", () => {
+  it("classifies Antigravity inner by clientName containing 'antigravity'", () => {
     expect(
-      getPeerType(entry({ clientInfo: { clientName: "gemini", clientVersion: "acp-bridge" } })),
-    ).toBe("gemini-bridge");
+      getPeerType(entry({ clientInfo: { clientName: "antigravity", clientVersion: "1.0" } })),
+    ).toBe("antigravity-inner");
   });
 
-  it("classifies Gemini inner by clientName containing 'gemini' without bridge clientVersion", () => {
-    expect(
-      getPeerType(entry({ clientInfo: { clientName: "gemini-cli", clientVersion: "0.5" } })),
-    ).toBe("gemini-inner");
+  it("classifies Antigravity inner by the 'agy' binary clientName", () => {
+    expect(getPeerType(entry({ clientInfo: { clientName: "agy", clientVersion: "1.0" } }))).toBe(
+      "antigravity-inner",
+    );
   });
 
   it("classifies dashboard-ui by stable agentId", () => {
@@ -107,8 +107,8 @@ describe("getPeerTypeLabel", () => {
       [{ clientInfo: { clientName: "claude-code", clientVersion: "2.0" } }, "Claude Code"],
       [{ clientInfo: { clientName: "codex", clientVersion: "app-server-bridge" } }, "Codex bridge"],
       [{ clientInfo: { clientName: "codex-cli", clientVersion: "0.1" } }, "Codex inner"],
-      [{ clientInfo: { clientName: "gemini", clientVersion: "acp-bridge" } }, "Gemini bridge"],
-      [{ clientInfo: { clientName: "gemini-cli", clientVersion: "0.5" } }, "Gemini inner"],
+      [{ clientInfo: { clientName: "antigravity", clientVersion: "1.0" } }, "Antigravity inner"],
+      [{ clientInfo: { clientName: "agy", clientVersion: "1.0" } }, "Antigravity inner"],
       [
         { agentId: "client-dashboard-ui", clientInfo: { clientName: "x", clientVersion: "y" } },
         "Dashboard UI",

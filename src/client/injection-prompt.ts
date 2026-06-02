@@ -1,8 +1,8 @@
 import type { ChannelMessage } from "../types/messages.js";
 
 /**
- * Build the prompt that the bridge daemon injects as a fresh turn into a
- * Codex / Gemini CLI when a channel message arrives from another agent.
+ * Build the prompt that the bridge daemon injects as a fresh turn into the
+ * Codex CLI when a channel message arrives from another agent.
  *
  * Design goals (prompt engineering):
  *
@@ -20,7 +20,7 @@ import type { ChannelMessage } from "../types/messages.js";
  * 3. **Pre-filled tool call.** The receiver should not have to derive
  *    `agentId`, `conversationId` or `replyTo` from prose. The exact `reply`
  *    invocation is rendered with all values literally expanded so the LLM can
- *    copy them verbatim. This eliminated a common failure where Codex/Gemini
+ *    copy them verbatim. This eliminated a common failure where Codex
  *    would try to substitute the bridge agentId for the inner-client agentId
  *    (which the adapter already handles via auto-redirect).
  *
@@ -34,9 +34,8 @@ import type { ChannelMessage } from "../types/messages.js";
  *    the LLM can address them naturally ("As you asked, …").
  *
  * The function is pure: same input → same output. It has no I/O, so it is
- * trivially unit-testable. Both the Codex (`codex-app-server-bridge.ts`) and
- * the Gemini (`gemini-acp-bridge.ts`) bridge daemons import this single
- * implementation to avoid drift.
+ * trivially unit-testable. The Codex bridge daemon (`codex-app-server-bridge.ts`)
+ * imports this single implementation.
  */
 export function buildInjectionPrompt(message: ChannelMessage): string {
   const sender = message.fromAgentName ?? message.fromAgentId;
