@@ -1,5 +1,5 @@
 /**
- * MCP Adapter — Bridges the channel system as MCP tools for Claude Code
+ * MCP Adapter — Bridges the channel system as MCP tools for Claude Code, OpenCode, Codex, and Gemini, OpenCode, Codex, and Gemini
  *
  * AUTO MODE (default):
  *   If no registry is running at localhost:4999, starts one in-process.
@@ -28,7 +28,7 @@ import { ConversationService } from "../client/conversation-service.js";
 import { DefaultClientProfileResolver, type ClientBehaviorProfile } from "../client/client-profile-resolver.js";
 import { BoundedIdSet } from "../client/bounded-id-set.js";
 import { RegistryServer } from "../registry/server.js";
-import type { RegistryEntry, AgentMessage, ChannelMessage } from "../types/messages.js";
+import type { RegistryEntry, AgentMessage, ChannelMessage, AgentRegistration } from "../types/messages.js";
 
 export interface McpAdapterOptions {
   registryUrl?: string;
@@ -41,23 +41,30 @@ export interface McpAdapterOptions {
 /**
  * Canonical taxonomy of peers reachable through open-agent-bridge.
  *
- * - `claude-code`    Claude Code session (single registry entry per session).
- * - `codex-bridge`   Codex daemon that injects messages as new turns into the
- *                    Codex CLI. Always paired with `codex-inner` for the same
- *                    `projectPath`.
- * - `codex-inner`    Inner MCP client running inside a Codex session — used by
- *                    Codex's LLM to call `reply` and to poll `channel_inbox`.
+ * - `claude-code`      Claude Code session (single registry entry per session).
+ * - `opencode-code`    OpenCode MCP session — used by the LLM for tool calls.
+ *                      Always paired with `opencode-bridge` when the plugin is
+ *                      installed.
+ * - `opencode-bridge`  OpenCode plugin bridge — injects messages as new turns
+ *                      via `session.prompt_async`. Analogous to `codex-bridge`.
+ * - `codex-bridge`     Codex daemon that injects messages as new turns into the
+ *                      Codex CLI. Always paired with `codex-inner` for the same
+ *                      `projectPath`.
+ * - `codex-inner`      Inner MCP client running inside a Codex session — used
+ *                      by Codex's LLM to call `reply` and to poll `channel_inbox`.
  * - `antigravity-inner` Inner MCP client inside an Antigravity (`agy`) session.
- *                    Antigravity has no bridge daemon — it reaches the channel
- *                    via MCP tools plus its native Stop/SessionStart hooks.
- * - `dashboard-ui`   The local dashboard web UI (never a valid send target).
- * - `unknown`        Catch-all for anything that doesn't match the heuristics.
+ *                      Antigravity has no bridge daemon — it reaches the channel
+ *                      via MCP tools plus its native Stop/SessionStart hooks.
+ * - `dashboard-ui`     The local dashboard web UI (never a valid send target).
+ * - `unknown`          Catch-all for anything that doesn't match the heuristics.
  */
 export type PeerType =
   | "claude-code"
   | "codex-bridge"
   | "codex-inner"
   | "antigravity-inner"
+  | "opencode-code"
+  | "opencode-bridge"
   | "dashboard-ui"
   | "unknown";
 
@@ -75,6 +82,8 @@ export function getPeerType(entry: RegistryEntry): PeerType {
   const clientName = (entry.clientInfo?.clientName ?? "").toLowerCase();
   const clientVersion = entry.clientInfo?.clientVersion ?? "";
   if (clientName === "claude-code" || clientName === "claude") return "claude-code";
+  if (clientVersion === "opencode-plugin-bridge") return "opencode-bridge";
+  if (clientName === "opencode" || clientName.includes("opencode")) return "opencode-code";
   if (clientVersion === "app-server-bridge") return "codex-bridge";
   if (clientName.includes("codex")) return "codex-inner";
   if (clientName.includes("antigravity") || clientName === "agy") return "antigravity-inner";
@@ -87,6 +96,10 @@ export function getPeerTypeLabel(entry: RegistryEntry): string {
   switch (getPeerType(entry)) {
     case "claude-code":
       return "Claude Code";
+    case "opencode-code":
+      return "OpenCode";
+    case "opencode-bridge":
+      return "OpenCode bridge";
     case "codex-bridge":
       return "Codex bridge";
     case "codex-inner":
@@ -151,16 +164,16 @@ function buildAgentBridgeGuide(topic: AgentBridgeGuideTopic): string {
     overview: [
       "# open-agent-bridge MCP guide",
       "",
-      "Use this MCP server to send channel messages between Claude Code, Codex, and Antigravity sessions.",
+      "Use this MCP server to send channel messages between Claude Code, OpenCode, Codex, and Antigravity sessions.",
       "",
       "Tools:",
       "- `agent_bridge_guide(topic?)`: read this usage guide.",
-      "- `list_agents(includeClients=true)`: discover peers. Client rows include labels such as `[Claude Code]`, `[Codex inner]`, `[Antigravity inner]`.",
+      "- `list_agents(includeClients=true)`: discover peers. Client rows include labels such as `[Claude Code]`, `[OpenCode]`, `[Codex inner]`, `[Antigravity inner]`.",
       "- `message_client_session(...)`: proactively send a message to another client session.",
       "- `channel_inbox(pendingOnly=true)`: inspect inbound pending conversations and get `replyWith` values.",
       "- `reply(...)`: respond to an inbound pending message using `replyWith` verbatim.",
       "",
-      "A Codex session can register two entries for the same project: an inner MCP client and a bridge daemon. You can target either one; send routing auto-redirects inner clients to the bridge daemon. Antigravity (`agy`) registers a single inner MCP client and receives messages through its native Stop/SessionStart hooks.",
+      "A Codex session can register two entries for the same project: an inner MCP client and a bridge daemon; routing auto-redirects inner clients to the bridge. OpenCode sessions auto-create channels with all visible peers on startup. Antigravity (`agy`) registers a single inner MCP client and receives messages through its native Stop/SessionStart hooks.",
     ].join("\n"),
     setup: [
       "# Setup",
@@ -168,6 +181,12 @@ function buildAgentBridgeGuide(topic: AgentBridgeGuideTopic): string {
       "Claude Code:",
       "- Configure `.mcp.json` with `open-agent-bridge mcp config --write`.",
       "- Start Claude Code with the open-agent-bridge development channel enabled.",
+      "",
+      "OpenCode:",
+      "- Configure `.opencode/opencode.json` or `~/.config/opencode/opencode.json` with the open-agent-bridge MCP server entry.",
+      "- Install the plugin once per project: `open-agent-bridge opencode install-plugin --project <path>`.",
+      "- Restart OpenCode; the plugin opens a WS to the registry and delivers messages directly into the active session via prompt_async.",
+      "- Without the plugin, messages still arrive as MCP log entries but the LLM does not see them in real time.",
       "",
       "Codex:",
       "- Preferred: `open-agent-bridge codex start --project <path>`.",
@@ -256,7 +275,7 @@ function formatAgentsSummary(agents: RegistryEntry[]): string {
     if (a.entryType !== "client") return false;
     if (a.card.skills.length !== 0) return false;
     const peerType = getPeerType(a);
-    return peerType !== "dashboard-ui" && peerType !== "codex-bridge";
+    return peerType !== "dashboard-ui" && peerType !== "codex-bridge" && peerType !== "opencode-bridge";
   });
 
   return [
@@ -353,12 +372,13 @@ export class McpAgentBridge {
           "Tools:\n" +
           "  • agent_bridge_guide(topic='all') — usage guide for setup, sending, replies, ACK states, and troubleshooting.\n" +
           "  • list_agents(includeClients=true) — discover peers; client-session rows include a peer-type label " +
-          "such as `[Claude Code]`, `[Codex inner]`, or `[Antigravity inner]`.\n" +
+          "such as `[Claude Code]`, `[OpenCode]`, `[Codex inner]`, or `[Antigravity inner]`.\n" +
           "  • message_client_session(clientId | project, message) — open a new thread to a peer. " +
           "Routing is automatic; for a Codex session pass any agentId from its pair (it registers two — both work).\n" +
           "  • channel_inbox(pendingOnly=true) — list pending conversations; each entry has a `replyWith` block.\n" +
           "  • reply(agentId, conversationId, replyTo, message) — respond to a pending message; " +
           "copy `replyWith` fields verbatim.\n\n" +
+          "OpenCode sessions auto-create channels with all visible peers on startup. " +
           "For workflow patterns, peer-type semantics, and troubleshooting, load the `agent-bridge` skill.",
       },
     );
@@ -581,7 +601,7 @@ export class McpAgentBridge {
         if (e.projectPath !== projectPath) continue;
         if (e.agentId === this.clientAgentId) continue; // exclude self
         const cv = e.clientInfo?.clientVersion ?? "";
-        if (cv === "app-server-bridge" || cv === "acp-bridge") {
+        if (cv === "app-server-bridge" || cv === "acp-bridge" || cv === "opencode-plugin-bridge") {
           next.add(e.agentId);
         }
       }
@@ -786,6 +806,10 @@ export class McpAgentBridge {
         this.drainPendingPreInitMessages();
         console.error(`[MCP] Registered client: ${realProjectName} (${clientName} v${version})`);
 
+        if (this.clientProfile.id === "opencode") {
+          await this.autoCreateChannels(registration);
+        }
+
         const cleanup = async () => {
           this.clearSyncTimers();
           this.surfacedInboxMessageIds.clear();
@@ -813,6 +837,52 @@ export class McpAgentBridge {
       .digest("hex")
       .slice(0, 12);
     return `client-${clientName}-${digest}`;
+  }
+
+  private async autoCreateChannels(registration: AgentRegistration): Promise<void> {
+    try {
+      const all = await this.registry.listAgents();
+      const selfId = registration.agentId;
+      const peers = all.filter(
+        (e) =>
+          e.agentId !== selfId &&
+          e.agentId !== "client-dashboard-ui",
+      );
+
+      if (peers.length === 0) {
+        console.error("[MCP] OpenCode auto-channels: no peers found");
+        return;
+      }
+
+      for (const peer of peers) {
+        const conversationId = this.buildDeterministicConversationId(selfId, peer.agentId);
+        const existing = this.channelRuntime.getConversation(conversationId);
+        if (existing) continue;
+
+        try {
+          await this.channelRuntime.sendMessage({
+            conversationId,
+            toAgentId: peer.agentId,
+            kind: "presence",
+            content: `${registration.name} (OpenCode) is now connected`,
+            expectsResponse: false,
+            requiresAck: false,
+          });
+        } catch (err) {
+          console.error(
+            `[MCP] OpenCode auto-channel to ${peer.agentId.slice(0, 16)} failed:`,
+            err instanceof Error ? err.message : err,
+          );
+        }
+      }
+
+      console.error(`[MCP] OpenCode auto-channels: created ${peers.length} channel(s)`);
+    } catch (err) {
+      console.error(
+        "[MCP] OpenCode auto-channel creation failed:",
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
 
   /**
@@ -947,7 +1017,7 @@ export class McpAgentBridge {
             for (const entry of allAgents) {
               agentById.set(entry.agentId, entry);
               const cv = entry.clientInfo?.clientVersion;
-              if (cv === "app-server-bridge") {
+              if (cv === "app-server-bridge" || cv === "opencode-plugin-bridge") {
                 bridgeByProject.set(entry.projectPath, entry);
               }
             }
@@ -959,9 +1029,9 @@ export class McpAgentBridge {
             if (!entry) return rawAgentId;
             const cv = entry.clientInfo?.clientVersion ?? "";
             const cn = (entry.clientInfo?.clientName ?? "").toLowerCase();
-            const isBridge = cv === "app-server-bridge";
-            const isCodex = cn.includes("codex");
-            if (!isCodex || isBridge) return rawAgentId;
+            const isBridge = cv === "app-server-bridge" || cv === "opencode-plugin-bridge";
+            const isCodexOrOpenCode = cn.includes("codex") || cn.includes("opencode");
+            if (!isCodexOrOpenCode || isBridge) return rawAgentId;
             return bridgeByProject.get(entry.projectPath)?.agentId ?? rawAgentId;
           };
 
@@ -1060,6 +1130,7 @@ export class McpAgentBridge {
           "when a project has multiple sessions, claude-code > antigravity > codex (override with clientType). " +
           "\n\nDELIVERY SEMANTICS by target type:" +
           "\n  • Claude Code  → message arrives as an immediate <channel> push event." +
+          "\n  • OpenCode     → message arrives as a push notification via notifications/opencode/channel." +
           "\n  • Codex        → message is injected as a new turn prompt by the bridge daemon." +
           "\n  • Antigravity  → message is appended to .agents/ORIGINAL_REQUEST.md and surfaced by the Stop/SessionStart hooks." +
           "\n\nRESPONSE SEMANTICS: set expectsResponse=true only when you need a reply; set false for FYI/fire-and-forget. " +
@@ -1073,7 +1144,7 @@ export class McpAgentBridge {
         inputSchema: {
           clientId: z.string().optional().describe("Exact agentId of the target client session (from list_agents). Most reliable — use this whenever possible."),
           project: z.string().optional().describe("Project name or path substring to resolve the target session. Use when you don't have the exact agentId."),
-          clientType: z.string().optional().describe("Filter by client type when project matches multiple sessions: 'claude-code', 'codex', or 'antigravity'. Ignored when clientId is set."),
+          clientType: z.string().optional().describe("Filter by client type when project matches multiple sessions: 'claude-code', 'opencode', 'codex', or 'antigravity'. Ignored when clientId is set."),
           message: z.string().describe("Message text to send to the target session"),
           conversationId: z.string().optional().describe("Continue an existing conversation thread by reusing its ID. Leave blank to start a new thread."),
           replyTo: z.string().optional().describe("messageId to thread this message as a reply to (optional, for in-thread continuations)"),
@@ -1100,7 +1171,8 @@ export class McpAgentBridge {
           "\n\nROUTING: if `agentId` is a Codex inner MCP client (which is what its `reply` tool " +
           "stamps as `fromAgentId` of their replies), the adapter auto-redirects to the project's bridge " +
           "daemon so the agent receives your reply as a turn prompt. You should always copy " +
-          "`replyWith.agentId` verbatim — do NOT try to substitute a bridge agentId yourself.",
+          "`replyWith.agentId` verbatim — do NOT try to substitute a bridge agentId yourself. " +
+          "OpenCode and Claude Code targets receive the reply directly as a push notification.",
         inputSchema: {
           agentId: z.string().describe("The agentId of the sender you are replying to — MUST be replyWith.agentId from channel_inbox"),
           message: z.string().describe("Your reply text"),
@@ -1210,10 +1282,12 @@ export class McpAgentBridge {
   private async resolveDeliverableTarget(target: RegistryEntry): Promise<RegistryEntry> {
     const clientVersion = target.clientInfo?.clientVersion ?? "";
     const clientName = (target.clientInfo?.clientName ?? "").toLowerCase();
-    const isBridge = clientVersion === "app-server-bridge";
+    const isBridge =
+      clientVersion === "app-server-bridge" || clientVersion === "opencode-plugin-bridge";
     const isCodex = clientName.includes("codex");
+    const isOpenCode = clientName === "opencode" || clientName.includes("opencode");
 
-    if (!isCodex || isBridge) return target;
+    if ((!isCodex && !isOpenCode) || isBridge) return target;
 
     try {
       const all = await this.registry.listAgents();
@@ -1222,7 +1296,8 @@ export class McpAgentBridge {
           e.entryType === "client" &&
           e.projectPath === target.projectPath &&
           (e.clientInfo?.clientVersion === "app-server-bridge" ||
-            e.clientInfo?.clientVersion === "acp-bridge"),
+            e.clientInfo?.clientVersion === "acp-bridge" ||
+            e.clientInfo?.clientVersion === "opencode-plugin-bridge"),
       );
       if (bridge) {
         console.error(
@@ -1336,12 +1411,13 @@ export class McpAgentBridge {
 
     // 5. Multiple matches → prefer by priority instead of throwing an error
     if (matches.length > 1) {
-      const CLIENT_PRIORITY = ["claude-code", "claude", "antigravity", "agy", "codex-cli", "codex"];
+      const CLIENT_PRIORITY = ["claude-code", "claude", "opencode", "antigravity", "agy", "codex-cli", "codex"];
       const getPriority = (e: RegistryEntry) => {
         // App-server bridge daemons always win — they inject messages as turns into the
         // running app-server, which is exactly what we want when multiple Codex sessions
         // coexist (e.g. bridge + TUI MCP client both registered for the same project).
-        if (e.clientInfo?.clientVersion === "app-server-bridge") return -1;
+        const cv = e.clientInfo?.clientVersion ?? "";
+        if (cv === "app-server-bridge" || cv === "opencode-plugin-bridge") return -1;
         const name = e.clientInfo?.clientName?.toLowerCase() ?? "";
         const idx = CLIENT_PRIORITY.findIndex((p) => name.includes(p));
         return idx === -1 ? CLIENT_PRIORITY.length : idx;
@@ -1420,14 +1496,12 @@ export class McpAgentBridge {
 
       // Delivery wait strategy is client-specific:
       //
-      // • Claude Code  → push delivery via `notifications/claude/channel` works reliably.
-      //   Return fast (≤3s) so Claude Code is not blocked when the reply notification arrives.
-      //   If we block Claude here, the incoming reply notification cannot be processed.
-      //
+      // • Claude Code / OpenCode → push delivery works reliably via notifications.
+      //   Return fast (≤3s) so the client is not blocked when the reply notification arrives.
       // • Codex/Antigravity → `notifications/message` is only a log line; the AI agent does
       //   NOT react to it once the tool call has returned. The only way to surface the reply
       //   is in-band while the tool is still running. So we keep waiting for "answered".
-      const isClaudeClient = this.clientProfile.id === "claude";
+      const isPushClient = this.clientProfile.id === "claude" || this.clientProfile.id === "opencode";
 
       // Phase 1 – always wait briefly for any delivery confirmation
       const deliveryAck = await this.conversationService.waitForAcknowledgement(
@@ -1440,7 +1514,7 @@ export class McpAgentBridge {
       // waiting for the actual reply so we can return it inline.
       let deliveryState = deliveryAck;
       if (
-        !isClaudeClient &&
+        !isPushClient &&
         expectsResponse &&
         deliveryAck &&
         deliveryAck !== "answered" &&
@@ -1471,7 +1545,7 @@ export class McpAgentBridge {
           ? ""
           : deliveryState === "failed"
             ? "\n  Note: Delivery failed — the target bridge rejected the message."
-            : isClaudeClient && deliveryState
+            : isPushClient && deliveryState
               ? `\n  Note: Message delivered. The reply will arrive as a push notification.\n  To check now: call channel_inbox(pendingOnly=true)`
               : deliveryState
                 ? `\n  Note: Message delivered but no reply within timeout.\n  Call channel_inbox(pendingOnly=true) to check for the reply.`

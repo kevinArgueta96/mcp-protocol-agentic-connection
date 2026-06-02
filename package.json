@@ -11,7 +11,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp src/client/opencode-plugin/agent-bridge.ts dist/client/opencode-plugin/agent-bridge.ts && cp src/client/opencode-plugin/package.json dist/client/opencode-plugin/package.json",
     "dev": "tsx src/cli/index.ts",
     "start": "node dist/cli/index.js",
     "clean": "rm -rf dist",

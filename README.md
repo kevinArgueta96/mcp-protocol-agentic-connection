@@ -1,7 +1,5 @@
 # open-agent-bridge
 
-<!-- TODO: Add SVG logo/hero image here -->
-
 <div style="text-align: center;">
   <img alt="version" src="https://img.shields.io/badge/version-0.1.0-blue?style=for-the-badge" />
   <img alt="node" src="https://img.shields.io/badge/node-%3E%3D22-brightgreen?style=for-the-badge&logo=node.js" />
@@ -9,9 +7,9 @@
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.x-3178c6?style=for-the-badge&logo=typescript" />
 </div>
 
-**Let Claude Code, Codex, and Gemini CLI talk to each other — over MCP, locally, bidirectionally.**
+**Let Claude Code, OpenCode, Codex, and Gemini CLI talk to each other — over MCP, locally, bidirectionally.**
 
-`open-agent-bridge` is a local communication hub for AI agents. It provides service discovery, bidirectional messaging, and MCP tool exposure so that Claude Code, Codex, and Gemini CLI running in separate projects can delegate tasks, exchange context, and coordinate work without leaving the local machine.
+`open-agent-bridge` is a local communication hub for AI agents. It provides service discovery, bidirectional messaging, and MCP tool exposure so that Claude Code, OpenCode, Codex, and Gemini CLI running in separate projects can delegate tasks, exchange context, and coordinate work without leaving the local machine.
 
 ---
 
@@ -29,6 +27,7 @@
   - [3. Configure MCP](#3-configure-mcp)
 - [Launching each client](#launching-each-client)
   - [Claude Code](#claude-code)
+  - [OpenCode](#opencode)
   - [Codex](#codex)
   - [Gemini CLI](#gemini-cli)
   - [Dashboard](#dashboard-1)
@@ -45,8 +44,10 @@
   - [End-to-end example](#end-to-end-example)
 - [Client bridges](#client-bridges)
   - [Claude Code bridge (push)](#claude-code-bridge-push)
+  - [OpenCode bridge (plugin push)](#opencode-bridge-plugin-push)
   - [Codex bridge (app-server)](#codex-bridge-app-server)
-  - [Gemini bridge (tmux)](#gemini-bridge-tmux)
+  - [Gemini bridge (ACP)](#gemini-bridge-acp)
+  - [Gemini bridge (tmux fallback)](#gemini-bridge-tmux-fallback)
   - [Delivery mode comparison](#delivery-mode-comparison)
 - [Dashboard](#dashboard)
 - [Skills](#skills)
@@ -55,6 +56,8 @@
 - [CLI reference](#cli-reference)
 - [Scripts](#scripts)
 - [Architecture](#architecture)
+- [Feature status](#feature-status)
+- [Testing](#testing)
 - [Limitations](#limitations)
 - [Contributing](#contributing)
 - [License](#license)
@@ -86,13 +89,20 @@ claude --dangerously-load-development-channels server:open-agent-bridge
 
 Claude Code now has five MCP tools: `agent_bridge_guide`, `list_agents`, `channel_inbox`, `message_client_session`, `reply`.
 
+For OpenCode, add the same MCP server command to OpenCode's MCP config and install the push plugin:
+
+```bash
+pnpm run dev -- opencode install-plugin --project .
+```
+
 ---
 
 ## Why open-agent-bridge?
 
 - **Local-first, zero infrastructure.** Everything runs on `localhost`. No cloud relay, no auth tokens, no subscriptions. The registry binds to `:4999`; agents bind to `:5001+`.
-- **Native MCP integration.** Exposes the agent network as first-class MCP tools via `stdio` transport, so Claude Code picks them up automatically from `.mcp.json` without any plugin or wrapper.
+- **Native MCP integration.** Exposes the agent network as first-class MCP tools via `stdio` transport, so Claude Code, OpenCode, Codex, Gemini, and other MCP clients can use the same bridge tools.
 - **Bidirectional channel, not fire-and-forget.** Messages carry a `conversationId`, delivery ACKs are tracked in SQLite, and the `reply` tool closes the loop back to the sender. Claude Code can ask Codex a question and receive the answer in the same conversation thread.
+- **OpenCode plugin bridge.** The `opencode install-plugin` command installs a local OpenCode plugin that registers an OpenCode bridge client, opens a registry WebSocket, and injects incoming channel messages into the active OpenCode session with `session.prompt_async`.
 - **Codex app-server bridge.** `CodexAppServerBridge` injects incoming channel messages directly into the Codex app-server via `turn/start` JSON-RPC, so Codex actually processes requests rather than just receiving raw text.
 - **Gemini ACP bridge.** `GeminiAcpBridge` spawns `gemini --acp` and drives it over JSON-RPC 2.0 (stdin/stdout). Incoming channel messages are delivered as `session/prompt` calls; Gemini's replies come back programmatically — no tmux scraping needed.
 
@@ -101,7 +111,7 @@ Claude Code now has five MCP tools: `agent_bridge_guide`, `list_agents`, `channe
 ## How it works
 
 ```
-Claude Code / Codex / Gemini CLI / Dashboard
+Claude Code / OpenCode / Codex / Gemini CLI / Dashboard
               |
               v
     ┌─────────────────────────────────────┐
@@ -126,9 +136,16 @@ Claude Code / Codex / Gemini CLI / Dashboard
   │  Connects: WS to registry + WS to app-server  │
   │  Injects channel messages via turn/start       │
   └──────────────────────────────────────────────┘
+
+  ┌──────────────────────────────────────────────┐
+  │  OpenCode plugin bridge                       │
+  │  Auto-loads from .opencode/plugins/           │
+  │  Connects: WS to registry                     │
+  │  Injects via session.prompt_async             │
+  └──────────────────────────────────────────────┘
 ```
 
-All three runtime components — `AgentServer`, `McpAgentBridge`, and `CodexAppServerBridge` — connect independently to the registry. None depends on the others being present.
+Runtime components — `AgentServer`, `McpAgentBridge`, `CodexAppServerBridge`, `GeminiAcpBridge`, and the OpenCode plugin bridge — connect independently to the registry. None depends on the others being present.
 
 **Message flow — Claude Code delegates a task to Codex:**
 
@@ -155,6 +172,7 @@ Claude Code
 
 - Node.js `>=22`
 - pnpm >= 9
+- (Optional) OpenCode for OpenCode bridge features
 - (Optional) `codex` CLI in `$PATH` for Codex bridge features
 - (Optional) `gemini` CLI in `$PATH` for Gemini bridge features
 
@@ -228,6 +246,31 @@ The `--dangerously-load-development-channels` flag tells the Claude CLI to activ
 - Push notifications via `notifications/claude/channel` — incoming channel messages appear as `<channel>` blocks inline in the terminal.
 
 The MCP adapter registers the Claude Code session automatically on the first `initialize` handshake.
+
+### OpenCode
+
+OpenCode needs two pieces:
+
+1. An MCP server entry so the OpenCode model can call `list_agents`, `message_client_session`, `channel_inbox`, and `reply`.
+2. The local OpenCode plugin so incoming channel messages can be pushed into the active OpenCode session automatically.
+
+Install the plugin into a project:
+
+```bash
+open-agent-bridge opencode install-plugin --project "/absolute/path/to/your/project"
+```
+
+Or install it globally:
+
+```bash
+open-agent-bridge opencode install-plugin --global
+```
+
+The command copies `agent-bridge.ts` into `.opencode/plugins/` (or `~/.config/opencode/plugins/`) and merges the plugin dependencies into the matching `.opencode/package.json` / global package file. Local plugins are auto-loaded by OpenCode, so no `opencode.json` plugin entry is required. Restart OpenCode after installing.
+
+The plugin registers as an OpenCode bridge client (`clientVersion: "opencode-plugin-bridge"`), opens a WebSocket to the registry, sends heartbeats, and injects matching `channel.message` events into the active session through `ctx.client.session.prompt_async`. It also re-syncs missed pending messages periodically, deduplicates message IDs, and sends `delivered_to_bridge` / `displayed_to_client` ACKs back to the registry.
+
+When OpenCode is connected through MCP, `list_agents(includeClients=true)` shows rows like `[OpenCode]` and `[OpenCode bridge]`. Routing is automatic: sending to the OpenCode MCP client is redirected to the sibling plugin bridge when present, while the MCP client can still use `channel_inbox` and `reply`.
 
 ### Codex
 
@@ -340,16 +383,16 @@ Which produces:
 }
 ```
 
-The `mcp config` command writes absolute paths for the current machine. Commit the result to the project or add it to your global Claude Code settings.
+The `mcp config` command writes absolute paths for the current machine. Commit the result to the project or adapt the same `open-agent-bridge mcp start` command for your MCP client settings.
 
 ### Available tools
 
 | Tool | Description |
 | :--- | :--- |
 | `agent_bridge_guide` | Built-in MCP usage guide. Returns setup, send/reply workflow, ACK semantics, and troubleshooting by topic. |
-| `list_agents` | Discover connected agents and client sessions. Client rows include peer labels like `[Claude Code]`, `[Codex inner]`, `[Gemini inner]` and the unique 8-char suffix of the agentId (e.g. `[3fdb0c6a]`) so two same-project peers stay visually distinct. Bridge routing is automatic. |
+| `list_agents` | Discover connected agents and client sessions. Client rows include peer labels like `[Claude Code]`, `[OpenCode]`, `[OpenCode bridge]`, `[Codex inner]`, `[Codex bridge]`, `[Gemini inner]`, and `[Gemini bridge]`, plus the unique 8-char suffix of the agentId (e.g. `[3fdb0c6a]`) so two same-project peers stay visually distinct. Bridge routing is automatic. |
 | `channel_inbox` | Inspect pending channel conversations with full context and a `replyWith` hint for responding. |
-| `message_client_session` | Send a message to a named client session. Automatically resolves Codex/Gemini inner clients to their bridge daemon and infers `expectsResponse` when omitted. |
+| `message_client_session` | Send a message to a named client session. Automatically resolves OpenCode/Codex/Gemini inner clients to their bridge daemon when available and infers `expectsResponse` when omitted. |
 | `reply` | Respond to an incoming channel message, correlating by `conversationId`. |
 
 Check live tool and agent status at any time:
@@ -360,21 +403,20 @@ pnpm run dev -- mcp status
 
 ### Agent-bridge skill (Claude Code only)
 
-The MCP `instructions` block intentionally lists only the four tools above. The deeper guide — peer-type semantics, send/reply patterns, troubleshooting `delivered_to_bridge` stalls, Codex `--remote` setup — lives in a Claude Code skill that is loaded on demand:
+The MCP `instructions` block intentionally stays compact. The deeper guide — peer-type semantics, send/reply patterns, troubleshooting `delivered_to_bridge` stalls, OpenCode plugin setup, and Codex `--remote` setup — lives in skill files loaded on demand by each client:
 
-```
-marketplace/plugins/open-agent-bridge/skills/agent-bridge/SKILL.md
-```
+- **OpenCode:** `.opencode/skills/open-agent-bridge/SKILL.md` (project-local, auto-scanned by OpenCode)
+- **Codex:** `~/.codex/skills/open-agent-bridge/SKILL.md` (global Codex skill)
 
-Claude Code picks up the skill automatically once the plugin is registered (see [`Configure MCP`](#3-configure-mcp)). Invoke it with `/skill agent-bridge` or by mentioning the plugin in a prompt; the LLM only pays the token cost when it actually needs the guidance, keeping the handshake light.
+Each skill file includes a `references/` folder with peer-type taxonomy, send/reply patterns, delivery states, routing rules, troubleshooting ladder, and the injection prompt contract.
 
-The same content can also be queried at runtime from any client via the `agent_bridge_guide` MCP tool — useful for Codex and Gemini sessions that don't load Claude Code skills.
+The same content can also be queried at runtime from any client via the `agent_bridge_guide` MCP tool — useful for agents that don't load skill files.
 
 ---
 
 ## Channels
 
-Channels are the bidirectional messaging layer of open-agent-bridge. They let any agent or client session — Claude Code, Codex, Gemini CLI, the dashboard — send and receive structured conversational messages through the registry, with full delivery tracking and SQLite persistence.
+Channels are the bidirectional messaging layer of open-agent-bridge. They let any agent or client session — Claude Code, OpenCode, Codex, Gemini CLI, the dashboard — send and receive structured conversational messages through the registry, with full delivery tracking and SQLite persistence.
 
 This is the core feature of the project. Everything else (MCP tools, bridge daemons, dashboard chat) is built on top of it.
 
@@ -469,7 +511,7 @@ Parameters:
   project?      string   — Project name or path to identify the target session
   clientId?     string   — Exact agentId of the target (skips all resolution)
   clientType?   string   — Disambiguate when a project has multiple sessions
-                           ("claude-code" | "codex" | "gemini")
+                           ("claude-code" | "opencode" | "codex" | "gemini")
   conversationId? string — Continue an existing conversation thread
   replyTo?      string   — messageId this message responds to
   taskId?       string   — Associate with a task
@@ -479,7 +521,7 @@ Parameters:
 ```
 
 `expectsResponse` controls whether the receiver should answer:
-- **Default is `true`.** Agent-to-agent channel messages are a conversation contract — the receiver should reply unless the sender opts out. A bare `"hola"` or `"build done"` will wake up Codex/Gemini's bridge with a "reply required" injection prompt, and Claude Code will surface it as a pending conversation.
+- **Default is `true`.** Agent-to-agent channel messages are a conversation contract — the receiver should reply unless the sender opts out. A bare `"hola"` or `"build done"` will wake up OpenCode/Codex/Gemini's bridge with a "reply required" injection prompt, and Claude Code will surface it as a pending conversation.
 - **Pass `false`** (or include explicit FYI markers — `FYI`, `no reply`, `sin respuesta`, `just letting you know`, `for your information`, `no need to reply`) for fire-and-forget. The bridge daemon will inject the message as **informational** context and suppress the receiver's outbound reply.
 - For deterministic workflows pass the flag explicitly — text inference is a convenience for proactive sends, not a contract.
 
@@ -489,7 +531,7 @@ The mapping from message text to the boolean lives in [`inferExpectsResponse`](s
 1. `clientId` provided → direct lookup, no further resolution
 2. No `clientId` and no `project`, but `conversationId` provided → resolves from conversation history
 3. `project` provided → filter by project path/name match
-4. Multiple matches → sorted by client type priority: `app-server-bridge` (-1) > `claude-code` > `claude` > `gemini-cli` > `gemini` > `codex-cli` > `codex`
+4. Multiple matches → sorted by client type priority: bridge daemons first (`app-server-bridge`, `acp-bridge`, `opencode-plugin-bridge`), then `claude-code` > `claude` > `opencode` > `gemini-cli` > `gemini` > `codex-cli` > `codex`
 
 Returns: `toAgentId`, `conversationId`, `messageId`, `deliveryState`.
 
@@ -633,7 +675,7 @@ reply(
 
 ## Client bridges
 
-Each AI client has a different bridge mechanism depending on how it receives channel messages. All three ultimately use the same channel protocol — what differs is *how the message surfaces to the human*.
+Each AI client has a different bridge mechanism depending on how it receives channel messages. All clients ultimately use the same channel protocol — what differs is *how the message surfaces to the human*.
 
 ### Claude Code bridge (push)
 
@@ -687,6 +729,32 @@ POST http://localhost:4999/notify-claude
   "expectsResponse": true
 }
 ```
+
+---
+
+### OpenCode bridge (plugin push)
+
+OpenCode's bridge is a local plugin installed by:
+
+```bash
+pnpm run dev -- opencode install-plugin --project /path/to/opencode-project
+# or, after build/install:
+open-agent-bridge opencode install-plugin --project /path/to/opencode-project
+```
+
+The installer copies the bridge plugin into `.opencode/plugins/agent-bridge.ts`. For global use it writes to `~/.config/opencode/plugins/agent-bridge.ts`. OpenCode auto-scans local plugins, so the installer does not need to mutate `opencode.json` for plugin registration.
+
+At runtime the plugin:
+
+1. Registers a client row named like `<project> (opencode bridge)` with `clientVersion: "opencode-plugin-bridge"`.
+2. Identifies its WebSocket as `client-opencode-bridge-{hash}` so the registry can target it directly.
+3. Tracks the active OpenCode session from `session.created`, `session.updated`, and `session.idle` events.
+4. Injects inbound channel messages with `ctx.client.session.prompt_async`.
+5. Sends delivery ACKs and periodically re-syncs missed pending messages from `/channel/conversations`.
+
+The injected prompt mirrors the Codex/Gemini format. If `expectsResponse !== false`, OpenCode receives a "reply required" turn with the exact `agent-bridge.reply` fields to copy. Informational messages are marked "no reply" and tell the receiving agent not to call `reply`.
+
+OpenCode can also connect to the MCP adapter as a normal MCP client. In that case `OpenCodeClientProfile` accepts direct messages for the OpenCode MCP session and sibling bridge messages for the same project, so `channel_inbox(pendingOnly=true)` still works even when auto-routing chooses the plugin bridge.
 
 ---
 
@@ -778,9 +846,9 @@ pnpm run dev -- gemini tmux-sidecar  # poll channel inbox and inject follow-ups 
 
 ---
 
-### Injection prompt format (Codex / Gemini)
+### Injection prompt format (OpenCode / Codex / Gemini)
 
-Both bridges share a single prompt template (`src/client/injection-prompt.ts`) that wraps every inbound channel message before injecting it as a turn. The wrapper exists so the receiving LLM can identify the sender, see the full content delimited from instructions, and copy a pre-filled `reply` call without having to derive any IDs.
+The Codex and Gemini bridge daemons share a single prompt template (`src/client/injection-prompt.ts`) that wraps every inbound channel message before injecting it as a turn. The OpenCode plugin carries the same contract in its local plugin file. The wrapper exists so the receiving LLM can identify the sender, see the full content delimited from instructions, and copy a pre-filled `reply` call without having to derive any IDs.
 
 A reply-required injection looks like this:
 
@@ -823,12 +891,13 @@ Test contract: `src/__tests__/injection-prompt.test.ts` locks the structure (BEG
 | Client | Bridge type | How messages arrive | Requires daemon |
 | :--- | :--- | :--- | :--- |
 | **Claude Code** | Built-in MCP push | `<channel>` block in terminal via `notifications/claude/channel` | No — part of MCP adapter |
+| **OpenCode** | Local plugin bridge | `session.prompt_async` → OpenCode processes as a prompt turn | No separate process — plugin runs inside OpenCode |
 | **Codex** | App-server daemon | `turn/start` JSON-RPC → Codex processes as a prompt turn | Yes — `codex app-bridge` |
 | **Gemini CLI** | ACP bridge (preferred) | `session/prompt` JSON-RPC → Gemini processes as a prompt turn | Yes — `gemini app-bridge` |
 | **Gemini CLI** | tmux sidecar (fallback) | Keystrokes injected into the active tmux pane | Yes — `gemini tmux-sidecar` |
 | **Dashboard** | WebSocket | Chat panel updates via `channel.message` WS event | No — built into registry WS |
 
-All four paths share the same channel protocol (`ChannelMessage`, `ChannelAck`, `conversationId`). The bridge layer is just the last-mile delivery mechanism.
+All paths share the same channel protocol (`ChannelMessage`, `ChannelAck`, `conversationId`). The bridge layer is just the last-mile delivery mechanism.
 
 ---
 
@@ -899,10 +968,11 @@ All commands run via `node dist/cli/index.js <command>` (built) or `pnpm run dev
 | `find <query>` | Search agents by skill or project type. |
 | `delegate <skill-id> <message>` | Send a task to the healthiest agent exposing a given skill. |
 | `broadcast <message>` | Send a message to all healthy agents. |
-| `mcp start` | Start the MCP adapter in `stdio` mode (used by Claude Code). |
+| `mcp start` | Start the MCP adapter in `stdio` mode (used by Claude Code, OpenCode, Codex, Gemini, and other MCP clients). |
 | `mcp config [--write] [--global]` | Print or write `.mcp.json` configuration. |
 | `mcp status` | Show live agents and registered MCP tools. |
 | `mcp server` | Start the MCP adapter in HTTP/SSE mode (port 6000). |
+| `opencode install-plugin` | Install the local OpenCode plugin bridge into a project or globally. |
 | `codex start` | One-command: registry + bridge + Codex TUI. |
 | `codex app-bridge` | Start the Codex app-server bridge daemon only. |
 | `codex tmux-bind` | Bind the current tmux pane to the active Codex session. |
@@ -919,7 +989,7 @@ All commands run via `node dist/cli/index.js <command>` (built) or `pnpm run dev
 
 | Script | Command | Description |
 | :--- | :--- | :--- |
-| `build` | `tsc` | Compile TypeScript to `dist/`. |
+| `build` | `tsc` + plugin copy | Compile TypeScript to `dist/` and copy the OpenCode plugin files into `dist/client/opencode-plugin/`. |
 | `dev` | `tsx src/cli/index.ts` | Run CLI from source without building. |
 | `start` | `node dist/cli/index.js` | Run the compiled CLI. |
 | `clean` | `rm -rf dist` | Delete build output. |
@@ -948,7 +1018,7 @@ src/
 ├── client/
 │   ├── a2a-client.ts                A2AClient: HTTP + WS client for agent-to-agent calls
 │   ├── registry-client.ts           RegistryClient: HTTP client for the registry REST API
-│   ├── client-profile-resolver.ts   Resolves delivery profile by client type (Claude/Codex/Gemini)
+│   ├── client-profile-resolver.ts   Resolves delivery profile by client type (Claude/OpenCode/Codex/Gemini)
 │   ├── conversation-session-store.ts In-memory conversation state with ACK tracking
 │   ├── codex-app-server-bridge.ts   CodexAppServerBridge daemon
 │   ├── codex-app-server-client.ts   WS client for the Codex app-server protocol
@@ -961,10 +1031,11 @@ src/
 │   ├── gemini-runtime-discovery.ts  Detect running Gemini CLI process
 │   ├── gemini-session-files.ts      Read/write active Gemini session marker
 │   ├── gemini-tmux-bridge-service.ts tmux-based Gemini injection sidecar (fallback)
+│   ├── opencode-plugin/             OpenCode local plugin source copied by `opencode install-plugin`
 │   ├── channel-transport.ts         WebSocket transport to registry
 │   ├── channel-client-runtime.ts    WS runtime with reconnect + event bus
 │   ├── conversation-service.ts      High-level send/reply/inbox helpers
-│   └── profiles/                    Client behavior profiles (Claude, Codex, Gemini)
+│   └── profiles/                    Client behavior profiles (Claude, OpenCode, Codex, Gemini)
 ├── mcp/
 │   └── adapter.ts             McpAgentBridge — 5 MCP tools + session resolution
 ├── registry/
@@ -999,6 +1070,38 @@ src/
 
 ---
 
+## Feature status
+
+| Feature | Status |
+| :--- | :--- |
+| Registry HTTP + WS + SQLite | stable |
+| MCP adapter — 5 tools | stable |
+| Claude Code push bridge | stable |
+| OpenCode plugin push bridge | stable |
+| Codex app-server bridge | stable |
+| Gemini ACP bridge | stable |
+| Dashboard Vue SPA | stable |
+| 6 built-in skills | stable |
+| HTTP SSE MCP mode (`mcp server`, port 6000) | stable |
+| Dynamic skills (run-script, run-tests, docker-build, code-review) | stable — require `--claude` |
+| `tasks/sendSubscribe` — A2A SSE streaming | **stub — not implemented** |
+| StateGraph skill composition | implemented, unused in production |
+| Gemini tmux fallback | experimental |
+| `ask --stream` CLI flag | declared, not implemented |
+
+---
+
+## Testing
+
+```bash
+pnpm run test   # vitest — runs all 11 test files once
+pnpm run lint   # biome — lint and style check
+```
+
+Test coverage includes: injection prompt contract (`injection-prompt.test.ts`), peer-type label generation (`peer-type-label.test.ts`), `inferExpectsResponse` text inference, conversation ID determinism, ACK state transitions, and MCP adapter routing.
+
+---
+
 ## Limitations
 
 - **Local only.** The registry, agents, and bridges all run on `localhost`. No remote or cloud deployment is supported in v0.1.
@@ -1006,9 +1109,11 @@ src/
 - **No authentication.** All local connections are unauthenticated. Do not expose registry or agent ports beyond `localhost`.
 - **Volatile agent registry.** The `AgentStore` is in-memory only. Restarting the registry clears all registered agents and heartbeats — agents re-register automatically on reconnect, but any in-flight state is lost. Only channel messages and ACKs (in `channel_messages`, `channel_acks`, `channel_suppressed_conversations`) are persisted to SQLite.
 - **Codex bridge requires app-server remote TUI or tmux fallback.** The preferred path is `open-agent-bridge codex start` or `codex --remote ws://127.0.0.1:<port>` against the bridge app-server. A plain `codex` session is isolated and cannot receive automatic turn injection. The tmux sidecar fallback polls at a fixed interval and injects follow-ups as synthetic keypresses, which is inherently racy under heavy TUI use.
+- **OpenCode push requires the local plugin.** OpenCode can call the MCP tools without the plugin, but automatic turn injection depends on `open-agent-bridge opencode install-plugin` and an OpenCode restart. Without the plugin bridge, inbound work must be discovered through `channel_inbox`.
 - **Dashboard `handleChannelMessage` depends on `toAgentId` in broadcast.** When a channel message is broadcast without a `toAgentId`, the dashboard may not correctly attribute it to the right conversation in the UI — this is a known issue with the current broadcast routing in the registry WebSocket relay.
-- **`tasks/sendSubscribe` not implemented.** End-to-end A2A streaming (Server-Sent Events per task) is not yet supported.
-- **Gemini bridge is experimental.** The `GeminiTmuxBridgeService` uses the same tmux injection mechanism as Codex and has the same caveats.
+- **`tasks/sendSubscribe` not implemented.** End-to-end A2A streaming (Server-Sent Events per task) is not yet supported. The method is a stub — it is not announced in the Agent Card.
+- **`ask --stream` flag is a no-op.** The `--stream` option is declared in the CLI but the handler never reads it. Streaming task output is not implemented.
+- **Gemini tmux fallback is experimental.** The preferred Gemini path is the ACP bridge (`gemini --acp`). The `GeminiTmuxBridgeService` uses the same tmux injection mechanism as Codex and has the same caveats.
 
 ---
 

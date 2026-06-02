@@ -12,6 +12,7 @@ import { registerMcpCommand } from "./commands/mcp.js";
 import { registerDashboardCommand } from "./commands/dashboard.js";
 import { registerCodexCommand } from "./commands/codex.js";
 import { registerAntigravityCommand } from "./commands/antigravity.js";
+import { registerOpenCodeCommand } from "./commands/opencode.js";
 
 const program = new Command();
 
@@ -32,5 +33,6 @@ registerMcpCommand(program);
 registerDashboardCommand(program);
 registerCodexCommand(program);
 registerAntigravityCommand(program);
+registerOpenCodeCommand(program);
 
 program.parse(process.argv);

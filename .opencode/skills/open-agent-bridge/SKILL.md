@@ -1,0 +1,97 @@
+---
+name: open-agent-bridge
+description: Use when sending or replying to channel messages between agents (Claude Code, OpenCode, Codex, Gemini). Activate when: list_agents, message_client_session, channel_inbox, or reply MCP tools are needed; when a <channel> push arrives; when deliveryState shows delivered_to_bridge stuck; when routing to Codex/Gemini inner vs bridge peers; when authoring code that uses the agent-bridge MCP tools or ChannelMessage protocol; when setting up the registry, MCP config, or bridge daemons.
+---
+
+# open-agent-bridge
+
+Local communication hub for AI agents. Claude Code, OpenCode, Codex, and Gemini CLI exchange messages through a central registry over MCP tools and WebSocket channels.
+
+## When to use
+
+- You received a `<channel>` push and need to reply
+- You want to send a task or message to another agent
+- `list_agents` / `message_client_session` / `channel_inbox` / `reply` are needed
+- Delivery is stuck at `delivered_to_bridge` and you need to diagnose why
+- You need to set up a new agent, configure MCP, or start a bridge daemon
+
+## Quick reference — 5 MCP tools
+
+| Tool | Use for |
+|---|---|
+| `agent_bridge_guide` | Read the protocol guide (topics: overview, setup, send, reply, acks, troubleshooting) |
+| `list_agents` | Discover connected agents and client sessions |
+| `message_client_session` | Send a message to a peer; starts or continues a thread |
+| `channel_inbox` | Inspect pending conversations awaiting reply |
+| `reply` | Respond to a pending message; closes the thread |
+
+## Send workflow
+
+```
+1. list_agents(includeClients: true)
+   → find the target agentId or project name
+
+2. message_client_session(
+     message: "...",
+     clientId: "<agentId>",   // or project: "<name>"
+     expectsResponse: true     // omit to let the adapter infer
+   )
+   → returns conversationId, messageId, deliveryState
+
+3. Wait for reply via <channel> push or poll channel_inbox
+```
+
+## Reply workflow
+
+```
+1. channel_inbox(pendingOnly: true)
+   → each entry has a replyWith block
+
+2. reply(
+     agentId:        replyWith.agentId,        // copy verbatim
+     conversationId: replyWith.conversationId, // copy verbatim
+     replyTo:        replyWith.replyTo,        // copy verbatim
+     message:        "..."
+   )
+```
+
+Never open a new thread to respond to a pending message — always use `reply` with the existing `conversationId`.
+
+## Routing rules
+
+The adapter resolves the best target automatically:
+
+1. `clientId` provided → direct lookup, no resolution
+2. Only `conversationId` provided → resolved from conversation history
+3. `project` provided → filter by project path/name
+4. Multiple matches → bridge daemons win (priority -1), then: claude-code > opencode > gemini > codex
+
+Codex inner MCP clients (`client-codex-mcp-client-*`) and Gemini inner clients are auto-redirected to their bridge daemon. Never substitute `replyWith.agentId` manually — the adapter handles re-routing.
+
+## ACK states
+
+```
+queued
+  → delivered_to_bridge   (bridge received the message)
+    → displayed_to_client (client session received it)
+      → answered          (reply was sent)
+      → failed            (delivery or reply failed)
+```
+
+If `delivered_to_bridge` does not advance: the bridge is running but the client session is not attached. See `references/troubleshooting.md`.
+
+## Anti-patterns
+
+- Do not open a new thread to reply to a pending message — use `reply`
+- Do not substitute `replyWith.agentId` with another ID — adapter handles routing
+- Do not set `requiresAck: true` on fire-and-forget messages
+- Do not call `message_client_session` to reply — that starts a new thread
+
+## References
+
+- [Peer types and taxonomy](references/peer-types.md)
+- [Send and reply patterns](references/send-and-reply.md)
+- [Delivery states and ACKs](references/delivery-states.md)
+- [Routing and priority](references/routing.md)
+- [Troubleshooting](references/troubleshooting.md)
+- [Injection prompt contract](references/injection-prompt.md)
