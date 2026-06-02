@@ -17,12 +17,14 @@ export function registerMcpCommand(program: Command): void {
     )
     .option("--registry-url <url>", "Registry URL", "http://localhost:4999")
     .option("--project <path>", "Project path for client registration (default: cwd)")
+    .option("--identity <id>", "Channel namespace — only sessions sharing it see each other (default: global)")
     .option("--no-auto", "Disable auto-start of registry (require manual setup)")
     .action(async (options) => {
       const bridge = new McpAgentBridge({
         registryUrl: options.registryUrl,
         auto: options.auto !== false,
         projectPath: options.project ?? process.env["AGENT_BRIDGE_PROJECT"] ?? process.cwd(),
+        identity: options.identity ?? process.env["AGENT_BRIDGE_IDENTITY"],
       });
       await bridge.start("stdio");
     });

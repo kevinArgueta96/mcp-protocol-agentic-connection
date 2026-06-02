@@ -22,7 +22,10 @@ export class AgentStore {
         registration.entryType === "client" &&
         existing.entryType === "client" &&
         existing.projectPath === registration.projectPath &&
-        existing.clientInfo?.clientName === registration.clientInfo?.clientName;
+        existing.clientInfo?.clientName === registration.clientInfo?.clientName &&
+        // Different `--identity` namespaces in the same project are distinct
+        // sessions and must coexist, not evict each other.
+        (existing.identity ?? "global") === (registration.identity ?? "global");
 
       const sameProjectAgent =
         (registration.entryType ?? "agent") === "agent" &&

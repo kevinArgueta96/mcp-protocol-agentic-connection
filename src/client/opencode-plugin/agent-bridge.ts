@@ -26,6 +26,7 @@ interface ChannelMessage {
   content: string;
   createdAt: number;
   expectsResponse?: boolean;
+  identity?: string;
 }
 
 // ── Bounded dedup ─────────────────────────────────────────────────────────────
@@ -128,7 +129,11 @@ export const AgentBridgePlugin = async (ctx: any) => {
 
   const projectPath: string = ctx.worktree ?? ctx.directory ?? process.cwd();
   const projectName: string = ctx.project?.name ?? "opencode";
-  const agentId = `client-opencode-bridge-${shortId(projectPath)}`;
+  // Channel namespace — set AGENT_BRIDGE_IDENTITY in the OpenCode env to scope
+  // this session. Defaults to "global". Folded into the agentId so distinct
+  // namespaces in the same project register as separate sessions.
+  const identity: string = process.env.AGENT_BRIDGE_IDENTITY ?? "global";
+  const agentId = `client-opencode-bridge-${shortId(`${projectPath}\n${identity}`)}`;
 
   const injected = new BoundedIdSet();
   const queue: Array<{ msg: ChannelMessage; retries: number }> = [];
@@ -204,6 +209,8 @@ export const AgentBridgePlugin = async (ctx: any) => {
   }
 
   function accepts(msg: ChannelMessage): boolean {
+    // Identity hard wall: only messages in this session's namespace are visible.
+    if ((msg.identity ?? "global") !== identity) return false;
     if (!msg.toAgentId) return true;
     if (msg.toAgentId === agentId) return true;
     return false;
@@ -216,7 +223,7 @@ export const AgentBridgePlugin = async (ctx: any) => {
       agentId, name: `${projectName} (opencode bridge)`,
       url: "", wsUrl: "", port: 0,
       projectPath, projectName, projectType: "client",
-      entryType: "client", registeredAt: Date.now(),
+      entryType: "client", registeredAt: Date.now(), identity,
       card: { name: agentId, url: "", version: "0.1.0", skills: [] },
       clientInfo: { clientName: "open-agent-bridge-opencode-plugin", clientVersion: "opencode-plugin-bridge" },
     });

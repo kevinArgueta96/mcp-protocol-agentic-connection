@@ -26,6 +26,9 @@ export interface AcceptsChannelMessageContext {
    * locally so it can surface in `channel_inbox(pendingOnly=true)`.
    */
   siblingBridgeAgentIds?: ReadonlySet<string>;
+  /** The channel namespace of the receiving session. A message is only accepted
+   *  when its `identity` matches this (both default to "global"). */
+  selfIdentity?: string;
 }
 
 export interface ClientBehaviorProfile {

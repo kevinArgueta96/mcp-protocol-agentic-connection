@@ -14,6 +14,8 @@ import type { ChannelMessage } from "../types/messages.js";
 export interface CodexAppServerBridgeOptions {
   registryUrl?: string;
   projectPath?: string;
+  /** Channel namespace. Only sessions sharing it see each other. Default: global */
+  identity?: string;
   /** Port for the codex app-server process. Default: 4500 */
   appServerPort?: number;
 }
@@ -45,6 +47,7 @@ const NO_TUI_QUEUE_TIMEOUT_MS = 30_000;
  *   codex --remote ws://127.0.0.1:<appServerPort>
  */
 export class CodexAppServerBridge extends EventEmitter {
+  private readonly identity: string;
   private readonly registryUrl: string;
   private readonly projectPath: string;
   private readonly appServerPort: number;
@@ -81,6 +84,7 @@ export class CodexAppServerBridge extends EventEmitter {
     super();
     this.registryUrl = options.registryUrl ?? "http://localhost:4999";
     this.projectPath = options.projectPath ?? process.cwd();
+    this.identity = options.identity ?? process.env["AGENT_BRIDGE_IDENTITY"] ?? "global";
     this.appServerPort = options.appServerPort ?? 4500;
 
     this.client = new CodexAppServerClient({
@@ -302,6 +306,7 @@ export class CodexAppServerBridge extends EventEmitter {
       },
       registeredAt: Date.now(),
       entryType: "client" as const,
+      identity: this.identity,
       clientInfo: { clientName: "codex", clientVersion: "app-server-bridge" },
     };
 
@@ -311,7 +316,7 @@ export class CodexAppServerBridge extends EventEmitter {
 
   private buildClientAgentId(): string {
     const hash = createHash("sha1")
-      .update(`codex-app-bridge\n${this.projectPath}`)
+      .update(`codex-app-bridge\n${this.projectPath}\n${this.identity}`)
       .digest("hex")
       .slice(0, 12);
     return `client-codex-bridge-${hash}`;

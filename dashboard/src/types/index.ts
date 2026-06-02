@@ -38,6 +38,9 @@ export interface RegistryAgent {
   lastHeartbeat: number;
   healthy: boolean;
   entryType?: "agent" | "client";
+  /** Channel namespace this session belongs to. "global" (or undefined) is the
+   *  default shared namespace; other values isolate the session to a ticket. */
+  identity?: string;
   clientInfo?: {
     clientName: string;
     clientVersion: string;

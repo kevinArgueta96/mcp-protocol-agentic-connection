@@ -84,6 +84,7 @@ export class ChannelTransport {
     attemptCount?: number;
     requiresAck?: boolean;
     expectsResponse?: boolean;
+    identity?: string;
   }): Promise<ChannelMessage> {
     const response = await fetch(`${this.registryUrl}/channel/messages`, {
       method: "POST",

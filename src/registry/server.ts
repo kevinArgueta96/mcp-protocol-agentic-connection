@@ -286,6 +286,7 @@ export class RegistryServer {
         attemptCount: body.attemptCount,
         requiresAck: body.requiresAck,
         expectsResponse: body.expectsResponse,
+        identity: body.identity,
       });
 
       // Idempotency: if a duplicate `messageId` was posted, suppress all broadcasts.

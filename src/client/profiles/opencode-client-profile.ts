@@ -31,6 +31,8 @@ export class OpenCodeClientProfile implements ClientBehaviorProfile {
     selfAgentId: string | null,
     ctx?: AcceptsChannelMessageContext,
   ): boolean {
+    // Identity hard wall: a message is only visible inside its own namespace.
+    if ((message.identity ?? "global") !== (ctx?.selfIdentity ?? "global")) return false;
     if (!message.toAgentId) return true;
     if (message.toAgentId === "opencode") return true;
     if (selfAgentId != null && message.toAgentId === selfAgentId) return true;

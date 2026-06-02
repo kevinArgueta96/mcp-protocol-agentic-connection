@@ -43,6 +43,7 @@ export function registerCodexCommand(program: Command): void {
     .option("--project <path>", "Project path", process.cwd())
     .option("--app-server-port <number>", "Starting port for the codex app-server (auto-increments if busy)", "4500")
     .option("--registry-url <url>", "Registry URL", "http://localhost:4999")
+    .option("--identity <id>", "Channel namespace — only sessions sharing it see each other (default: global)")
     .action(async (options) => {
       const projectPath = options.project ?? process.cwd();
       const registryUrl: string = options.registryUrl;
@@ -78,6 +79,7 @@ export function registerCodexCommand(program: Command): void {
         registryUrl,
         projectPath,
         appServerPort,
+        identity: options.identity,
       });
 
       try {
@@ -136,6 +138,7 @@ export function registerCodexCommand(program: Command): void {
     .option("--registry-url <url>", "Registry URL", "http://localhost:4999")
     .option("--project <path>", "Project path for client registration (default: cwd)")
     .option("--app-server-port <number>", "Starting port for the codex app-server (auto-increments if busy)", "4500")
+    .option("--identity <id>", "Channel namespace — only sessions sharing it see each other (default: global)")
     .action(async (options) => {
       const projectPath = options.project ?? process.cwd();
       const requestedPort = Number(options.appServerPort);
@@ -148,6 +151,7 @@ export function registerCodexCommand(program: Command): void {
         registryUrl: options.registryUrl,
         projectPath,
         appServerPort,
+        identity: options.identity,
       });
 
       console.log(chalk.bold("\n[open-agent-bridge] Codex app-server bridge\n"));

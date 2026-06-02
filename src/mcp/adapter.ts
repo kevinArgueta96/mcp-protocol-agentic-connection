@@ -38,6 +38,9 @@ export interface McpAdapterOptions {
   auto?: boolean;
   /** Project path used for client registration (default: cwd) */
   projectPath?: string;
+  /** Channel namespace for this session. Only sessions sharing the same identity
+   *  see each other's messages/peers. Defaults to "global". */
+  identity?: string;
 }
 
 /**
@@ -68,6 +71,21 @@ export interface ClientCapabilitiesSnapshot {
   elicitation?: unknown;
   roots?: unknown;
   [key: string]: unknown;
+}
+
+/** Build the stable agentId for a client session. Encodes (clientName,
+ *  projectPath, identity) so distinct `--identity` namespaces in the same
+ *  project register as separate agents. Omitting identity == "global". Pure. */
+export function buildStableClientAgentId(
+  clientName: string,
+  projectPath: string,
+  identity = "global",
+): string {
+  const digest = createHash("sha1")
+    .update(`${clientName}\n${projectPath}\n${identity}`)
+    .digest("hex")
+    .slice(0, 12);
+  return `client-${clientName}-${digest}`;
 }
 
 export type PeerType =
@@ -367,8 +385,11 @@ export class McpAgentBridge {
       registryUrl: "http://localhost:4999",
       auto: true,
       projectPath: process.cwd(),
+      identity: "global",
       ...options,
     };
+    // Normalize: an explicit `identity: undefined` in options must not defeat the default.
+    if (!this.options.identity) this.options.identity = "global";
     this.registry = new RegistryClient(this.options.registryUrl);
     this.channelTransport = new ChannelTransport({ registryUrl: this.options.registryUrl });
     this.channelRuntime = new ChannelClientRuntime({
@@ -405,16 +426,27 @@ export class McpAgentBridge {
     // ── 1. Ensure registry is running ─────────────────────────────────────
     await this.ensureInfrastructure();
 
-    // ── 1b. Register shutdown cleanup for embedded registry ───────────────
-    const shutdownEmbedded = async () => {
+    // ── 1b. Register shutdown cleanup ─────────────────────────────────────
+    // Deregister this client from the registry so its row disappears
+    // immediately (instead of lingering until the heartbeat times out), then
+    // stop any embedded registry. Guarded so it runs at most once.
+    let shuttingDown = false;
+    const shutdown = async () => {
+      if (shuttingDown) return;
+      shuttingDown = true;
       this.clearSyncTimers();
+      // deactivateClient stops the heartbeat AND deregisters from the registry,
+      // so the client's row disappears at once instead of lingering until the
+      // heartbeat times out.
+      try { await this.channelRuntime.deactivateClient?.(); } catch { /* ignore */ }
       if (this.embeddedRegistry) {
         try { await this.embeddedRegistry.stop(); } catch { /* ignore */ }
         this.embeddedRegistry = null;
       }
     };
-    process.once("SIGINT", () => void shutdownEmbedded().then(() => process.exit(0)));
-    process.once("SIGTERM", () => void shutdownEmbedded().then(() => process.exit(0)));
+    process.once("SIGINT", () => void shutdown().then(() => process.exit(0)));
+    process.once("SIGTERM", () => void shutdown().then(() => process.exit(0)));
+    process.once("SIGHUP", () => void shutdown().then(() => process.exit(0)));
 
     // ── 1c. Connect WS to registry for channel events ─────────────────────
     this.channelRuntime.connect();
@@ -431,6 +463,14 @@ export class McpAgentBridge {
     // ── 4. Connect transport ───────────────────────────────────────────────
     if (transport === "stdio") {
       const stdioTransport = new StdioServerTransport();
+      // When the parent client (Claude / agy / Codex …) closes the stdio pipe,
+      // exit instead of lingering as an orphan that keeps heartbeating and
+      // pollutes the registry. Cover both the transport's own close event and
+      // a raw stdin EOF as a belt-and-suspenders signal.
+      const onPipeClosed = () => void shutdown().then(() => process.exit(0));
+      stdioTransport.onclose = onPipeClosed;
+      process.stdin.once("end", onPipeClosed);
+      process.stdin.once("close", onPipeClosed);
       await this.server.connect(stdioTransport);
       console.error("[MCP] open-agent-bridge ready.");
     } else {
@@ -464,6 +504,7 @@ export class McpAgentBridge {
       if (
         !this.clientProfile.acceptsChannelMessage(channelMessage, this.clientAgentId, {
           siblingBridgeAgentIds: this.siblingBridgeAgentIds,
+          selfIdentity: this.options.identity,
         })
       )
         return;
@@ -668,6 +709,7 @@ export class McpAgentBridge {
       if (
         !this.clientProfile.acceptsChannelMessage(msg, this.clientAgentId, {
           siblingBridgeAgentIds: this.siblingBridgeAgentIds,
+          selfIdentity: this.options.identity,
         })
       )
         continue;
@@ -752,6 +794,7 @@ export class McpAgentBridge {
           if (
             !this.clientProfile.acceptsChannelMessage(msg, this.clientAgentId, {
               siblingBridgeAgentIds: this.siblingBridgeAgentIds,
+              selfIdentity: this.options.identity,
             })
           )
             continue;
@@ -887,7 +930,11 @@ export class McpAgentBridge {
           }
         }
 
-        this.clientAgentId = this.buildStableClientAgentId(clientName, realProjectPath);
+        this.clientAgentId = this.buildStableClientAgentId(
+          clientName,
+          realProjectPath,
+          this.options.identity,
+        );
         // Persist the resolved project path so downstream lookups (sibling
         // bridge ids, etc.) match what the client actually identified itself
         // with via the MCP roots protocol, not the cwd-derived constructor
@@ -917,6 +964,7 @@ export class McpAgentBridge {
           },
           registeredAt: Date.now(),
           entryType: "client" as const,
+          identity: this.options.identity,
           clientInfo: { clientName, clientVersion: version },
         };
 
@@ -950,12 +998,12 @@ export class McpAgentBridge {
     };
   }
 
-  private buildStableClientAgentId(clientName: string, projectPath: string): string {
-    const digest = createHash("sha1")
-      .update(`${clientName}\n${projectPath}`)
-      .digest("hex")
-      .slice(0, 12);
-    return `client-${clientName}-${digest}`;
+  private buildStableClientAgentId(
+    clientName: string,
+    projectPath: string,
+    identity?: string,
+  ): string {
+    return buildStableClientAgentId(clientName, projectPath, identity);
   }
 
   private async autoCreateChannels(registration: AgentRegistration): Promise<void> {
@@ -1070,6 +1118,12 @@ export class McpAgentBridge {
             project,
             healthy: healthyOnly ? true : undefined,
           });
+          // Identity hard wall: client sessions of a different namespace are
+          // invisible. Skilled agents / infra (no identity) stay visible to all.
+          const selfIdentity = this.options.identity ?? "global";
+          agents = agents.filter(
+            (a) => a.entryType !== "client" || (a.identity ?? "global") === selfIdentity,
+          );
           if (!includeClients) {
             agents = agents.filter((a) => a.entryType !== "client" || a.card.skills.length > 0);
           }

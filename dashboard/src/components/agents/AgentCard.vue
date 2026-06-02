@@ -15,6 +15,13 @@
       >
         {{ isClient ? clientLabel : typeBadge }}
       </span>
+      <span
+        v-if="identityLabel"
+        class="chip chip-identity"
+        :title="`Channel namespace: ${identityLabel}`"
+      >
+        ⛬ {{ identityLabel }}
+      </span>
     </div>
 
     <div class="agent-card__meta">
@@ -81,6 +88,12 @@ const chipTooltip = computed(() => {
   const label = CLIENT_LABELS[info.clientName] ?? info.clientName;
   return `${label} v${info.clientVersion}`;
 });
+// Only surface a namespace badge for non-global identities — "global" is the
+// implicit default and would just add noise on every card.
+const identityLabel = computed(() => {
+  const id = props.agent.identity;
+  return id && id !== "global" ? id : "";
+});
 const displayName = computed(() => props.agent.projectName || (isClient.value ? clientLabel.value : props.agent.name));
 const relativeTime = useTimeAgo(computed(() => new Date(props.agent.lastHeartbeat)));
 const typeBadge = computed(() => projectTypeBadge(props.agent.projectType));
@@ -93,6 +106,7 @@ const agentJson = computed(() => ({
   projectPath: props.agent.projectPath,
   projectType: props.agent.projectType,
   healthy: props.agent.healthy,
+  identity: props.agent.identity ?? "global",
   registeredAt: new Date(props.agent.registeredAt).toISOString(),
   lastHeartbeat: new Date(props.agent.lastHeartbeat).toISOString(),
   ...(isClient.value
@@ -118,5 +132,10 @@ const agentJson = computed(() => ({
 .card--unhealthy {
   opacity: 0.65;
   border-color: rgba(255, 140, 124, 0.3);
+}
+.chip-identity {
+  background: rgba(120, 200, 255, 0.14);
+  color: #8fd0ff;
+  border: 1px solid rgba(120, 200, 255, 0.3);
 }
 </style>

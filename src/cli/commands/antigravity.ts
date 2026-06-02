@@ -28,8 +28,19 @@ async function resolveClientId(
   registry: RegistryClient,
   project: string,
   clientId?: string,
+  identity?: string,
 ): Promise<string | undefined> {
   if (clientId) return clientId;
+  // When an identity namespace is set, pick the project session whose identity
+  // matches — otherwise distinct tickets in the same project would be confused.
+  if (identity) {
+    const agents = await registry.listAgents({ project });
+    const wanted = identity;
+    const match = agents.find(
+      (a) => a.entryType === "client" && (a.identity ?? "global") === wanted,
+    );
+    if (match) return match.agentId;
+  }
   const session = await registry.findClientSession({ project });
   return session?.agentId;
 }
@@ -49,6 +60,7 @@ export function registerAntigravityCommand(program: Command): void {
     .option("--project <path>", "Workspace to install into", process.cwd())
     .option("--registry-url <url>", "Registry URL", "http://localhost:4999")
     .option("--bridge-command <cmd>", "open-agent-bridge executable", "open-agent-bridge")
+    .option("--identity <id>", "Channel namespace — only sessions sharing it see each other (default: global)")
     .option("--global", "Install into ~/.gemini/antigravity-cli instead of the workspace .agents/")
     .action((options) => {
       const targetDir = options.global
@@ -56,11 +68,13 @@ export function registerAntigravityCommand(program: Command): void {
         : join(options.project, ".agents");
       mkdirSync(targetDir, { recursive: true });
 
+      const mcpArgs = ["mcp", "start", "--registry-url", options.registryUrl, "--project", options.project];
+      if (options.identity) mcpArgs.push("--identity", options.identity);
       const mcpConfig = {
         mcpServers: {
           "agent-bridge": {
             command: options.bridgeCommand,
-            args: ["mcp", "start", "--registry-url", options.registryUrl, "--project", options.project],
+            args: mcpArgs,
           },
         },
       };
@@ -70,8 +84,9 @@ export function registerAntigravityCommand(program: Command): void {
         "utf8",
       );
 
+      const identityArg = options.identity ? ` --identity ${options.identity}` : "";
       const hookCmd = (sub: string) =>
-        `${options.bridgeCommand} antigravity ${sub} --project "${options.project}" --registry-url ${options.registryUrl}`;
+        `${options.bridgeCommand} antigravity ${sub} --project "${options.project}" --registry-url ${options.registryUrl}${identityArg}`;
       const hooksConfig = {
         Stop: [{ handlers: [{ type: "command", command: hookCmd("hook-stop") }] }],
         SessionStart: [{ handlers: [{ type: "command", command: hookCmd("hook-session-start") }] }],
@@ -100,11 +115,12 @@ export function registerAntigravityCommand(program: Command): void {
     .option("--project <path>", "Workspace path", process.cwd())
     .option("--registry-url <url>", "Registry URL", "http://localhost:4999")
     .option("--client-id <id>", "Explicit Antigravity client session ID")
+    .option("--identity <id>", "Channel namespace to resolve the session for (default: global)")
     .action(async (options) => {
       await readStdin(); // consume the hook event payload (unused for now)
       try {
         const registry = new RegistryClient(options.registryUrl);
-        const clientId = await resolveClientId(registry, options.project, options.clientId);
+        const clientId = await resolveClientId(registry, options.project, options.clientId, options.identity);
         if (!clientId) {
           emitHookOutput({});
           return;
@@ -136,11 +152,12 @@ export function registerAntigravityCommand(program: Command): void {
     .option("--project <path>", "Workspace path", process.cwd())
     .option("--registry-url <url>", "Registry URL", "http://localhost:4999")
     .option("--client-id <id>", "Explicit Antigravity client session ID")
+    .option("--identity <id>", "Channel namespace to resolve the session for (default: global)")
     .action(async (options) => {
       await readStdin();
       try {
         const registry = new RegistryClient(options.registryUrl);
-        const clientId = await resolveClientId(registry, options.project, options.clientId);
+        const clientId = await resolveClientId(registry, options.project, options.clientId, options.identity);
         if (!clientId) {
           emitHookOutput({});
           return;

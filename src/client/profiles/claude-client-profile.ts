@@ -23,10 +23,11 @@ export class ClaudeClientProfile implements ClientBehaviorProfile {
   acceptsChannelMessage(
     message: ChannelMessage,
     selfAgentId: string | null,
-    _ctx?: AcceptsChannelMessageContext,
+    ctx?: AcceptsChannelMessageContext,
   ): boolean {
-    // Claude Code has no bridge daemon sibling — _ctx is accepted for signature
-    // parity with Codex/Gemini profiles but is intentionally ignored here.
+    // Identity hard wall: a message is only visible inside its own namespace.
+    if ((message.identity ?? "global") !== (ctx?.selfIdentity ?? "global")) return false;
+    // Claude Code has no bridge daemon sibling, so siblingBridgeAgentIds is ignored.
     return (
       !message.toAgentId ||
       message.toAgentId === "claude" ||

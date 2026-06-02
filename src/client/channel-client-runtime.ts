@@ -291,6 +291,9 @@ export class ChannelClientRuntime {
       expectsResponse: message.expectsResponse,
       requiresAck: message.requiresAck,
       expiresAt: message.expiresAt,
+      // Stamp the session's channel namespace on every outgoing message so the
+      // receiver-side identity hard wall can scope it. Defaults to "global".
+      identity: this.activeRegistration?.identity,
     });
 
     const updatedState = this.conversationStore.trackMessage(created);

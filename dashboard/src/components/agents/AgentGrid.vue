@@ -20,20 +20,26 @@
       </div>
 
       <div v-else class="scrollable section-stack">
-        <section v-if="projectGroups.length > 0">
+        <section v-if="clientList.length > 0">
           <div class="section-label-row">
             <span class="section-label section-label--accent">Client Sessions</span>
-            <span class="section-count">{{ clientList.length }} clients · {{ projectGroups.length }} projects</span>
+            <span class="section-count">{{ clientList.length }} clients · {{ identityGroups.length }} namespaces</span>
           </div>
-          <TransitionGroup tag="div" name="agent-fade" class="conversation-stack">
-            <ProjectClientGroup
-              v-for="group in projectGroups"
-              :key="group.projectPath"
-              :project-name="group.projectName"
-              :project-path="group.projectPath"
-              :clients="group.clients"
-            />
-          </TransitionGroup>
+          <div v-for="ig in identityGroups" :key="ig.identity" class="identity-group">
+            <div class="identity-header">
+              <span class="chip chip-identity">⛬ {{ ig.identity }}</span>
+              <span class="section-count">{{ ig.clientCount }} clients · {{ ig.projects.length }} projects</span>
+            </div>
+            <TransitionGroup tag="div" name="agent-fade" class="conversation-stack">
+              <ProjectClientGroup
+                v-for="group in ig.projects"
+                :key="group.projectPath"
+                :project-name="group.projectName"
+                :project-path="group.projectPath"
+                :clients="group.clients"
+              />
+            </TransitionGroup>
+          </div>
         </section>
 
         <section v-if="skillAgentList.length > 0">
@@ -76,20 +82,42 @@ interface ProjectGroup {
   clients: RegistryAgent[];
 }
 
-const projectGroups = computed<ProjectGroup[]>(() => {
-  const map = new Map<string, ProjectGroup>();
+interface IdentityGroup {
+  identity: string;
+  projects: ProjectGroup[];
+  clientCount: number;
+}
+
+// Group client sessions first by channel namespace (identity), then by project
+// within each namespace. The "global" namespace sorts first; the rest alphabetical.
+const identityGroups = computed<IdentityGroup[]>(() => {
+  const byIdentity = new Map<string, Map<string, ProjectGroup>>();
   for (const client of clientList.value) {
-    const key = client.projectPath || client.agentId;
-    if (!map.has(key)) {
-      map.set(key, {
+    const identity = client.identity || "global";
+    const projKey = client.projectPath || client.agentId;
+    if (!byIdentity.has(identity)) byIdentity.set(identity, new Map());
+    const projects = byIdentity.get(identity)!;
+    if (!projects.has(projKey)) {
+      projects.set(projKey, {
         projectPath: client.projectPath,
-        projectName: client.projectName || key,
+        projectName: client.projectName || projKey,
         clients: [],
       });
     }
-    map.get(key)!.clients.push(client);
+    projects.get(projKey)!.clients.push(client);
   }
-  return Array.from(map.values()).sort((a, b) => a.projectName.localeCompare(b.projectName));
+  return Array.from(byIdentity.entries())
+    .map(([identity, projects]) => {
+      const list = Array.from(projects.values()).sort((a, b) => a.projectName.localeCompare(b.projectName));
+      return {
+        identity,
+        projects: list,
+        clientCount: list.reduce((n, p) => n + p.clients.length, 0),
+      };
+    })
+    .sort((a, b) =>
+      a.identity === "global" ? -1 : b.identity === "global" ? 1 : a.identity.localeCompare(b.identity),
+    );
 });
 </script>
 
@@ -106,5 +134,19 @@ const projectGroups = computed<ProjectGroup[]>(() => {
 .agent-fade-leave-active {
   position: absolute;
   width: 100%;
+}
+.identity-group {
+  margin-bottom: 14px;
+}
+.identity-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 8px;
+}
+.chip-identity {
+  background: rgba(120, 200, 255, 0.14);
+  color: #8fd0ff;
+  border: 1px solid rgba(120, 200, 255, 0.3);
 }
 </style>

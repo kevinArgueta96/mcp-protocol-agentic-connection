@@ -30,6 +30,8 @@ export class CodexClientProfile implements ClientBehaviorProfile {
     selfAgentId: string | null,
     ctx?: AcceptsChannelMessageContext,
   ): boolean {
+    // Identity hard wall: a message is only visible inside its own namespace.
+    if ((message.identity ?? "global") !== (ctx?.selfIdentity ?? "global")) return false;
     if (!message.toAgentId) return true;
     if (selfAgentId != null && message.toAgentId === selfAgentId) return true;
     // Auto-redirect rewrites toAgentId to the sibling bridge daemon. The inner

@@ -13,6 +13,9 @@ export interface AgentRegistration {
   card: AgentCard;
   registeredAt: number;
   entryType?: "agent" | "client";
+  /** Channel namespace this session belongs to. Sessions only see messages and
+   *  peers sharing the same identity. Defaults to "global" when omitted. */
+  identity?: string;
   clientInfo?: {
     clientName: string;
     clientVersion: string;
@@ -35,6 +38,8 @@ export interface AgentListFilter {
   project?: string;
   healthy?: boolean;
   entryType?: "agent" | "client";
+  /** Restrict results to peers in this channel namespace. */
+  identity?: string;
 }
 
 export interface AgentMessage {
@@ -77,6 +82,9 @@ export interface ChannelMessage {
   attemptCount?: number;
   requiresAck?: boolean;
   expectsResponse?: boolean;
+  /** Channel namespace. Only sessions with a matching identity see this message.
+   *  Defaults to "global" when omitted. */
+  identity?: string;
 }
 
 export interface ChannelAck {
