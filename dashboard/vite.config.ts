@@ -3,7 +3,12 @@ import vue from "@vitejs/plugin-vue";
 import tailwindcss from "@tailwindcss/vite";
 import { resolve } from "path";
 
-export default defineConfig({
+// The registry serves the built dashboard under `/dashboard` (express.static),
+// so production assets must be referenced from `/dashboard/` — not `/`, which
+// would 404 and make the page render blank. The dev server (port 5173, with the
+// proxy below) keeps base `/`.
+export default defineConfig(({ command }) => ({
+  base: command === "build" ? "/dashboard/" : "/",
   plugins: [vue(), tailwindcss()],
   resolve: {
     alias: {
@@ -28,4 +33,4 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
   },
-});
+}));
