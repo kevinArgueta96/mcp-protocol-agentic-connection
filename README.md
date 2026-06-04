@@ -56,6 +56,7 @@ Sessions can be **scoped by `--identity`**: every launcher accepts an identity n
   - [Built-in skills](#built-in-skills)
   - [Auto-detected skills](#auto-detected-skills)
 - [CLI reference](#cli-reference)
+  - [Full command reference (docs/cli-reference.md)](docs/cli-reference.md)
 - [Scripts](#scripts)
 - [Architecture](#architecture)
 - [Feature status](#feature-status)
