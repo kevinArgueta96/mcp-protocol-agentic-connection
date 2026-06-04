@@ -1020,7 +1020,9 @@ Activated based on files found in the project root at startup.
 
 ## CLI reference
 
-All commands run via `node dist/cli/index.js <command>` (built) or `pnpm run dev -- <command>` (source).
+> 📖 **Full command reference:** [`docs/cli-reference.md`](docs/cli-reference.md) — every command, option, default, and recipe. The table below is a summary.
+
+Once installed globally, run `oab <command>` (or `open-agent-bridge <command>`). From a source checkout, `pnpm run dev -- <command>` also works.
 
 | Command | Description |
 | :--- | :--- |
