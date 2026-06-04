@@ -7,6 +7,10 @@
     "open-agent-bridge": "./dist/cli/index.js",
     "oab": "./dist/cli/index.js"
   },
+  "files": [
+    "dist",
+    "bin"
+  ],
   "license": "MIT",
   "engines": {
     "node": ">=22"
@@ -17,7 +21,7 @@
     "start": "node dist/cli/index.js",
     "clean": "rm -rf dist",
     "build:dashboard": "cd dashboard && pnpm run build",
-    "build:all": "pnpm run build && pnpm run build:dashboard && cp -r dashboard/dist dist/dashboard",
+    "build:all": "pnpm run build && pnpm run build:dashboard && rm -rf dist/dashboard && cp -r dashboard/dist dist/dashboard",
     "dev:dashboard": "cd dashboard && pnpm run dev",
     "test": "vitest run",
     "lint": "biome check src/",
