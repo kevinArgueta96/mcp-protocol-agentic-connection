@@ -638,8 +638,19 @@ export class RegistryServer {
       });
     });
 
-    await new Promise<void>((resolve) => {
-      this.httpServer!.listen(this.port, "localhost", () => resolve());
+    await new Promise<void>((resolve, reject) => {
+      const onError = (err: NodeJS.ErrnoException) => {
+        if (err.code === "EADDRINUSE") {
+          reject(new Error(`Port ${this.port} is already in use — another registry (or process) is bound to it. Stop it, or start on a different port with --port.`));
+        } else {
+          reject(err);
+        }
+      };
+      this.httpServer!.once("error", onError);
+      this.httpServer!.listen(this.port, "localhost", () => {
+        this.httpServer!.removeListener("error", onError);
+        resolve();
+      });
     });
 
     this.healthCheckTimer = setInterval(() => {

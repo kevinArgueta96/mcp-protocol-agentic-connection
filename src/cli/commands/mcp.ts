@@ -1,9 +1,15 @@
 // open-agent-bridge mcp — MCP adapter for Claude Code, Codex, Antigravity CLI
-import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { Command } from "commander";
 import chalk from "chalk";
 import { McpAgentBridge } from "../../mcp/adapter.js";
+import {
+  MCP_SERVER_NAME,
+  buildMcpServerEntry,
+  writeMcpConfig,
+  defaultMcpMode,
+  type McpConfigMode,
+} from "../lib/mcp-config.js";
 
 export function registerMcpCommand(program: Command): void {
   const mcp = program.command("mcp").description("MCP adapter — connect open-agent-bridge to Claude Code, Codex, or Antigravity CLI");
@@ -46,47 +52,35 @@ export function registerMcpCommand(program: Command): void {
   // ── mcp config ────────────────────────────────────────────────────────────
   mcp
     .command("config")
-    .description("Print the .mcp.json config to add open-agent-bridge to Claude Code")
-    .option("--write", "Write .mcp.json to the current directory")
-    .option("--global", "Use global installation path (pnpm dlx)")
+    .description("Print or write the .mcp.json entry that adds open-agent-bridge to an MCP client")
+    .option("--write", "Write (and merge into) .mcp.json in the current directory")
+    .option("--identity <id>", "Channel namespace to bake into the config (default: global)")
+    .option("--global", "Use the globally-installed binary by name (open-agent-bridge)")
+    .option("--local", "Use node + the resolved dist path (no global install needed)")
     .action(async (options) => {
-      const cliPath = resolve(process.argv[1]);
-
       const projectPath = resolve(process.cwd());
+      const mode: McpConfigMode = options.global
+        ? "linked"
+        : options.local
+          ? "local"
+          : defaultMcpMode();
 
-      const config = options.global
-        ? {
-            mcpServers: {
-              "open-agent-bridge": {
-                command: "pnpm",
-                args: ["dlx", "open-agent-bridge", "mcp", "start"],
-                env: { AGENT_BRIDGE_PROJECT: projectPath },
-              },
-            },
-          }
-        : {
-            mcpServers: {
-              "open-agent-bridge": {
-                command: "node",
-                args: [cliPath, "mcp", "start"],
-                env: { AGENT_BRIDGE_PROJECT: projectPath },
-              },
-            },
-          };
-
-      const json = JSON.stringify(config, null, 2);
+      const entry = buildMcpServerEntry({ projectPath, identity: options.identity, mode });
+      const json = JSON.stringify({ mcpServers: { [MCP_SERVER_NAME]: entry } }, null, 2);
 
       if (options.write) {
-        await writeFile(".mcp.json", json, "utf-8");
-        console.log(chalk.green("✓") + " .mcp.json written");
-        console.log(chalk.dim(`  Project: ${projectPath}`));
+        const { merged } = writeMcpConfig(resolve(".mcp.json"), entry);
+        console.log(chalk.green("✓") + ` .mcp.json ${merged ? "updated" : "written"}`);
+        console.log(chalk.dim(`  Project:  ${projectPath}`));
+        if (options.identity) console.log(chalk.dim(`  Identity: ${options.identity}`));
+        console.log(chalk.dim(`  Mode:     ${mode}`));
         console.log(chalk.dim("  Restart Claude Code to pick up the new server"));
       } else {
         console.log("\n" + chalk.bold("Add to your .mcp.json:") + "\n");
         console.log(json);
         console.log();
         console.log(chalk.dim("Or run: open-agent-bridge mcp config --write"));
-        console.log(chalk.dim("Or run: claude mcp add open-agent-bridge -- node " + cliPath + " mcp start"));
+        console.log(chalk.dim("Or run: claude mcp add open-agent-bridge -- open-agent-bridge mcp start"));
       }
     });
 
