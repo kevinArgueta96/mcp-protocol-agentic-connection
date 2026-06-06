@@ -94,6 +94,7 @@ export type PeerType =
   | "codex-bridge"
   | "codex-inner"
   | "antigravity-inner"
+  | "hermes-inner"
   | "opencode-code"
   | "opencode-bridge"
   | "dashboard-ui"
@@ -118,6 +119,7 @@ export function getPeerType(entry: RegistryEntry): PeerType {
   if (clientVersion === "app-server-bridge") return "codex-bridge";
   if (clientName.includes("codex")) return "codex-inner";
   if (clientName.includes("antigravity") || clientName === "agy") return "antigravity-inner";
+  if (clientName.includes("hermes")) return "hermes-inner";
   return "unknown";
 }
 
@@ -137,6 +139,8 @@ export function getPeerTypeLabel(entry: RegistryEntry): string {
       return "Codex inner";
     case "antigravity-inner":
       return "Antigravity inner";
+    case "hermes-inner":
+      return "Hermes inner";
     case "dashboard-ui":
       return "Dashboard UI";
     default:
@@ -199,7 +203,7 @@ function buildAgentBridgeGuide(topic: AgentBridgeGuideTopic): string {
       "",
       "Tools:",
       "- `agent_bridge_guide(topic?)`: read this usage guide.",
-      "- `list_agents(includeClients=true)`: discover peers. Client rows include labels such as `[Claude Code]`, `[OpenCode]`, `[Codex inner]`, `[Antigravity inner]`.",
+      "- `list_agents(includeClients=true)`: discover peers. Client rows include labels such as `[Claude Code]`, `[OpenCode]`, `[Codex inner]`, `[Antigravity inner]`, `[Hermes inner]`.",
       "- `message_client_session(...)`: proactively send a message to another client session.",
       "- `channel_inbox(pendingOnly=true)`: inspect inbound pending conversations and get `replyWith` values.",
       "- `reply(...)`: respond to an inbound pending message using `replyWith` verbatim.",
@@ -410,7 +414,7 @@ export class McpAgentBridge {
           "Tools:\n" +
           "  • agent_bridge_guide(topic='all') — usage guide for setup, sending, replies, ACK states, and troubleshooting.\n" +
           "  • list_agents(includeClients=true) — discover peers; client-session rows include a peer-type label " +
-          "such as `[Claude Code]`, `[OpenCode]`, `[Codex inner]`, or `[Antigravity inner]`.\n" +
+          "such as `[Claude Code]`, `[OpenCode]`, `[Codex inner]`, `[Antigravity inner]`, or `[Hermes inner]`.\n" +
           "  • message_client_session(clientId | project, message) — open a new thread to a peer. " +
           "Routing is automatic; for a Codex session pass any agentId from its pair (it registers two — both work).\n" +
           "  • channel_inbox(pendingOnly=true) — list pending conversations; each entry has a `replyWith` block.\n" +
@@ -1102,7 +1106,7 @@ export class McpAgentBridge {
       {
         description:
           "List all agents and client sessions connected to open-agent-bridge. " +
-          "Returns agentId, project path, health, skills, and client peer labels such as [Claude Code], [Codex inner], [Antigravity inner]. " +
+          "Returns agentId, project path, health, skills, and client peer labels such as [Claude Code], [Codex inner], [Antigravity inner], [Hermes inner]. " +
           "WORKFLOW: call this first to discover targets before using message_client_session. " +
           "Pass includeClients=true to see Claude/Codex/Antigravity client sessions; bridge daemons are internal and routing to them is automatic.",
         inputSchema: {

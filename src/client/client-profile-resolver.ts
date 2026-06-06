@@ -2,6 +2,7 @@ import type { AgentMessage, ChannelMessage } from "../types/messages.js";
 import { AntigravityClientProfile } from "./profiles/antigravity-client-profile.js";
 import { ClaudeClientProfile } from "./profiles/claude-client-profile.js";
 import { CodexClientProfile } from "./profiles/codex-client-profile.js";
+import { HermesClientProfile } from "./profiles/hermes-client-profile.js";
 import { OpenCodeClientProfile } from "./profiles/opencode-client-profile.js";
 
 export interface ClientNotificationEnvelope {
@@ -57,6 +58,7 @@ export class DefaultClientProfileResolver implements ClientProfileResolver {
   private readonly codexProfile = new CodexClientProfile();
   private readonly antigravityProfile = new AntigravityClientProfile();
   private readonly opencodeProfile = new OpenCodeClientProfile();
+  private readonly hermesProfile = new HermesClientProfile();
 
   resolve(input: ResolveClientProfileInput): ClientBehaviorProfile {
     const normalized = input.clientName.toLowerCase();
@@ -80,6 +82,10 @@ export class DefaultClientProfileResolver implements ClientProfileResolver {
 
     if (normalized === "opencode" || normalized.includes("opencode")) {
       return this.opencodeProfile;
+    }
+
+    if (normalized === "hermes" || normalized.includes("hermes")) {
+      return this.hermesProfile;
     }
 
     return this.codexProfile;
