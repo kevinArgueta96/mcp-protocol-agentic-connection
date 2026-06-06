@@ -2,7 +2,7 @@
 
 ## Resumen
 
-La CLI publica se registra en [`src/cli/index.ts`](/Users/kevin/Documents/dev_projects/open-agent-bridge/src/cli/index.ts) y se distribuye bajo el binario `open-agent-bridge`.
+La CLI pública se registra en [`src/cli/index.ts`](../src/cli/index.ts) y se distribuye bajo los binarios `open-agent-bridge` y su alias corto `oab`.
 
 En desarrollo, los ejemplos de este documento usan:
 
@@ -10,10 +10,67 @@ En desarrollo, los ejemplos de este documento usan:
 pnpm run dev -- <comando>
 ```
 
-Con build compilado, el equivalente es:
+Con build compilado e instalada globalmente (`bash bin/install.sh` o `npm install -g .`), el equivalente es:
 
 ```bash
 open-agent-bridge <comando>
+oab <comando>                 # alias corto, idéntico
+```
+
+## Instalación (poner `oab` en el PATH)
+
+Dos rutas según el punto de partida:
+
+```bash
+# Ruta A — desde cero
+git clone <repo-url> && cd open-agent-bridge
+bash bin/install.sh            # pnpm install + build:all + npm install -g .
+oab doctor
+
+# Ruta B — repo ya clonado
+cd open-agent-bridge
+pnpm install && pnpm run build:all && npm install -g .
+```
+
+`bin/install.sh` verifica que `oab` quede en el PATH; si no, imprime la línea `export PATH=...` a agregar en tu `~/.bashrc`/`~/.zshrc`. En modo contributor podés seguir usando `pnpm run dev -- <comando>` sin instalar global.
+
+## Comandos de baja fricción (setup y ciclo de vida)
+
+### `init`
+
+Wizard de configuración para un proyecto. Detecta el cwd, pregunta `identity` y clientes, escribe/mergea `.mcp.json` (inyectando `AGENT_BRIDGE_IDENTITY`), levanta el registry como daemon y configura clientes de plugin (OpenCode/Antigravity).
+
+Opciones: `--identity <id>`, `--client <name>` (repetible o separado por comas), `--project <path>`, `-p, --port <number>`, `--mode <linked|local>`, `-y, --yes` (no interactivo).
+
+```bash
+oab init                                  # interactivo
+oab init --yes --identity dev --client claude   # scripting/CI
+```
+
+### `up` / `down` / `status`
+
+Gestionan el registry como **daemon en background** (reemplaza tener una terminal dedicada). El PID y el puerto se guardan en `.open-agent-bridge/registry.json`. `up` es idempotente (health-first: reusa un registry ya levantado). `down` apunta al puerto persistido y limpia PID stale.
+
+```bash
+oab up [--port 4999]      # arranca en background (idempotente)
+oab status                # salud + agentes + .mcp.json
+oab down                  # detiene el daemon
+```
+
+### `claude`
+
+Lanza Claude Code cableado al bridge: asegura registry + `.mcp.json`, setea `AGENT_BRIDGE_IDENTITY`/`AGENT_BRIDGE_PROJECT`, y hace `spawn` de `claude --dangerously-load-development-channels server:open-agent-bridge`. Flags extra se pasan tal cual a `claude`.
+
+```bash
+oab claude --identity dev [--project <path>] [--port 4999] [-- <flags de claude>]
+```
+
+### `doctor`
+
+Diagnóstico sin abortar: Node ≥ 22, `oab` en PATH, registry alcanzable, `.mcp.json` presente + identity, y binarios de cliente (`claude`/`codex`/`opencode`/`agy`). Soporta `--json`.
+
+```bash
+oab doctor
 ```
 
 ## Comandos principales
@@ -50,11 +107,21 @@ Arranca el registry HTTP/WS.
 Opciones:
 
 - `-p, --port <number>`: puerto del registry, default `4999`
+- `-d, --daemon`: corre detached en background y retorna de inmediato (equivalente a `oab up`)
 
 Ejemplo:
 
 ```bash
 pnpm run dev -- registry start
+oab registry start --daemon
+```
+
+### `registry stop`
+
+Detiene el daemon del registry (lee `.open-agent-bridge/registry.json`). Equivalente a `oab down`.
+
+```bash
+oab registry stop
 ```
 
 ### `registry status`
@@ -238,19 +305,23 @@ Endpoints expuestos:
 
 ### `mcp config`
 
-Imprime o escribe configuracion `.mcp.json`.
+Imprime o escribe/mergea la entrada `.mcp.json`. El merge es no destructivo (preserva otros `mcpServers`).
 
 Opciones:
 
-- `--write`
-- `--global`
+- `--write`: escribe/mergea `.mcp.json` en el cwd
+- `--identity <id>`: inyecta `AGENT_BRIDGE_IDENTITY` en `env` (default `global`, que se omite)
+- `--global`: invoca el binario por nombre (`open-agent-bridge`) — para instalación global/linked
+- `--local`: invoca `node <dist>/cli/index.js` — sin instalación global
+
+Si no se pasa `--global` ni `--local`, se autodetecta: `linked` si `oab`/`open-agent-bridge` está en el PATH, si no `local`.
 
 Ejemplos:
 
 ```bash
-pnpm run dev -- mcp config
-pnpm run dev -- mcp config --write
-pnpm run dev -- mcp config --write --global
+oab mcp config                              # imprime (autodetecta modo)
+oab mcp config --write --identity dev       # escribe/mergea con identity
+oab mcp config --write --global             # fuerza comando por nombre de binario
 ```
 
 ### `mcp status`

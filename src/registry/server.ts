@@ -25,7 +25,17 @@ const CONVERSATION_RETENTION_MS = 30 * 24 * 60 * 60_000; // 30 days
 const TERMINAL_SWEEP_INTERVAL_MS = 5 * 60_000; // every 5 min
 const TERMINAL_RETENTION_MS = 60 * 60_000; // keep resolved threads 60 min
 
-const dashboardDir = new URL("../../dashboard/dist", import.meta.url).pathname;
+// Resolve the built dashboard. In a production/global install it ships next to
+// the compiled server at dist/dashboard (`build:all` copies it there). In dev
+// (tsx from src/) it lives at <repo>/dashboard/dist. Prefer the shipped copy and
+// fall back to the dev path so both `node dist/...` and `pnpm dev` serve assets.
+const dashboardDir =
+  [
+    new URL("../dashboard", import.meta.url), // dist/registry -> dist/dashboard (shipped)
+    new URL("../../dashboard/dist", import.meta.url), // src/registry -> <repo>/dashboard/dist (dev)
+  ]
+    .map((u) => u.pathname)
+    .find((p) => existsSync(p)) ?? new URL("../dashboard", import.meta.url).pathname;
 
 export class RegistryServer {
   private eventBus = new RegistryEventBus();
@@ -638,8 +648,19 @@ export class RegistryServer {
       });
     });
 
-    await new Promise<void>((resolve) => {
-      this.httpServer!.listen(this.port, "localhost", () => resolve());
+    await new Promise<void>((resolve, reject) => {
+      const onError = (err: NodeJS.ErrnoException) => {
+        if (err.code === "EADDRINUSE") {
+          reject(new Error(`Port ${this.port} is already in use — another registry (or process) is bound to it. Stop it, or start on a different port with --port.`));
+        } else {
+          reject(err);
+        }
+      };
+      this.httpServer!.once("error", onError);
+      this.httpServer!.listen(this.port, "localhost", () => {
+        this.httpServer!.removeListener("error", onError);
+        resolve();
+      });
     });
 
     this.healthCheckTimer = setInterval(() => {

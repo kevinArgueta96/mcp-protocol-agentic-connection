@@ -56,6 +56,7 @@ Sessions can be **scoped by `--identity`**: every launcher accepts an identity n
   - [Built-in skills](#built-in-skills)
   - [Auto-detected skills](#auto-detected-skills)
 - [CLI reference](#cli-reference)
+  - [Full command reference (docs/cli-reference.md)](docs/cli-reference.md)
 - [Scripts](#scripts)
 - [Architecture](#architecture)
 - [Feature status](#feature-status)
@@ -71,30 +72,34 @@ Sessions can be **scoped by `--identity`**: every launcher accepts an identity n
 ## TL;DR — 60-second quickstart
 
 ```bash
-# 1. Install
-pnpm install
+# 1. Install the CLI globally (from a cloned repo) — builds and puts `oab` on your PATH
+bash bin/install.sh
 
-# 2. Start the registry
-pnpm run dev -- registry start
+# 2. Set up your project — writes .mcp.json and starts the registry in the background
+cd /path/to/your/project
+oab init                      # interactive wizard (identity + clients)
 
-# 3. In a second terminal — start an agent for your project
-pnpm run dev -- start .
-
-# 4. Generate .mcp.json for Claude Code
-pnpm run dev -- mcp config --write
-
-# 5. Launch Claude Code with the open-agent-bridge channel enabled
-claude --dangerously-load-development-channels server:open-agent-bridge
-
-# 6. Claude Code now has 6 MCP tools
+# 3. Launch Claude Code wired to the bridge
+oab claude --identity dev
 ```
 
-Claude Code now has six MCP tools: `agent_bridge_guide`, `list_agents`, `channel_inbox`, `channel_clear`, `message_client_session`, `reply`.
+That's it — no dedicated terminal for the registry, no manual `.mcp.json` editing. Claude Code now has six MCP tools: `agent_bridge_guide`, `list_agents`, `channel_inbox`, `channel_clear`, `message_client_session`, `reply`.
 
-For OpenCode, add the same MCP server command to OpenCode's MCP config and install the push plugin:
+Prefer explicit commands? The wizard is optional:
 
 ```bash
-pnpm run dev -- opencode install-plugin --project .
+oab up                                    # registry in the background (idempotent)
+oab mcp config --write --identity dev     # write/merge .mcp.json with an identity
+oab claude --identity dev                 # launch Claude with the channel enabled
+oab status                                # registry health + agents + .mcp.json
+oab doctor                                # diagnose your environment
+oab down                                  # stop the background registry
+```
+
+For OpenCode, install the push plugin (the wizard does this for you when you select it):
+
+```bash
+oab opencode install-plugin --project .
 ```
 
 ---
@@ -183,29 +188,56 @@ Claude Code
 ### Requirements
 
 - Node.js `>=22`
-- pnpm >= 9
-- (Optional) OpenCode for OpenCode bridge features
-- (Optional) `codex` CLI in `$PATH` for Codex bridge features
-- (Optional) `agy` (Google Antigravity CLI) in `$PATH` for Antigravity bridge features
+- pnpm `>=9` and `git` (to build and install)
+- (Optional) `claude`, `codex`, `opencode`, or `agy` in `$PATH` for the clients you want to bridge
 
-### Install
+### Install — Path A: from scratch (nothing cloned yet)
 
 ```bash
+# 1. Prerequisites
+node -v                  # must be >= 22
+npm install -g pnpm      # if you don't have pnpm
+
+# 2. Clone
 git clone <repo-url>
 cd open-agent-bridge
-pnpm install
+
+# 3. Build + put `oab` / `open-agent-bridge` on your PATH (one step)
+bash bin/install.sh
+#    equivalent to: pnpm install && pnpm run build:all && npm install -g .
+
+# 4. Verify
+oab --version
+oab doctor
+
+# 5. Use it in any project
+cd /path/to/your/project
+oab init                 # wizard: identity + clients → writes .mcp.json + starts the registry
+oab claude --identity dev
 ```
 
-### 1. Start the registry
-
-The registry is the hub all agents connect to. Start it once per machine session:
+### Install — Path B: you already cloned the repo
 
 ```bash
-pnpm run dev -- registry start
-# Registry running on http://localhost:4999
+cd open-agent-bridge
+git pull                 # optional: get the latest
+pnpm install             # (re)install dependencies
+pnpm run build:all       # compile CLI + dashboard
+npm install -g .         # expose oab / open-agent-bridge on PATH
+#    (these four steps = bin/install.sh)
+
+oab doctor               # validate environment + PATH
 ```
 
-In auto mode (`mcp start` default), the registry starts embedded — no manual step needed.
+> **Updating later:** `cd open-agent-bridge && git pull && pnpm install && pnpm run build:all && npm install -g .`
+>
+> **`oab` not found after install?** `bin/install.sh` and `oab doctor` print the exact `export PATH=...` line and which rc file to add it to. With npm, the global bin dir (`$(npm prefix -g)/bin`) is usually already on your PATH.
+>
+> **Contributor mode (no global install):** `pnpm run dev -- <command>` still works from the repo (e.g. `pnpm run dev -- doctor`).
+
+### What `oab init` does
+
+In one step it: detects your project, asks for a channel **identity** and which clients to wire up, writes/merges `.mcp.json` (with `AGENT_BRIDGE_IDENTITY` baked in), starts the **registry as a background daemon** (no terminal to keep open), configures plugin-based clients (OpenCode/Antigravity), and prints the exact launch command per client.
 
 The registry exposes:
 
@@ -215,31 +247,7 @@ The registry exposes:
 | `ws://localhost:4999/ws` | WebSocket relay and channel broadcast |
 | `http://localhost:4999/dashboard` | Dashboard SPA (requires `pnpm run build:all`) |
 
-### 2. Start an agent
-
-Start an agent server for a project directory:
-
-```bash
-pnpm run dev -- start /path/to/my-project
-# Agent started
-#   ID:      a1b2c3d4-...
-#   HTTP:    http://localhost:5001
-#   WS:      ws://localhost:5001/ws
-#   Project: my-project
-#   Skills:  file-search, endpoint-find, code-query, ...
-```
-
-> **Note:** Add `--claude` to enable the Claude Code AI backend for richer skill execution (required for `code-review` and `claude-execute` auto-detected skills).
-
-### 3. Configure MCP
-
-Generate the `.mcp.json` entry and write it to the current directory:
-
-```bash
-pnpm run dev -- mcp config --write
-# .mcp.json written
-# Restart Claude Code to pick up the new server
-```
+Manage its lifecycle with `oab up` / `oab down` / `oab status`. To run an agent server for richer project skills, use `oab start /path/to/project` (add `--claude` for the Claude Code AI backend).
 
 ---
 
@@ -248,6 +256,14 @@ pnpm run dev -- mcp config --write
 Once the registry is running and `.mcp.json` is in place, each AI client connects to open-agent-bridge through its own startup command.
 
 ### Claude Code
+
+The easy way — ensures the registry is up, writes `.mcp.json` if missing, sets the identity, and launches Claude:
+
+```bash
+oab claude --identity dev
+```
+
+Equivalent manual command:
 
 ```bash
 claude --dangerously-load-development-channels server:open-agent-bridge
@@ -1005,7 +1021,9 @@ Activated based on files found in the project root at startup.
 
 ## CLI reference
 
-All commands run via `node dist/cli/index.js <command>` (built) or `pnpm run dev -- <command>` (source).
+> 📖 **Full command reference:** [`docs/cli-reference.md`](docs/cli-reference.md) — every command, option, default, and recipe. The table below is a summary.
+
+Once installed globally, run `oab <command>` (or `open-agent-bridge <command>`). From a source checkout, `pnpm run dev -- <command>` also works.
 
 | Command | Description |
 | :--- | :--- |
