@@ -432,9 +432,11 @@ export class McpAgentBridge {
     // immediately (instead of lingering until the heartbeat times out), then
     // stop any embedded registry. Guarded so it runs at most once.
     let shuttingDown = false;
+    let ppidWatchdog: NodeJS.Timeout | null = null;
     const shutdown = async () => {
       if (shuttingDown) return;
       shuttingDown = true;
+      if (ppidWatchdog) { clearInterval(ppidWatchdog); ppidWatchdog = null; }
       this.clearSyncTimers();
       // deactivateClient stops the heartbeat AND deregisters from the registry,
       // so the client's row disappears at once instead of lingering until the
@@ -448,6 +450,23 @@ export class McpAgentBridge {
     process.once("SIGINT", () => void shutdown().then(() => process.exit(0)));
     process.once("SIGTERM", () => void shutdown().then(() => process.exit(0)));
     process.once("SIGHUP", () => void shutdown().then(() => process.exit(0)));
+
+    // ── 1b-ii. Parent-death watchdog ──────────────────────────────────────
+    // When the spawning host (claude / agy / an IDE ACP runtime) dies, the OS
+    // reparents us — typically to init (ppid 1) or a subreaper, never back to
+    // the original parent. Without this we would keep heartbeating forever and
+    // linger as a zombie row in the registry (the stdin/SIGHUP handlers above
+    // only fire when the host closes the pipe cleanly, which a crashed or
+    // detached host does not). Poll ppid and self-deregister on reparent.
+    const initialPpid = process.ppid;
+    ppidWatchdog = setInterval(() => {
+      const ppid = process.ppid;
+      if (ppid !== initialPpid || ppid === 1) {
+        console.error(`[MCP] Parent process gone (ppid ${initialPpid} → ${ppid}); deregistering and exiting.`);
+        void shutdown().then(() => process.exit(0));
+      }
+    }, 10_000);
+    ppidWatchdog.unref?.();
 
     // ── 1c. Connect WS to registry for channel events ─────────────────────
     this.channelRuntime.connect();

@@ -35,6 +35,7 @@ export function registerListCommand(program: Command): void {
           const health = agent.healthy ? chalk.green("● healthy") : chalk.red("● unhealthy");
           console.log(`  ${health}  ${chalk.cyan(agent.name)}`);
           console.log(`    ID:      ${agent.agentId}`);
+          if (agent.pid) console.log(`    PID:     ${agent.pid}${agent.host ? ` @ ${agent.host}` : ""}`);
           console.log(`    Port:    ${agent.port}`);
           console.log(`    Path:    ${agent.projectPath}`);
           console.log(`    Type:    ${agent.projectType}`);

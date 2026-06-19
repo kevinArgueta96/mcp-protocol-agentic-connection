@@ -24,6 +24,15 @@ export class RegistryClient {
     return res.json() as Promise<RegistryEntry>;
   }
 
+  async deregister(agentId: string): Promise<boolean> {
+    const res = await fetch(`${this.registryUrl}/agents/${encodeURIComponent(agentId)}`, {
+      method: "DELETE",
+    });
+    if (!res.ok) throw new Error(`Registry error: ${res.status}`);
+    const body = await res.json() as { removed: boolean };
+    return body.removed;
+  }
+
   async findAgentByProject(projectPath: string): Promise<RegistryEntry | undefined> {
     const agents = await this.listAgents({ project: projectPath });
     return agents.find((a) => a.projectPath === projectPath) ?? agents[0];

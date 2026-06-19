@@ -1,3 +1,4 @@
+import { hostname } from "node:os";
 import { WebSocket } from "ws";
 import type { AgentRegistration, ChannelAck, ChannelMessage } from "../types/messages.js";
 
@@ -31,10 +32,18 @@ export class ChannelTransport {
   }
 
   async registerClient(registration: AgentRegistration): Promise<void> {
+    // Stamp the owning OS process so `oab prune` can verify liveness on this
+    // host and reap zombie rows left by leaked/orphaned sessions. This runs in
+    // the client process itself, so `process.pid` is the heartbeating process.
+    const enriched: AgentRegistration = {
+      ...registration,
+      pid: registration.pid ?? process.pid,
+      host: registration.host ?? hostname(),
+    };
     const response = await fetch(`${this.registryUrl}/agents`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(registration),
+      body: JSON.stringify(enriched),
     });
 
     if (!response.ok) {
