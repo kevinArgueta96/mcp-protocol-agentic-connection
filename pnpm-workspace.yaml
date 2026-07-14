@@ -4,3 +4,6 @@ packages:
 onlyBuiltDependencies:
   - esbuild
   - vue-demi
+
+# Supply-chain policy: never resolve packages published <24h ago
+minimumReleaseAge: 1440
