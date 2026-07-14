@@ -1,9 +1,17 @@
 packages:
   - dashboard
 
+# Build-script approvals. pnpm v10 reads onlyBuiltDependencies; pnpm v11+
+# only reads allowBuilds and errors on unapproved builds — keep both in sync.
 onlyBuiltDependencies:
+  - '@anthropic-ai/claude-code'
   - esbuild
   - vue-demi
+
+allowBuilds:
+  '@anthropic-ai/claude-code': true
+  esbuild: true
+  vue-demi: true
 
 # Supply-chain policy: never resolve packages published <24h ago
 minimumReleaseAge: 1440
