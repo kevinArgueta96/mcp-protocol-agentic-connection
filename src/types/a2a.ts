@@ -7,6 +7,10 @@ export interface AgentCard {
   description: string;
   url: string;
   version: string;
+  /** A2A protocol version this agent speaks (spec-required for negotiation). */
+  protocolVersion: string;
+  /** Spec 0.3.0: transport for `url`. This server only speaks JSON-RPC. */
+  preferredTransport?: string;
   documentationUrl?: string;
   provider?: AgentProvider;
   capabilities: AgentCapabilities;
@@ -59,6 +63,8 @@ export interface TaskStatus {
 }
 
 export interface Task {
+  /** Spec 0.3.0 discriminator — clients tell Task from Message by `kind`. */
+  kind?: "task";
   id: string;
   contextId?: string;
   status: TaskStatus;
@@ -72,6 +78,10 @@ export interface Task {
 export type MessageRole = "user" | "agent";
 
 export interface Message {
+  /** Spec 0.3.0 discriminator (see Task.kind). */
+  kind?: "message";
+  /** Spec-required id on wire messages; optional internally for legacy callers. */
+  messageId?: string;
   role: MessageRole;
   parts: Part[];
   metadata?: Record<string, unknown>;
@@ -79,14 +89,18 @@ export interface Message {
 
 export type Part = TextPart | FilePart | DataPart;
 
+// Parts carry both `type` (internal) and `kind` (A2A wire) after dualizeParts;
+// `type` stays canonical internally, `kind` is the spec alias.
 export interface TextPart {
   type: "text";
+  kind?: "text";
   text: string;
   metadata?: Record<string, unknown>;
 }
 
 export interface FilePart {
   type: "file";
+  kind?: "file";
   file: FileContent;
   metadata?: Record<string, unknown>;
 }
@@ -100,6 +114,7 @@ export interface FileContent {
 
 export interface DataPart {
   type: "data";
+  kind?: "data";
   data: Record<string, unknown>;
   metadata?: Record<string, unknown>;
 }
@@ -153,6 +168,10 @@ export interface TaskIdParams {
 // ─── A2A Method names ─────────────────────────────────────────────────────────
 
 export const A2AMethods = {
+  // Spec 0.3.0 method name (preferred). message/stream deliberately absent —
+  // not implemented; add the constant when the SSE handler lands.
+  MESSAGE_SEND: "message/send",
+  // Legacy draft names (still served as aliases)
   TASKS_SEND: "tasks/send",
   TASKS_SEND_SUBSCRIBE: "tasks/sendSubscribe",
   TASKS_GET: "tasks/get",

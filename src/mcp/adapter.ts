@@ -23,6 +23,7 @@ import { writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { z } from "zod";
+import { detectProjectType } from "../agent/project-detector.js";
 import { RegistryClient } from "../client/registry-client.js";
 import { ChannelTransport } from "../client/channel-transport.js";
 import { ChannelClientRuntime } from "../client/channel-client-runtime.js";
@@ -963,6 +964,15 @@ export class McpAgentBridge {
         // may have captured the original options object.
         this.resolvedProjectPath = realProjectPath;
 
+        // Detect the real project type (node/python/etc.) instead of
+        // registering every client session as "unknown".
+        let projectType = "unknown";
+        try {
+          projectType = (await detectProjectType(realProjectPath)).type;
+        } catch {
+          // Unreadable project dir — keep "unknown".
+        }
+
         const registration = {
           agentId: this.clientAgentId,
           name: realProjectName,
@@ -971,12 +981,13 @@ export class McpAgentBridge {
           port: 0,
           projectPath: realProjectPath,
           projectName: realProjectName,
-          projectType: "unknown",
+          projectType,
           card: {
             name: realProjectName,
             description: `AI client: ${clientName} v${version} — ${realProjectName}`,
             url: "",
             version,
+            protocolVersion: "0.3.0",
             capabilities: { streaming: false, pushNotifications: false, stateTransitionHistory: false },
             defaultInputModes: ["text"],
             defaultOutputModes: ["text"],
