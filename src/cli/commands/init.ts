@@ -12,8 +12,10 @@ import * as p from "@clack/prompts";
 import { ensureRegistry, resolveCliEntry, DEFAULT_REGISTRY_PORT } from "../lib/runtime.js";
 import {
   buildMcpServerEntry,
+  buildCodexMcpAddArgs,
   writeMcpConfig,
   defaultMcpMode,
+  MCP_SERVER_NAME,
   type McpConfigMode,
 } from "../lib/mcp-config.js";
 
@@ -98,6 +100,23 @@ export function registerInitCommand(program: Command): void {
 
       // 3. Configure plugin-based clients by reusing their existing installers.
       for (const client of clients) {
+        if (client === "codex") {
+          // Codex ignores .mcp.json — register via its own CLI into ~/.codex/config.toml.
+          try {
+            // Remove-then-add keeps re-running init idempotent (add errors on duplicates).
+            try {
+              execFileSync("codex", ["mcp", "remove", MCP_SERVER_NAME], { stdio: "ignore" });
+            } catch {
+              // Not registered yet — fine.
+            }
+            execFileSync("codex", buildCodexMcpAddArgs(entry), { stdio: "inherit" });
+            ok(`Codex MCP registered ${chalk.dim("(~/.codex/config.toml)")}`);
+          } catch {
+            warn(
+              `Could not register with Codex — is \`codex\` on PATH? Run manually:\n  codex ${buildCodexMcpAddArgs(entry).map((a) => (a.includes(" ") ? JSON.stringify(a) : a)).join(" ")}`,
+            );
+          }
+        }
         if (client === "opencode" || client === "antigravity") {
           try {
             execFileSync(

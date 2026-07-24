@@ -36,10 +36,13 @@ export function registerListCommand(program: Command): void {
           console.log(`  ${health}  ${chalk.cyan(agent.name)}`);
           console.log(`    ID:      ${agent.agentId}`);
           if (agent.pid) console.log(`    PID:     ${agent.pid}${agent.host ? ` @ ${agent.host}` : ""}`);
-          console.log(`    Port:    ${agent.port}`);
+          // Client sessions (MCP adapters) don't listen anywhere — port 0 is noise.
+          if (agent.port) console.log(`    Port:    ${agent.port}`);
           console.log(`    Path:    ${agent.projectPath}`);
           console.log(`    Type:    ${agent.projectType}`);
-          console.log(`    Skills:  ${agent.card.skills.map((s) => s.id).join(", ")}`);
+          if (agent.identity) console.log(`    Identity: ${chalk.magenta(agent.identity)}`);
+          const skills = agent.card.skills.map((s) => s.id).join(", ");
+          if (skills) console.log(`    Skills:  ${skills}`);
           console.log();
         }
       } catch {

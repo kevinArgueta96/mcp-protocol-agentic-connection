@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   buildMcpServerEntry,
+  buildCodexMcpAddArgs,
   writeMcpConfig,
   MCP_SERVER_NAME,
 } from "../cli/lib/mcp-config.js";
@@ -36,6 +37,34 @@ describe("buildMcpServerEntry", () => {
     const entry = buildMcpServerEntry({ projectPath: "/proj", mode: "linked" });
     expect(["open-agent-bridge", "oab"]).toContain(entry.command);
     expect(entry.args).toEqual(["mcp", "start"]);
+  });
+});
+
+describe("buildCodexMcpAddArgs", () => {
+  it("builds a codex mcp add argv with env flags before the -- separator", () => {
+    const args = buildCodexMcpAddArgs({
+      command: "open-agent-bridge",
+      args: ["mcp", "start"],
+      env: { AGENT_BRIDGE_PROJECT: "/my proj", AGENT_BRIDGE_IDENTITY: "ril" },
+    });
+    expect(args).toEqual([
+      "mcp",
+      "add",
+      MCP_SERVER_NAME,
+      "--env",
+      "AGENT_BRIDGE_PROJECT=/my proj",
+      "--env",
+      "AGENT_BRIDGE_IDENTITY=ril",
+      "--",
+      "open-agent-bridge",
+      "mcp",
+      "start",
+    ]);
+  });
+
+  it("emits no --env flags when env is empty", () => {
+    const args = buildCodexMcpAddArgs({ command: "node", args: ["cli.js", "mcp", "start"], env: {} });
+    expect(args).toEqual(["mcp", "add", MCP_SERVER_NAME, "--", "node", "cli.js", "mcp", "start"]);
   });
 });
 
