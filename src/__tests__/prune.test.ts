@@ -15,7 +15,7 @@ function entry(overrides: Partial<RegistryEntry> = {}): RegistryEntry {
     projectPath: "/tmp/demo",
     projectName: "demo",
     projectType: "unknown",
-    card: { name: "demo", description: "", url: "", version: "1", capabilities: { streaming: false, pushNotifications: false, stateTransitionHistory: false }, defaultInputModes: [], defaultOutputModes: [], skills: [] },
+    card: { name: "demo", description: "", url: "", version: "1", protocolVersion: "0.3.0", capabilities: { streaming: false, pushNotifications: false, stateTransitionHistory: false }, defaultInputModes: [], defaultOutputModes: [], skills: [] },
     registeredAt: 0,
     entryType: "client",
     lastHeartbeat: 0,
@@ -69,6 +69,13 @@ describe("classify", () => {
   it("treats a reparented (ppid 1) process as orphaned even with a tty", () => {
     const procs = [{ pid: 4242, ppid: 1, hasTty: true, project: "/tmp/demo" }];
     expect(classify(entry({ pid: undefined, projectPath: "/tmp/demo" }), HOST, procs)).toBe("orphaned");
+  });
+
+  it("never classifies an alive-but-unscannable pid as orphaned (non-Linux / scan race)", () => {
+    // Stamped pid is alive (this very process) but absent from the proc scan —
+    // e.g. macOS/Windows where /proc doesn't exist. Must be live, or
+    // `prune --orphans` would SIGTERM healthy sessions it cannot inspect.
+    expect(classify(entry({ pid: process.pid }), HOST, [])).toBe("live");
   });
 });
 

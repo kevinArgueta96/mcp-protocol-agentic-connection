@@ -97,7 +97,10 @@ export function resolvePids(entry: RegistryEntry, procs: OabProc[], claimed: Set
   if (typeof entry.pid === "number") {
     const matched = procs.find((p) => p.pid === entry.pid);
     if (matched) return [matched];
-    return isAlive(entry.pid) ? [{ pid: entry.pid, ppid: 0, hasTty: false }] : [];
+    // Alive but invisible to the /proc scan (non-Linux, or a scan race): we
+    // KNOW it's live but cannot inspect its tty. A process we can't inspect
+    // must never classify as orphaned (kill-eligible) — report it attached.
+    return isAlive(entry.pid) ? [{ pid: entry.pid, ppid: 0, hasTty: true }] : [];
   }
   return procs.filter((p) => p.project && p.project === entry.projectPath && !claimed.has(p.pid));
 }
@@ -164,6 +167,10 @@ export function registerPruneCommand(program: Command): void {
           let reason = "";
 
           if (options.all) {
+            // Same-host safety model: never act on another machine's entries,
+            // not even a deregister — its live session re-registers in ~30s
+            // and the flap just hides healthy peers meanwhile.
+            if (status === "remote") return null;
             action = owners.length > 0 ? "kill" : "deregister";
             reason = "--all: shut everything down";
           } else if (hasTargets) {
@@ -212,7 +219,13 @@ export function registerPruneCommand(program: Command): void {
       }
 
       const willKill = plan.some((p) => p.action === "kill");
-      if (willKill && !options.yes && !options.json) {
+      if (willKill && !options.yes) {
+        // --json changes output format, never consent semantics; and a prompt
+        // on a non-TTY stdin (CI, piped) would hang forever. Both require -y.
+        if (options.json || !process.stdin.isTTY) {
+          console.error(chalk.red("Refusing to kill processes without -y in non-interactive mode."));
+          process.exit(1);
+        }
         const rl = createInterface({ input: process.stdin, output: process.stdout });
         const answer = (await rl.question(chalk.yellow("Kill the process(es) above and remove them? [y/N] "))).trim().toLowerCase();
         rl.close();
@@ -225,14 +238,19 @@ export function registerPruneCommand(program: Command): void {
       let killed = 0;
       let removed = 0;
       for (const { entry, action, owners } of plan) {
+        let killFailed = false;
         if (action === "kill") {
           for (const owner of owners) {
             try { process.kill(owner.pid, "SIGTERM"); killed++; }
             catch (err) {
-              if (!options.json) console.error(chalk.red(`  Failed to kill pid ${owner.pid} (${entry.name}): ${(err as Error).message}`));
+              killFailed = true;
+              console.error(chalk.red(`  Failed to kill pid ${owner.pid} (${entry.name}): ${(err as Error).message}`));
             }
           }
         }
+        // If the process survived, deregistering is a lie — it re-registers on
+        // its next heartbeat anyway. Keep the entry so the registry stays honest.
+        if (killFailed) continue;
         try { await client.deregister(entry.agentId); removed++; }
         catch { /* may already be gone */ }
       }
