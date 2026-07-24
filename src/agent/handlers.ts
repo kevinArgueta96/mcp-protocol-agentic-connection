@@ -2,11 +2,17 @@
 import { randomUUID } from "node:crypto";
 import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
-import type { Task, TaskSendParams, TaskStatus, Artifact, TextPart } from "../types/a2a.js";
+import type { Task, TaskSendParams, TaskStatus, Artifact, Message, Part, TextPart } from "../types/a2a.js";
 import type { JsonRpcRequest, JsonRpcResponse } from "../types/jsonrpc.js";
 import { RpcErrorCodes } from "../types/jsonrpc.js";
 import type { SkillRegistry } from "../skills/framework.js";
 import type { SkillContext } from "../types/skills.js";
+
+/** Build a spec-complete wire Message: A2A 0.3.0 requires `kind` and
+ *  `messageId` on every Message the server emits. */
+function wireMessage(role: Message["role"], parts: Part[]): Message {
+  return { kind: "message", messageId: randomUUID(), role, parts };
+}
 
 // ─── Task Store ───────────────────────────────────────────────────────────────
 
@@ -48,10 +54,13 @@ export class TaskStore {
   create(params: TaskSendParams): Task {
     const id = params.id ?? randomUUID();
     const task: Task = {
+      kind: "task",
       id,
-      contextId: params.contextId,
+      // Spec 0.3.0 requires contextId on every Task; fall back to the task id.
+      contextId: params.contextId ?? id,
       status: { state: "submitted", timestamp: new Date().toISOString() },
-      history: [params.message],
+      // Backfill spec-required Message fields when the client omitted them.
+      history: [{ kind: "message", messageId: randomUUID(), ...params.message }],
       artifacts: [],
       metadata: params.metadata,
     };
@@ -117,10 +126,9 @@ export class TaskStore {
       status: {
         state: "input-required",
         timestamp: new Date().toISOString(),
-        message: {
-          role: "agent",
-          parts: [{ type: "text", text: `Waiting for reply in conversation ${params.conversationId}` }],
-        },
+        message: wireMessage("agent", [
+          { type: "text", text: `Waiting for reply in conversation ${params.conversationId}` },
+        ]),
       },
       metadata: {
         ...task.metadata,
@@ -131,7 +139,7 @@ export class TaskStore {
       },
       history: [
         ...task.history,
-        { role: "agent", parts: [{ type: "text", text: params.content }] },
+        wireMessage("agent", [{ type: "text", text: params.content }]),
       ],
     };
 
@@ -202,7 +210,7 @@ export class TaskStore {
       },
       history: [
         ...task.history,
-        { role: "user", parts: [{ type: "text", text: params.content }] },
+        wireMessage("user", [{ type: "text", text: params.content }]),
       ],
     };
 
@@ -227,7 +235,7 @@ export class TaskStore {
       status: {
         state: "failed",
         timestamp: new Date().toISOString(),
-        message: { role: "agent", parts: [errorPart] },
+        message: wireMessage("agent", [errorPart]),
       },
       artifacts: task.artifacts,
     };
@@ -304,9 +312,39 @@ export class RequestRouter {
 
   private registerDefaults(): void {
 
-    // ── A2A: tasks/send ──────────────────────────────────────────────────────
-    this.register("tasks/send", async (params, ctx) => {
-      const p = params as TaskSendParams;
+    // ── A2A: message/send (spec 0.3.0) + tasks/send (legacy alias) ───────────
+    const sendHandler: Handler = async (params, ctx) => {
+      // Spec 0.3.0 MessageSendParams carries taskId/contextId INSIDE `message`;
+      // the legacy draft used top-level id/contextId. Honor both shapes.
+      const raw = params as TaskSendParams & {
+        message?: { taskId?: string; contextId?: string; messageId?: string };
+      };
+      const p: TaskSendParams = {
+        ...raw,
+        id: raw.id ?? raw.message?.taskId,
+        contextId: raw.contextId ?? raw.message?.contextId,
+      };
+
+      // Spec continuation: message/send addressed to a known input-required task
+      // resumes it (the only spec way to answer awaitInput) instead of silently
+      // overwriting it with a fresh task.
+      if (p.id) {
+        const pending = ctx.taskStore.get(p.id);
+        if (pending?.status.state === "input-required") {
+          const content = (p.message?.parts ?? [])
+            .filter((part): part is TextPart => part.type === "text")
+            .map((part) => part.text)
+            .join("\n");
+          const resolved = ctx.taskStore.resolveConversationReply({
+            taskId: p.id,
+            messageId: raw.message?.messageId ?? randomUUID(),
+            fromAgentId: "a2a-client",
+            content,
+          });
+          if (resolved) return resolved;
+        }
+      }
+
       const task = ctx.taskStore.create(p);
 
       // Mark as working
@@ -363,7 +401,9 @@ export class RequestRouter {
         const msg = err instanceof Error ? err.message : String(err);
         return ctx.taskStore.fail(task.id, msg);
       }
-    });
+    };
+    this.register("message/send", sendHandler);
+    this.register("tasks/send", sendHandler);
 
     // ── A2A: tasks/get ───────────────────────────────────────────────────────
     this.register("tasks/get", async (params, ctx) => {

@@ -60,6 +60,21 @@ export function buildMcpConfig(opts: BuildMcpConfigOptions = {}): {
   return { mcpServers: { [MCP_SERVER_NAME]: buildMcpServerEntry(opts) } };
 }
 
+/** Codex ignores .mcp.json — it only loads MCP servers from ~/.codex/config.toml.
+ *  Rather than writing TOML ourselves, build the argv for the official
+ *  `codex mcp add` CLI so Codex owns its own config format. */
+export function buildCodexMcpAddArgs(entry: McpServerEntry): string[] {
+  return [
+    "mcp",
+    "add",
+    MCP_SERVER_NAME,
+    ...Object.entries(entry.env).flatMap(([k, v]) => ["--env", `${k}=${v}`]),
+    "--",
+    entry.command,
+    ...entry.args,
+  ];
+}
+
 interface McpConfigFile {
   mcpServers?: Record<string, unknown>;
   [key: string]: unknown;

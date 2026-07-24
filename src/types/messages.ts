@@ -20,6 +20,13 @@ export interface AgentRegistration {
     clientName: string;
     clientVersion: string;
   };
+  /** OS process id of the registering client/agent. Stamped automatically at
+   *  registration. Lets `oab prune` verify the owning process is still alive
+   *  (same host) and reap zombie entries left by leaked/orphaned sessions. */
+  pid?: number;
+  /** Hostname of the machine the registering process runs on. `oab prune` only
+   *  acts on processes it can verify locally, i.e. entries whose host matches. */
+  host?: string;
 }
 
 export interface AgentHeartbeat {

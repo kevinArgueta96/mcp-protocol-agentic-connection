@@ -8,6 +8,7 @@ import type { AgentCard } from "../types/a2a.js";
 import type { JsonRpcRequest } from "../types/jsonrpc.js";
 import { detectProjectType } from "./project-detector.js";
 import { generateAgentCard } from "./card.js";
+import { dualizeMessage, dualizeTask } from "./wire.js";
 import { TaskStore, RequestRouter, inferSkillFromMessage, parseInputFromMessage, makeSkillContext } from "./handlers.js";
 import type { RouterContext, TaskUpdateEvent } from "./handlers.js";
 import {
@@ -137,15 +138,23 @@ export class AgentServer {
     app.options("/{*path}", (_req, res) => { res.sendStatus(204); });
 
     // ── A2A: Agent Card ──────────────────────────────────────────────────────
-    app.get("/.well-known/agent.json", (_req, res) => {
-      res.json(this.card);
-    });
+    // Spec 0.3.0 path is agent-card.json; agent.json kept as a legacy alias.
+    const serveCard = (_req: express.Request, res: express.Response) => res.json(this.card);
+    app.get("/.well-known/agent-card.json", serveCard);
+    app.get("/.well-known/agent.json", serveCard);
 
     // ── A2A: JSON-RPC endpoint ───────────────────────────────────────────────
     app.post("/", async (req, res) => {
       try {
+        // Accept both `kind` (spec) and `type` (legacy) on incoming parts, and
+        // emit both on the way out, so external A2A clients interoperate.
+        // Scoped to Part positions only — payloads stay untouched.
         const rpcReq = req.body as JsonRpcRequest;
+        dualizeMessage((rpcReq.params as { message?: unknown } | undefined)?.message);
         const response = await this.router.dispatch(rpcReq, this.routerCtx!);
+        const result = (response as { result?: unknown }).result;
+        dualizeMessage(result);
+        dualizeTask(result);
         res.json(response);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

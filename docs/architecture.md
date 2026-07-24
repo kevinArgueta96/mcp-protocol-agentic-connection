@@ -39,7 +39,7 @@ Política de salud actual:
 
 Cada agente representa un proyecto local y expone:
 
-- Agent Card en `GET /.well-known/agent.json`
+- Agent Card en `GET /.well-known/agent-card.json` (spec 0.3.0; `agent.json` como alias legacy)
 - JSON-RPC 2.0 en `POST /`
 - health check en `GET /health`
 - WebSocket en `WS /ws`
@@ -155,7 +155,7 @@ Mensajes emitidos:
 
 Endpoints:
 
-- `GET /.well-known/agent.json`
+- `GET /.well-known/agent-card.json` (y `agent.json` como alias legacy)
 - `POST /`
 - `GET /health`
 

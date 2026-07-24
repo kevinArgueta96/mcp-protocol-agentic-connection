@@ -1,6 +1,7 @@
 // Registry HTTP server — central discovery service on :4999
 import { createServer } from "node:http";
 import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer, WebSocket } from "ws";
 import { AgentStore } from "./store.js";
@@ -29,13 +30,15 @@ const TERMINAL_RETENTION_MS = 60 * 60_000; // keep resolved threads 60 min
 // the compiled server at dist/dashboard (`build:all` copies it there). In dev
 // (tsx from src/) it lives at <repo>/dashboard/dist. Prefer the shipped copy and
 // fall back to the dev path so both `node dist/...` and `pnpm dev` serve assets.
+// fileURLToPath (not URL.pathname): pathname leaves spaces percent-encoded
+// ("10.%20PERSONAL"), so existsSync fails on any repo path containing a space.
 const dashboardDir =
   [
     new URL("../dashboard", import.meta.url), // dist/registry -> dist/dashboard (shipped)
     new URL("../../dashboard/dist", import.meta.url), // src/registry -> <repo>/dashboard/dist (dev)
   ]
-    .map((u) => u.pathname)
-    .find((p) => existsSync(p)) ?? new URL("../dashboard", import.meta.url).pathname;
+    .map((u) => fileURLToPath(u))
+    .find((p) => existsSync(p)) ?? fileURLToPath(new URL("../dashboard", import.meta.url));
 
 export class RegistryServer {
   private eventBus = new RegistryEventBus();

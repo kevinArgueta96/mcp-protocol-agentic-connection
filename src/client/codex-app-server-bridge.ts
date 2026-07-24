@@ -295,6 +295,7 @@ export class CodexAppServerBridge extends EventEmitter {
         description: `Codex app-server bridge — ${projectName}`,
         url: "",
         version: "0.1.0",
+        protocolVersion: "0.3.0",
         capabilities: {
           streaming: false,
           pushNotifications: false,

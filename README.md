@@ -127,7 +127,7 @@ Claude Code / OpenCode / Codex / Antigravity (agy) / Dashboard
     │       RegistryServer :4999          │
     │  HTTP  /agents /health /channel/*   │
     │  WS    /ws  (relay + broadcast)     │
-    │  SQLite .open-agent-bridge/registry.sqlite│
+    │  SQLite ~/.open-agent-bridge/registry.sqlite│
     └──────┬─────────────┬───────────────┘
            │             │
            v             v
@@ -237,7 +237,7 @@ oab doctor               # validate environment + PATH
 
 ### What `oab init` does
 
-In one step it: detects your project, asks for a channel **identity** and which clients to wire up, writes/merges `.mcp.json` (with `AGENT_BRIDGE_IDENTITY` baked in), starts the **registry as a background daemon** (no terminal to keep open), configures plugin-based clients (OpenCode/Antigravity), and prints the exact launch command per client.
+In one step it: detects your project, asks for a channel **identity** and which clients to wire up, writes/merges `.mcp.json` (with `AGENT_BRIDGE_IDENTITY` baked in), starts the **registry as a background daemon** (no terminal to keep open), configures plugin-based clients (OpenCode/Antigravity), registers the MCP server with **Codex** via `codex mcp add` (Codex ignores `.mcp.json` — it only loads servers from `~/.codex/config.toml`), and prints the exact launch command per client.
 
 The registry exposes:
 
@@ -1124,13 +1124,14 @@ src/
     └── skills.ts              Skill context and I/O types
 ```
 
-**Persistence:** channel messages and ACKs are stored in SQLite at `.open-agent-bridge/registry.sqlite` across three tables: `channel_messages`, `channel_acks`, and `channel_suppressed_conversations`. SQLite access uses the `node:sqlite` built-in module (Node 22+) — there is no external SQLite dependency. The `AgentStore` (registered agents and heartbeats) is in-memory only and resets on registry restart; agents re-register automatically on reconnect.
+**Persistence:** channel messages and ACKs are stored in SQLite at `~/.open-agent-bridge/registry.sqlite` (per-user, independent of the registry's cwd) across three tables: `channel_messages`, `channel_acks`, and `channel_suppressed_conversations`. SQLite access uses the `node:sqlite` built-in module (Node 22+) — there is no external SQLite dependency. The `AgentStore` (registered agents and heartbeats) is in-memory only and resets on registry restart; agents re-register automatically on reconnect.
 
 **AgentServer — A2A JSON-RPC methods:**
 
 | Method | Description |
 | :--- | :--- |
-| `tasks/send` | Submit a task to the agent (synchronous response) |
+| `message/send` | Submit a task to the agent (A2A 0.3.0; honors `message.taskId`/`contextId`, resumes input-required tasks) |
+| `tasks/send` | Legacy alias of `message/send` (pre-0.3 draft param shape) |
 | `tasks/get` | Poll the status of an in-flight task |
 | `tasks/cancel` | Cancel a running task |
 | `agent.health` | Liveness check (returns uptime, version, skill count) |
@@ -1157,7 +1158,8 @@ src/
 | 6 built-in skills | stable |
 | HTTP SSE MCP mode (`mcp server`, port 6000) | stable |
 | Dynamic skills (run-script, run-tests, docker-build, code-review) | stable — require `--claude` |
-| `tasks/sendSubscribe` — A2A SSE streaming | **stub — not implemented** |
+| A2A 0.3.0 conformance layer (`message/send`, `agent-card.json`, `protocolVersion`, dual `kind`/`type` Parts, `Task.kind`/`contextId`) | stable — legacy draft methods kept as aliases |
+| `message/stream` / `tasks/sendSubscribe` — A2A SSE streaming | **stub — not implemented** (card advertises `streaming: false`) |
 | StateGraph skill composition | implemented, unused in production |
 | `ask --stream` CLI flag | declared, not implemented |
 

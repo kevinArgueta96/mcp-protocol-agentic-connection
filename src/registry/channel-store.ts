@@ -1,4 +1,5 @@
 import { mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
@@ -10,16 +11,30 @@ import type {
 } from "../types/messages.js";
 
 function defaultDbPath(): string {
-  return resolve(process.cwd(), ".open-agent-bridge", "registry.sqlite");
+  // Per-user, NOT process.cwd(): the registry is one shared daemon, and a
+  // cwd-relative DB lands inside whatever project it happened to start from —
+  // which then gets deleted under it (SQLITE_READONLY_DBMOVED, sends 500).
+  return resolve(homedir(), ".open-agent-bridge", "registry.sqlite");
 }
 
 export class ChannelStore {
-  private readonly db: DatabaseSync;
+  private db: DatabaseSync;
+  private readonly dbPath: string;
 
   constructor(dbPath = defaultDbPath()) {
-    mkdirSync(dirname(dbPath), { recursive: true });
-    this.db = new DatabaseSync(dbPath);
-    this.db.exec(`
+    this.dbPath = dbPath;
+    this.db = this.open();
+  }
+
+  private open(): DatabaseSync {
+    mkdirSync(dirname(this.dbPath), { recursive: true });
+    const db = new DatabaseSync(this.dbPath);
+    // The homedir DB is shared by every registry daemon a user starts: WAL lets
+    // one read while another writes, busy_timeout waits out cross-process locks
+    // instead of throwing SQLITE_BUSY straight into a 500.
+    db.exec("PRAGMA journal_mode = WAL");
+    db.exec("PRAGMA busy_timeout = 5000");
+    db.exec(`
       CREATE TABLE IF NOT EXISTS channel_messages (
         message_id TEXT PRIMARY KEY,
         conversation_id TEXT NOT NULL,
@@ -44,6 +59,38 @@ export class ChannelStore {
         suppressed_at INTEGER NOT NULL
       );
     `);
+    return db;
+  }
+
+  /** Run a write, self-healing when the DB file was deleted/moved under the
+   *  running daemon (SQLite reports "attempt to write a readonly database").
+   *  Reopening recreates the file + schema and retries once; the prior history
+   *  is already gone with the deleted inode, but the registry keeps serving
+   *  instead of 500ing on every send until a manual restart. */
+  private writable<T>(fn: () => T): T {
+    try {
+      return fn();
+    } catch (err) {
+      if (!/readonly database/i.test(String(err))) throw err;
+      console.error(`[ChannelStore] DB at ${this.dbPath} became readonly (deleted under us?) — reopening`);
+      // Open the replacement BEFORE discarding the old handle: if reopen fails
+      // we keep the previous (still readable) handle and surface the original
+      // write error, instead of bricking reads too.
+      let next: DatabaseSync;
+      try {
+        next = this.open();
+      } catch (reopenErr) {
+        console.error(`[ChannelStore] reopen failed, keeping old handle: ${String(reopenErr)}`);
+        throw err;
+      }
+      try {
+        this.db.close();
+      } catch {
+        // Old handle already unusable.
+      }
+      this.db = next;
+      return fn();
+    }
   }
 
   /** Look up an existing message by id, regardless of conversation. */
@@ -82,14 +129,16 @@ export class ChannelStore {
       attemptCount: input.attemptCount ?? 1,
     };
 
-    this.db.prepare(`
-      INSERT INTO channel_messages (message_id, conversation_id, created_at, payload_json)
-      VALUES (?, ?, ?, ?)
-    `).run(
-      message.messageId,
-      message.conversationId,
-      message.createdAt,
-      JSON.stringify(message),
+    this.writable(() =>
+      this.db.prepare(`
+        INSERT INTO channel_messages (message_id, conversation_id, created_at, payload_json)
+        VALUES (?, ?, ?, ?)
+      `).run(
+        message.messageId,
+        message.conversationId,
+        message.createdAt,
+        JSON.stringify(message),
+      ),
     );
 
     return { message, created: true };
@@ -97,15 +146,17 @@ export class ChannelStore {
 
   addAck(ack: ChannelAck): ChannelAck {
     const ackId = randomUUID();
-    this.db.prepare(`
-      INSERT INTO channel_acks (ack_id, conversation_id, message_id, timestamp, payload_json)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(
-      ackId,
-      ack.conversationId,
-      ack.messageId,
-      ack.timestamp,
-      JSON.stringify(ack),
+    this.writable(() =>
+      this.db.prepare(`
+        INSERT INTO channel_acks (ack_id, conversation_id, message_id, timestamp, payload_json)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(
+        ackId,
+        ack.conversationId,
+        ack.messageId,
+        ack.timestamp,
+        JSON.stringify(ack),
+      ),
     );
     return ack;
   }
@@ -169,15 +220,18 @@ export class ChannelStore {
 
     if (stale.length === 0) return 0;
 
-    const deleteMessages = this.db.prepare(`DELETE FROM channel_messages WHERE conversation_id = ?`);
-    const deleteAcks = this.db.prepare(`DELETE FROM channel_acks WHERE conversation_id = ?`);
-    const deleteSuppressed = this.db.prepare(`DELETE FROM channel_suppressed_conversations WHERE conversation_id = ?`);
-
-    for (const row of stale) {
-      deleteMessages.run(row.conversation_id);
-      deleteAcks.run(row.conversation_id);
-      deleteSuppressed.run(row.conversation_id);
-    }
+    // Statements prepared inside the callback so a self-heal reopen re-prepares
+    // them against the fresh handle instead of the closed one.
+    this.writable(() => {
+      const deleteMessages = this.db.prepare(`DELETE FROM channel_messages WHERE conversation_id = ?`);
+      const deleteAcks = this.db.prepare(`DELETE FROM channel_acks WHERE conversation_id = ?`);
+      const deleteSuppressed = this.db.prepare(`DELETE FROM channel_suppressed_conversations WHERE conversation_id = ?`);
+      for (const row of stale) {
+        deleteMessages.run(row.conversation_id);
+        deleteAcks.run(row.conversation_id);
+        deleteSuppressed.run(row.conversation_id);
+      }
+    });
     return stale.length;
   }
 
@@ -197,14 +251,16 @@ export class ChannelStore {
     }
     if (candidates.length === 0) return 0;
 
-    const deleteMessages = this.db.prepare(`DELETE FROM channel_messages WHERE conversation_id = ?`);
-    const deleteAcks = this.db.prepare(`DELETE FROM channel_acks WHERE conversation_id = ?`);
-    const deleteSuppressed = this.db.prepare(`DELETE FROM channel_suppressed_conversations WHERE conversation_id = ?`);
-    for (const id of candidates) {
-      deleteMessages.run(id);
-      deleteAcks.run(id);
-      deleteSuppressed.run(id);
-    }
+    this.writable(() => {
+      const deleteMessages = this.db.prepare(`DELETE FROM channel_messages WHERE conversation_id = ?`);
+      const deleteAcks = this.db.prepare(`DELETE FROM channel_acks WHERE conversation_id = ?`);
+      const deleteSuppressed = this.db.prepare(`DELETE FROM channel_suppressed_conversations WHERE conversation_id = ?`);
+      for (const id of candidates) {
+        deleteMessages.run(id);
+        deleteAcks.run(id);
+        deleteSuppressed.run(id);
+      }
+    });
     return candidates.length;
   }
 
@@ -248,11 +304,15 @@ export class ChannelStore {
       createdAt: Date.now(),
     };
 
-    this.db.prepare(`
-      UPDATE channel_messages
-      SET created_at = ?, payload_json = ?
-      WHERE message_id = ?
-    `).run(retried.createdAt, JSON.stringify(retried), messageId);
+    const result = this.writable(() =>
+      this.db.prepare(`
+        UPDATE channel_messages
+        SET created_at = ?, payload_json = ?
+        WHERE message_id = ?
+      `).run(retried.createdAt, JSON.stringify(retried), messageId),
+    );
+    // Post-heal the row may be gone (fresh DB): report not-found, not success.
+    if (Number(result.changes ?? 0) === 0) return undefined;
 
     return retried;
   }
@@ -266,18 +326,22 @@ export class ChannelStore {
     `).get(conversationId);
     if (!exists) return false;
 
-    this.db.prepare(`
-      INSERT OR REPLACE INTO channel_suppressed_conversations (conversation_id, suppressed_at)
-      VALUES (?, ?)
-    `).run(conversationId, Date.now());
+    this.writable(() =>
+      this.db.prepare(`
+        INSERT OR REPLACE INTO channel_suppressed_conversations (conversation_id, suppressed_at)
+        VALUES (?, ?)
+      `).run(conversationId, Date.now()),
+    );
     return true;
   }
 
   reviveConversation(conversationId: string): boolean {
-    const result = this.db.prepare(`
-      DELETE FROM channel_suppressed_conversations
-      WHERE conversation_id = ?
-    `).run(conversationId);
+    const result = this.writable(() =>
+      this.db.prepare(`
+        DELETE FROM channel_suppressed_conversations
+        WHERE conversation_id = ?
+      `).run(conversationId),
+    );
     return Number(result.changes ?? 0) > 0;
   }
 

@@ -18,7 +18,7 @@ Referencia completa de la interfaz de línea de comandos de `open-agent-bridge`:
 - [MCP](#mcp)
   - [`mcp config`](#mcp-config) · [`mcp start`](#mcp-start) · [`mcp server`](#mcp-server) · [`mcp status`](#mcp-status)
 - [Agentes y mensajería](#agentes-y-mensajería)
-  - [`start`](#start) · [`list`](#list) · [`health`](#health) · [`ask`](#ask) · [`find`](#find) · [`delegate`](#delegate) · [`broadcast`](#broadcast)
+  - [`start`](#start) · [`list`](#list) · [`health`](#health) · [`ask`](#ask) · [`find`](#find) · [`delegate`](#delegate) · [`broadcast`](#broadcast) · [`prune`](#prune)
 - [Integraciones de cliente](#integraciones-de-cliente)
   - [`codex`](#codex) · [`opencode`](#opencode) · [`antigravity`](#antigravity)
 - [`dashboard`](#dashboard)
@@ -77,7 +77,7 @@ oab down                     # apaga el registry cuando termines
 
 ### `init`
 
-Configura un proyecto en un solo paso: detecta el cwd, pregunta identity y clientes (wizard interactivo con `@clack/prompts`), escribe/mergea `.mcp.json`, levanta el registry como daemon, configura clientes de plugin (OpenCode/Antigravity reusando sus instaladores), e imprime los próximos pasos por cliente.
+Configura un proyecto en un solo paso: detecta el cwd, pregunta identity y clientes (wizard interactivo con `@clack/prompts`), escribe/mergea `.mcp.json`, levanta el registry como daemon, configura clientes de plugin (OpenCode/Antigravity reusando sus instaladores), registra el MCP en **Codex** vía `codex mcp add` (Codex ignora `.mcp.json` — solo carga servidores desde `~/.codex/config.toml`; el registro es idempotente: hace `remove` antes de `add`), e imprime los próximos pasos por cliente.
 
 ```
 oab init [options]
@@ -317,7 +317,7 @@ oab start /ruta/al/proyecto --port 5007 --claude
 
 ### `list`
 
-Lista los agentes activos registrados.
+Lista los agentes activos registrados. Cada entrada muestra id, pid/host, puerto, ruta, tipo, skills y — si la sesión se registró con un namespace — su `Identity`.
 
 ```
 oab list [options]
@@ -401,6 +401,40 @@ oab broadcast <message> [options]
 | :--- | :--- | :--- |
 | `--json` | — | Salida en JSON. |
 | `--registry-url <url>` | `http://localhost:4999` | URL del registry. |
+
+### `prune`
+
+Limpia entradas zombie del registry. Contexto: una sesión cuya UI se cerró pero cuyo proceso quedó vivo sigue mandando heartbeats cada 30s, así que el registry la ve `healthy` para siempre — deregistrarla es inútil (se re-registra en el siguiente heartbeat); la única solución durable es matar el proceso dueño, que es lo que hace este comando.
+
+```
+oab prune [targets...] [options]
+```
+
+| Opción | Default | Descripción |
+| :--- | :--- | :--- |
+| `[targets...]` | — | Ids, nombres o proyectos a podar forzadamente (mata el proceso dueño). |
+| `--orphans` | — | Además mata procesos vivos sin terminal (tty=?) o re-parentados a init. |
+| `--all` | — | Apaga TODO: mata cada sesión local y limpia el registry. |
+| `--dry-run` | — | Muestra el plan sin cambiar nada. |
+| `-y, --yes` | — | Salta la confirmación antes de matar procesos. |
+| `--json` | — | Salida en JSON (solo formato — **no** implica consentimiento). |
+| `--registry-url <url>` | `http://localhost:4999` | URL del registry. |
+
+Clasificación por entrada: `dead` (sin proceso → deregister), `orphaned` (vivo pero sin terminal → kill con `--orphans`/`--all`), `live` (en un tty real → solo con target o `--all`), `remote` (otro host → nunca se toca, ni con `--all`).
+
+Modelo de seguridad:
+
+- Solo actúa sobre procesos del **mismo host**; las entradas remotas se ignoran siempre.
+- Un pid vivo que el scan de `/proc` no puede inspeccionar (macOS/Windows, o carrera del scan) se clasifica `live`, nunca `orphaned` — lo que no se puede inspeccionar no es candidato a kill.
+- Matar sin `-y` en modo no interactivo (`--json`, o stdin sin TTY) **falla con error** en vez de preguntar o proceder en silencio.
+- Si el SIGTERM falla, la entrada NO se deregistra (el proceso vivo se re-registraría igual; el registry se mantiene honesto).
+
+```bash
+oab prune                    # deregistra entradas muertas (sin kill)
+oab prune --dry-run --all    # plan completo sin tocar nada
+oab prune --orphans -y       # mata huérfanos sin preguntar
+oab prune ril-scraper        # poda una sesión específica por nombre
+```
 
 ---
 
@@ -543,7 +577,7 @@ Todo el estado de runtime vive en `.open-agent-bridge/` dentro del proyecto (git
 | Archivo | Contenido |
 | :--- | :--- |
 | `.open-agent-bridge/registry.json` | Meta del daemon: `{ pid, port }`. Lo escribe `oab up`, lo lee `oab down`/`status`. |
-| `.open-agent-bridge/registry.sqlite` | Conversaciones, mensajes y ACKs del canal. Se resuelve **relativo al cwd** del proceso del registry. |
+| `~/.open-agent-bridge/registry.sqlite` | Conversaciones, mensajes y ACKs del canal. **Por usuario** (homedir), independiente del cwd del registry. |
 | `.open-agent-bridge/registry.log` | stdout/stderr del daemon. |
 | `.mcp.json` | Config del cliente MCP (en la raíz del proyecto). Generado por `oab init` / `oab mcp config`. |
 

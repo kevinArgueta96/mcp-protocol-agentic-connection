@@ -17,6 +17,7 @@ function makeRegistration(id: string, overrides: Partial<AgentRegistration> = {}
       description: "",
       url: "",
       version: "1.0.0",
+      protocolVersion: "0.3.0",
       capabilities: { streaming: false, pushNotifications: false, stateTransitionHistory: false },
       defaultInputModes: ["text"],
       defaultOutputModes: ["text"],

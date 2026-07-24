@@ -18,11 +18,16 @@ export function generateAgentCard(options: CardOptions): AgentCard {
     description: `Agent for ${projectInfo.type} project at ${projectInfo.rootDir}`,
     url,
     version: "0.1.0",
+    protocolVersion: "0.3.0",
+    preferredTransport: "JSONRPC",
     provider: {
       organization: "open-agent-bridge",
     },
     capabilities: {
-      streaming: true,
+      // A2A `message/stream` (SSE) not yet wired — the /ag-ui SSE endpoint is a
+      // separate surface. ponytail: advertise false until message/stream lands,
+      // so spec clients use message/send instead of calling an absent stream.
+      streaming: false,
       pushNotifications: false,
       stateTransitionHistory: false,
     },
