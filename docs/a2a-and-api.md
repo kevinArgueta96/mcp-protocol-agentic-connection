@@ -10,9 +10,10 @@ El sistema usa JSON-RPC 2.0 sobre HTTP y WebSocket. El modelo base de mensajes y
 
 ## Agent API
 
-### `GET /.well-known/agent.json`
+### `GET /.well-known/agent-card.json`
 
-Devuelve el `AgentCard` del agente.
+Devuelve el `AgentCard` del agente (ruta de la spec A2A 0.3.0). La ruta legacy
+`/.well-known/agent.json` se mantiene como alias y devuelve lo mismo.
 
 Campos relevantes:
 
@@ -20,7 +21,9 @@ Campos relevantes:
 - `description`
 - `url`
 - `version`
-- `capabilities`
+- `protocolVersion` — versión A2A que habla el agente (`"0.3.0"`)
+- `preferredTransport` — transporte de `url` (`"JSONRPC"`)
+- `capabilities` — `streaming` es `false`: `message/stream` (SSE) no está implementado
 - `defaultInputModes`
 - `defaultOutputModes`
 - `skills`
@@ -29,7 +32,7 @@ Campos relevantes:
 Ejemplo:
 
 ```bash
-curl http://localhost:5001/.well-known/agent.json
+curl http://localhost:5001/.well-known/agent-card.json
 ```
 
 ### `POST /`
@@ -42,17 +45,23 @@ Ejemplo base:
 {
   "jsonrpc": "2.0",
   "id": "req-1",
-  "method": "tasks/send",
+  "method": "message/send",
   "params": {
     "message": {
       "role": "user",
       "parts": [
-        { "type": "text", "text": "find payment endpoint" }
+        { "kind": "text", "text": "find payment endpoint" }
       ]
     }
   }
 }
 ```
+
+**Normalización `kind`/`type`:** la spec 0.3.0 etiqueta los Parts con `kind`;
+el código interno usa `type`. El servidor acepta cualquiera de las dos en la
+entrada y emite ambas en la salida, solo en posiciones conocidas de Parts
+(`message.parts`, `history[].parts`, `status.message.parts`,
+`artifacts[].parts`) — los payloads (`data`, `metadata`) nunca se tocan.
 
 ### `GET /health`
 
@@ -85,9 +94,23 @@ No hay streaming de tareas ya implementado por este canal.
 
 ## Métodos JSON-RPC soportados
 
-### `tasks/send`
+### `message/send` (spec 0.3.0) y `tasks/send` (alias legacy)
 
-Crea una tarea, la marca como `working`, resuelve la skill y devuelve el `Task` final.
+Ambos nombres invocan el mismo handler: crea una tarea, la marca como
+`working`, resuelve la skill y devuelve el `Task` final.
+
+Formas de params aceptadas (se honran ambas):
+
+- **Spec 0.3.0 (`MessageSendParams`)**: `taskId`/`contextId` viajan DENTRO de
+  `message`. Un `message.contextId` se copia al `Task` devuelto; un
+  `message.taskId` que apunte a un task en `input-required` **reanuda** ese task
+  (única vía spec para responder a un `awaitInput`) en vez de crear uno nuevo.
+- **Draft legacy (`TaskSendParams`)**: `id`/`contextId` a nivel superior.
+
+El `Task` devuelto cumple 0.3.0: lleva `kind: "task"` (discriminador
+Message/Task) y `contextId` siempre presente (cae al id del task si el cliente
+no mandó uno). Los `Message` generados por el servidor llevan `kind: "message"`
+y `messageId`.
 
 Entrada mínima:
 
@@ -128,7 +151,7 @@ curl -X POST http://localhost:5001/ \
   -d '{
     "jsonrpc":"2.0",
     "id":"req-1",
-    "method":"tasks/send",
+    "method":"message/send",
     "params":{
       "message":{"role":"user","parts":[{"type":"text","text":"find payment endpoint"}]},
       "metadata":{"skillId":"endpoint-find","input":{"query":"payment"}}
@@ -313,6 +336,8 @@ Códigos definidos:
 
 ## Limitaciones conocidas
 
+- `message/stream` (SSE de la spec 0.3.0) no está implementado; el card anuncia `capabilities.streaming: false` para que los clientes spec usen `message/send`.
 - `tasks/sendSubscribe` esta declarado en tipos y cliente, pero no esta soportado realmente por el servidor.
 - `A2AClient.sendTaskSubscribe()` asume SSE, pero `AgentServer` no expone ese flujo hoy.
-- La respuesta de `tasks/send` devuelve el `Task` completo y no un stream incremental de artifacts.
+- La respuesta de `message/send`/`tasks/send` devuelve el `Task` completo y no un stream incremental de artifacts.
+- `securitySchemes`/`security` del card no se emiten: el servidor no implementa auth todavía.
