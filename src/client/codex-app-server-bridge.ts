@@ -229,12 +229,26 @@ export class CodexAppServerBridge extends EventEmitter {
     const listenUrl = `ws://127.0.0.1:${this.appServerPort}`;
     console.error(`[Bridge] Spawning codex app-server on ${listenUrl}`);
 
+    // The app-server — not the TUI — is what launches Codex's MCP servers, so
+    // this is where our identity has to be injected. A Codex session registers
+    // two entries (this bridge and the MCP client inside Codex); without this
+    // the inner client stayed in `global` while the bridge sat in the requested
+    // namespace, splitting the pair across the identity wall.
+    const appServerEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      AGENT_BRIDGE_PROJECT: this.projectPath,
+    };
+    if (this.identity && this.identity !== "global") {
+      appServerEnv.AGENT_BRIDGE_IDENTITY = this.identity;
+    }
+
     this.appServerProcess = spawn(
       "codex",
       ["app-server", "--enable", "tui_app_server", "--listen", listenUrl],
       {
         stdio: ["ignore", "pipe", "pipe"],
         cwd: this.projectPath,
+        env: appServerEnv,
       },
     );
 

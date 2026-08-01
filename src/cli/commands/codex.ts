@@ -11,6 +11,7 @@ import { readCurrentCodexSession, writeCurrentCodexSession } from "../../client/
 import { CodexAppServerBridge } from "../../client/codex-app-server-bridge.js";
 import { RegistryServer } from "../../registry/server.js";
 import { RegistryClient } from "../../client/registry-client.js";
+import { buildMcpServerEntry, writeCodexProjectConfig } from "../lib/mcp-config.js";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -74,6 +75,20 @@ export function registerCodexCommand(program: Command): void {
         console.log(chalk.green("✓") + " Embedded registry started on :" + registryPort);
       }
 
+      // 1b. Give the MCP client inside Codex the same identity as the bridge.
+      //     A Codex session registers two entries; `--identity` alone only
+      //     reached the bridge, leaving the inner client in `global` and the
+      //     pair split across the identity wall.
+      if (options.identity && options.identity !== "global") {
+        const entry = buildMcpServerEntry({ projectPath, identity: options.identity });
+        const { path, written } = writeCodexProjectConfig(projectPath, entry);
+        console.log(
+          written
+            ? chalk.green("✓") + ` Identity ${options.identity} declared for Codex in ${path}`
+            : chalk.dim(`  Codex MCP already declared in ${path} — leaving it as is`),
+        );
+      }
+
       // 2. Start the bridge (spawns app-server, bridge connects directly as second WS client)
       const bridge = new CodexAppServerBridge({
         registryUrl,
@@ -101,10 +116,20 @@ export function registerCodexCommand(program: Command): void {
       }) as typeof process.stderr.write;
       console.log(chalk.dim(`  Logs: ${logFile}\n`));
 
-      // 4. Spawn codex TUI directly to the app-server (no proxy)
+      // 4. Spawn codex TUI directly to the app-server (no proxy).
+      //    Identity rides in the environment exactly as `oab claude` does: a
+      //    Codex session registers TWO entries — this bridge and the MCP client
+      //    running inside Codex — and `--identity` only reached the bridge.
+      //    Leaving the inner client in `global` split the pair across two
+      //    namespaces, and identity is a hard wall, so the pairing that lets a
+      //    message addressed to the inner client reach the bridge broke.
+      const tuiEnv: NodeJS.ProcessEnv = { ...process.env, AGENT_BRIDGE_PROJECT: projectPath };
+      if (options.identity) tuiEnv.AGENT_BRIDGE_IDENTITY = options.identity;
+
       const tui = spawn("codex", ["--remote", appServerWsUrl], {
         stdio: "inherit",
         cwd: projectPath,
+        env: tuiEnv,
       });
 
       const cleanup = async () => {
