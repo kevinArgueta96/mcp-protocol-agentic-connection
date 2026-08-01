@@ -32,6 +32,7 @@ const RETRY_DELAY_MS = 5_000;
 const QUEUE_STALE_CHECK_MS = 5_000;
 const NO_TUI_QUEUE_TIMEOUT_MS = 30_000;
 const MAX_APP_SERVER_RESTARTS = 5;
+const MAX_CLIENT_RECONNECTS = 5;
 
 /**
  * Full Codex app-server bridge daemon.
@@ -82,6 +83,7 @@ export class CodexAppServerBridge extends EventEmitter {
   private noTuiWarningTimer: NodeJS.Timeout | null = null;
   private restartTimer: NodeJS.Timeout | null = null;
   private appServerRestarts = 0;
+  private clientReconnects = 0;
 
   constructor(options: CodexAppServerBridgeOptions = {}) {
     super();
@@ -268,6 +270,46 @@ export class CodexAppServerBridge extends EventEmitter {
   }
 
   /**
+   * Reconnect after the WebSocket drops while the app-server is still alive —
+   * which happens in practice, e.g. when a TUI attaches. Previously the bridge
+   * only logged the disconnect and stayed registered as healthy while being
+   * unable to deliver anything.
+   *
+   * Only handles the socket: if the process itself died, its `exit` handler
+   * owns the recovery and respawns, so we stay out of its way.
+   */
+  private scheduleClientReconnect(): void {
+    if (this.stopped || this.restartTimer) return;
+    const processAlive =
+      this.appServerProcess && !this.appServerProcess.killed && this.appServerProcess.exitCode === null;
+    if (!processAlive) return; // the exit handler will respawn it
+
+    if (this.clientReconnects >= MAX_CLIENT_RECONNECTS) {
+      console.error(`[Bridge] gave up reconnecting to the app-server after ${this.clientReconnects} attempts`);
+      return;
+    }
+    const attempt = ++this.clientReconnects;
+    const delayMs = Math.min(500 * 2 ** (attempt - 1), 10_000);
+    console.error(`[Bridge] reconnecting to app-server in ${delayMs}ms (attempt ${attempt}/${MAX_CLIENT_RECONNECTS})`);
+
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null;
+      void (async () => {
+        if (this.stopped) return;
+        try {
+          await this.client.connect();
+          this.clientReconnects = 0;
+          console.error("[Bridge] reconnected to app-server");
+          this.drainQueue();
+        } catch (err) {
+          console.error(`[Bridge] reconnect failed: ${err instanceof Error ? err.message : err}`);
+          this.scheduleClientReconnect();
+        }
+      })();
+    }, delayMs);
+  }
+
+  /**
    * Bring the app-server back after an unexpected exit. Without this the bridge
    * stayed alive but permanently unable to deliver: it kept accepting channel
    * messages into its queue with no runtime behind them.
@@ -348,6 +390,7 @@ export class CodexAppServerBridge extends EventEmitter {
 
     this.client.on("disconnected", () => {
       console.error(`[Bridge] App-server client disconnected`);
+      this.scheduleClientReconnect();
     });
   }
 
