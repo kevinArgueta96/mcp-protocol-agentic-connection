@@ -34,7 +34,16 @@ export interface CodexAppServerClientEvents {
 export interface CodexAppServerClientOptions {
   /** WebSocket URL of the codex app-server. Default: ws://127.0.0.1:4500 */
   appServerUrl?: string;
+  /** Working directory for the bridge-owned thread. Default: process.cwd() */
+  cwd?: string;
+  /** Sandbox for the bridge-owned thread. Channel work defaults to read-only. */
+  sandbox?: "read-only" | "workspace-write";
+  /** Model for the bridge-owned thread. null = let Codex pick its configured default. */
+  model?: string | null;
 }
+
+/** Identifies this client to Codex in `thread/start`. */
+const SERVICE_NAME = "open_agent_bridge";
 
 /**
  * Direct WebSocket client to the Codex app-server.
@@ -46,6 +55,9 @@ export interface CodexAppServerClientOptions {
  */
 export class CodexAppServerClient extends EventEmitter<CodexAppServerClientEvents> {
   private readonly appServerUrl: string;
+  private readonly cwd: string;
+  private readonly sandbox: "read-only" | "workspace-write";
+  private readonly model: string | null;
 
   private ws: WebSocket | null = null;
   private _initialized = false;
@@ -53,9 +65,15 @@ export class CodexAppServerClient extends EventEmitter<CodexAppServerClientEvent
   // Turn tracking
   private _turnInProgress = false;
   private activeTurnIds = new Set<string>();
+  /** Turn currently running on our own thread — the target for turn/interrupt. */
+  private _activeTurnId: string | null = null;
 
   // Thread tracking
   private _currentThreadId: string | null = null;
+  /** True once `thread/start` succeeded: we own the thread and receive its full
+   *  notification stream. When false we are back to the legacy behaviour of
+   *  piggybacking on whatever thread the TUI created. */
+  private _ownsThread = false;
 
   // Request ID management
   private nextRequestId = 1;
@@ -75,6 +93,9 @@ export class CodexAppServerClient extends EventEmitter<CodexAppServerClientEvent
   constructor(options: CodexAppServerClientOptions = {}) {
     super();
     this.appServerUrl = options.appServerUrl ?? "ws://127.0.0.1:4500";
+    this.cwd = options.cwd ?? process.cwd();
+    this.sandbox = options.sandbox ?? "read-only";
+    this.model = options.model ?? null;
   }
 
   // ── Public API ──────────────────────────────────────────────────────────────
@@ -87,6 +108,11 @@ export class CodexAppServerClient extends EventEmitter<CodexAppServerClientEvent
     return this._currentThreadId;
   }
 
+  /** True when the bridge created its own thread and no longer depends on a TUI. */
+  get ownsThread(): boolean {
+    return this._ownsThread;
+  }
+
   get initialized(): boolean {
     return this._initialized;
   }
@@ -97,6 +123,7 @@ export class CodexAppServerClient extends EventEmitter<CodexAppServerClientEvent
   async connect(): Promise<void> {
     await this.openWebSocket();
     await this.performInitialize();
+    await this.startOwnThread();
     console.error(`[CodexClient] Connected and initialized with ${this.appServerUrl}`);
   }
 
@@ -104,6 +131,69 @@ export class CodexAppServerClient extends EventEmitter<CodexAppServerClientEvent
     this.ws?.close();
     this.ws = null;
     this._initialized = false;
+    this._ownsThread = false;
+  }
+
+  /**
+   * Create a thread the bridge OWNS, instead of waiting for the TUI to create
+   * one and piggybacking on it.
+   *
+   * This is what makes channel delivery instant and independent of any TUI:
+   * as the thread owner we can always start a turn (the user's TUI turn no
+   * longer blocks us) and the app-server streams us the full notification set
+   * for that thread — `item/completed` carries the answer text directly.
+   *
+   * Non-fatal: an app-server too old to know `thread/start` leaves us in the
+   * legacy mode where `_currentThreadId` is adopted from the TUI.
+   */
+  async startOwnThread(): Promise<string | null> {
+    if (this._ownsThread && this._currentThreadId) return this._currentThreadId;
+    try {
+      const result = (await this.sendRequest("thread/start", {
+        cwd: this.cwd,
+        model: this.model,
+        approvalPolicy: "never",
+        sandbox: this.sandbox,
+        serviceName: SERVICE_NAME,
+        ephemeral: true,
+      })) as { thread?: { id?: string }; threadId?: string } | undefined;
+
+      const threadId = result?.thread?.id ?? result?.threadId ?? null;
+      if (!threadId) {
+        console.error("[CodexClient] thread/start returned no thread id — staying in TUI-follow mode");
+        return null;
+      }
+
+      this._currentThreadId = threadId;
+      this._ownsThread = true;
+      console.error(
+        `[CodexClient] Owning thread ${threadId} (sandbox=${this.sandbox}) — delivery no longer needs a TUI`,
+      );
+      this.emit("threadDetected", threadId);
+      return threadId;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[CodexClient] thread/start unavailable (${msg}) — falling back to TUI-follow mode`);
+      return null;
+    }
+  }
+
+  /**
+   * Cancel the turn currently running on our own thread. No-op when we do not
+   * own the thread — interrupting the user's TUI turn is never our call.
+   */
+  async interruptTurn(): Promise<boolean> {
+    if (!this._ownsThread || !this._currentThreadId || !this._activeTurnId) return false;
+    try {
+      await this.sendRequest("turn/interrupt", {
+        threadId: this._currentThreadId,
+        turnId: this._activeTurnId,
+      });
+      return true;
+    } catch (err) {
+      console.error(`[CodexClient] turn/interrupt failed: ${err instanceof Error ? err.message : err}`);
+      return false;
+    }
   }
 
   /**
@@ -335,6 +425,9 @@ export class CodexAppServerClient extends EventEmitter<CodexAppServerClientEvent
         // threadId is nested under params.thread.id
         const thread = params?.thread as Record<string, unknown> | undefined;
         const threadId = (thread?.id as string | undefined) ?? (params?.threadId as string | undefined);
+        // We own our thread: a thread the TUI just opened is none of our
+        // business, and adopting it would put us back to piggybacking.
+        if (this._ownsThread && threadId !== this._currentThreadId) break;
         if (threadId) {
           this._currentThreadId = threadId;
           console.error(`[CodexClient] Thread detected via thread/started: ${threadId}`);
@@ -351,11 +444,16 @@ export class CodexAppServerClient extends EventEmitter<CodexAppServerClientEvent
         const status = params?.status as Record<string, unknown> | undefined;
         const statusType = status?.type as string | undefined;
 
-        // Codex can emit thread/started for one thread and then status changes
-        // for the TUI's active thread. Track the latest status thread as the
-        // injection target; otherwise messages can sit forever behind a stale
-        // thread id.
-        if (threadId && threadId !== this._currentThreadId) {
+        // When we own a thread, status changes for the TUI's thread must not
+        // move our injection target nor mark US as busy — otherwise the user
+        // typing in their TUI would block channel delivery again.
+        if (this._ownsThread && threadId && threadId !== this._currentThreadId) break;
+
+        // Legacy TUI-follow mode: Codex can emit thread/started for one thread
+        // and then status changes for the TUI's active thread. Track the latest
+        // status thread as the injection target; otherwise messages can sit
+        // forever behind a stale thread id.
+        if (!this._ownsThread && threadId && threadId !== this._currentThreadId) {
           this._currentThreadId = threadId;
           console.error(`[CodexClient] Thread detected via status/changed: ${threadId}`);
           this.emit("threadDetected", threadId);
@@ -379,9 +477,10 @@ export class CodexAppServerClient extends EventEmitter<CodexAppServerClientEvent
       }
 
       case "turn/started": {
-        const turnId = params?.turnId as string | undefined;
+        const turnId = this.readTurnId(params);
         if (turnId) {
           this.activeTurnIds.add(turnId);
+          this._activeTurnId = turnId;
           this._turnInProgress = true;
           this.emit("turnStarted", turnId);
         }
@@ -389,9 +488,10 @@ export class CodexAppServerClient extends EventEmitter<CodexAppServerClientEvent
       }
 
       case "turn/completed": {
-        const turnId = params?.turnId as string | undefined;
+        const turnId = this.readTurnId(params);
         if (turnId) {
           this.activeTurnIds.delete(turnId);
+          if (this._activeTurnId === turnId) this._activeTurnId = null;
           if (this.activeTurnIds.size === 0) {
             this._turnInProgress = false;
           }
@@ -455,6 +555,12 @@ export class CodexAppServerClient extends EventEmitter<CodexAppServerClientEvent
     }
   }
 
+  /** Turn id lives at `params.turn.id`; older drafts used a flat `params.turnId`. */
+  private readTurnId(params: Record<string, unknown> | undefined): string | undefined {
+    const turn = params?.turn as Record<string, unknown> | undefined;
+    return (turn?.id as string | undefined) ?? (params?.turnId as string | undefined);
+  }
+
   // ── Thread subscription ────────────────────────────────────────────────────
 
   /**
@@ -463,6 +569,8 @@ export class CodexAppServerClient extends EventEmitter<CodexAppServerClientEvent
    * the TUI connection that created/owns the thread.
    */
   private async subscribeToThread(threadId: string): Promise<void> {
+    // Owning the thread already gives us its full notification stream.
+    if (this._ownsThread) return;
     try {
       const result = await this.sendRequest("thread/resume", { threadId });
       console.error(`[CodexClient] thread/resume result: ${JSON.stringify(result)}`);

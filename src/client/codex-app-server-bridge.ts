@@ -89,6 +89,10 @@ export class CodexAppServerBridge extends EventEmitter {
 
     this.client = new CodexAppServerClient({
       appServerUrl: `ws://127.0.0.1:${this.appServerPort}`,
+      cwd: this.projectPath,
+      // Channel traffic is answered in a bridge-owned thread, so we declare its
+      // permissions explicitly instead of inheriting whatever the TUI negotiated.
+      sandbox: "read-only",
     });
 
     this.channelTransport = new ChannelTransport({ registryUrl: this.registryUrl });
@@ -144,8 +148,13 @@ export class CodexAppServerBridge extends EventEmitter {
     this.scheduleNoTuiWarning();
 
     const appServerWsUrl = `ws://127.0.0.1:${this.appServerPort}`;
-    console.error(`[Bridge] Ready. Start Codex TUI with:`);
-    console.error(`  codex --remote ${appServerWsUrl}`);
+    if (this.client.ownsThread) {
+      console.error(`[Bridge] Ready — answering channel messages in thread ${this.client.currentThreadId}.`);
+      console.error(`  Attach a TUI any time with: codex --remote ${appServerWsUrl}`);
+    } else {
+      console.error(`[Bridge] Ready. Start Codex TUI with:`);
+      console.error(`  codex --remote ${appServerWsUrl}`);
+    }
   }
 
   private startPeriodicSync(periodMs = 5 * 60_000): void {
@@ -163,6 +172,8 @@ export class CodexAppServerBridge extends EventEmitter {
   }
 
   private scheduleNoTuiWarning(delayMs = 10_000): void {
+    // Owning a thread means delivery never depends on a TUI — nothing to warn about.
+    if (this.client.ownsThread) return;
     if (this.noTuiWarningTimer) return;
     this.noTuiWarningTimer = setTimeout(() => {
       this.noTuiWarningTimer = null;
