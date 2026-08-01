@@ -11,10 +11,12 @@
   },
   "plugins": [
     {
-      "name": "open-agent-bridge",
+      "name": "oab",
       "description": "Message your other local Claude Code, Codex, OpenCode and Antigravity sessions.",
       "version": "0.1.0",
-      "author": { "name": "kargueta" },
+      "author": {
+        "name": "kargueta"
+      },
       "source": "./plugins/open-agent-bridge",
       "category": "agents",
       "homepage": "https://github.com/kevinArgueta96/open-agent-bridge"

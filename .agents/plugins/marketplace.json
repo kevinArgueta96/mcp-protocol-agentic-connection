@@ -5,7 +5,7 @@
   },
   "plugins": [
     {
-      "name": "open-agent-bridge",
+      "name": "oab",
       "source": {
         "source": "local",
         "path": "./plugins/open-agent-bridge"

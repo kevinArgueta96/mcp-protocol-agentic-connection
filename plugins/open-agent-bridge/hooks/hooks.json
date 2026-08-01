@@ -1,0 +1,27 @@
+{
+  "description": "Keeps the local registry running while a session is open, and reaps its entry when the session ends.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "open-agent-bridge up >/dev/null 2>&1 || true",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "open-agent-bridge prune >/dev/null 2>&1 || true",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}
