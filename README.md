@@ -83,6 +83,36 @@ oab init                      # interactive wizard (identity + clients)
 oab claude --identity dev
 ```
 
+### Or install it as a plugin
+
+The repo doubles as a plugin marketplace for both CLIs. The plugin registers the
+MCP server, ships the `agent-bridge` skill, and (on Claude Code) adds the
+`/oab:*` commands and session hooks — no `.mcp.json` editing.
+
+```bash
+# Claude Code
+/plugin marketplace add kevinArgueta96/open-agent-bridge
+/plugin install oab@open-agent-bridge
+
+# Codex — same repo, its own marketplace manifest
+codex plugin marketplace add kevinArgueta96/open-agent-bridge
+codex plugin add oab@open-agent-bridge
+```
+
+The plugin invokes the globally installed `open-agent-bridge` binary, so run
+`bash bin/install.sh` (or `npm install -g open-agent-bridge` once published)
+first. Run `/oab:setup` to verify everything is wired.
+
+| Surface | Claude Code | Codex |
+| :--- | :--- | :--- |
+| MCP server (`.mcp.json`) | ✅ | ✅ |
+| `agent-bridge` skill | ✅ | ✅ |
+| `/oab:setup`, `/oab:peers`, `/oab:send`, `/oab:inbox` | ✅ | — |
+| SessionStart / SessionEnd hooks | ✅ | — |
+
+Codex plugins only support skills and MCP servers, so anything Codex must also
+understand lives in the skill rather than in a command.
+
 That's it — no dedicated terminal for the registry, no manual `.mcp.json` editing. Claude Code now has six MCP tools: `agent_bridge_guide`, `list_agents`, `channel_inbox`, `channel_clear`, `message_client_session`, `reply`.
 
 Prefer explicit commands? The wizard is optional:
@@ -324,7 +354,22 @@ open-agent-bridge codex app-bridge --project "/absolute/path/to/your/project"
 codex --remote ws://127.0.0.1:4500
 ```
 
-A plain `codex` command starts an isolated session. The registry may still see an inner MCP client, but the bridge cannot inject automatic turns into that TUI. If no remote TUI attaches to the bridge app-server, queued messages fail with a detail that tells you to run `codex --remote ws://127.0.0.1:<port>`.
+**The bridge owns its own Codex thread.** On connect it calls `thread/start`, so
+channel messages are answered whether or not a TUI is attached, and a turn the
+user is running in their TUI can never block delivery. Being the thread owner
+also means the app-server streams it the full notification set, so the answer is
+read from `item/completed` instead of being guessed from the turn response. That
+thread declares `sandbox: read-only` and `approvalPolicy: never` explicitly
+rather than inheriting whatever the TUI negotiated.
+
+The trade-off: channel traffic lives in its own Codex thread, so it does not
+appear in the user's TUI. The bridge prints the thread id at startup, and
+`codex resume <id>` reopens that conversation.
+
+A plain `codex` command still starts an isolated session that the bridge cannot
+inject into; attach with `codex --remote ws://127.0.0.1:<port>` if you want the
+TUI wired to the same app-server. On an app-server too old to know
+`thread/start`, the bridge falls back to following the TUI's thread as before.
 
 ### Antigravity (agy)
 
