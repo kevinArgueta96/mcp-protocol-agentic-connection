@@ -31,6 +31,7 @@ const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 5_000;
 const QUEUE_STALE_CHECK_MS = 5_000;
 const NO_TUI_QUEUE_TIMEOUT_MS = 30_000;
+const MAX_APP_SERVER_RESTARTS = 5;
 
 /**
  * Full Codex app-server bridge daemon.
@@ -79,6 +80,8 @@ export class CodexAppServerBridge extends EventEmitter {
    *  attached to the app-server thread yet. */
   private queueHealthTimer: NodeJS.Timeout | null = null;
   private noTuiWarningTimer: NodeJS.Timeout | null = null;
+  private restartTimer: NodeJS.Timeout | null = null;
+  private appServerRestarts = 0;
 
   constructor(options: CodexAppServerBridgeOptions = {}) {
     super();
@@ -187,6 +190,15 @@ export class CodexAppServerBridge extends EventEmitter {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
+    // Cancel a turn we started rather than leaving Codex burning tokens on an
+    // answer nobody will read.
+    if (this.client.turnInProgress) {
+      await this.client.interruptTurn();
+    }
     if (this.periodicSyncTimer) {
       clearInterval(this.periodicSyncTimer);
       this.periodicSyncTimer = null;
@@ -233,12 +245,51 @@ export class CodexAppServerBridge extends EventEmitter {
       process.stderr.write(`[app-server] ${d.toString()}`);
     });
     this.appServerProcess.on("exit", (code) => {
-      if (!this.stopped) {
-        console.error(`[Bridge] app-server exited (code ${code ?? "unknown"})`);
-      }
+      if (this.stopped) return;
+      console.error(`[Bridge] app-server exited (code ${code ?? "unknown"})`);
+      this.scheduleAppServerRestart();
     });
 
     await this.waitForAppServer(listenUrl);
+  }
+
+  /**
+   * Bring the app-server back after an unexpected exit. Without this the bridge
+   * stayed alive but permanently unable to deliver: it kept accepting channel
+   * messages into its queue with no runtime behind them.
+   *
+   * Reconnecting re-runs `thread/start`, so the bridge owns a fresh thread —
+   * the previous one died with the process anyway.
+   */
+  private scheduleAppServerRestart(): void {
+    if (this.stopped || this.restartTimer) return;
+    if (this.appServerRestarts >= MAX_APP_SERVER_RESTARTS) {
+      console.error(
+        `[Bridge] app-server exited ${this.appServerRestarts} times — giving up. ` +
+          `Restart the bridge once Codex is healthy.`,
+      );
+      return;
+    }
+    const attempt = ++this.appServerRestarts;
+    const delayMs = Math.min(1_000 * 2 ** (attempt - 1), 15_000);
+    console.error(`[Bridge] restarting app-server in ${delayMs}ms (attempt ${attempt}/${MAX_APP_SERVER_RESTARTS})`);
+
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null;
+      void (async () => {
+        if (this.stopped) return;
+        try {
+          this.client.disconnect();
+          await this.spawnAppServer();
+          await this.client.connect();
+          console.error("[Bridge] app-server restarted and reconnected");
+          this.drainQueue();
+        } catch (err) {
+          console.error(`[Bridge] app-server restart failed: ${err instanceof Error ? err.message : err}`);
+          this.scheduleAppServerRestart();
+        }
+      })();
+    }, delayMs);
   }
 
   private async waitForAppServer(wsUrl: string, maxWaitMs = 15_000): Promise<void> {
