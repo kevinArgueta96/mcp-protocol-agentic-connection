@@ -108,10 +108,12 @@ first. Run `/oab:setup` to verify everything is wired.
 | MCP server (`.mcp.json`) | ✅ | ✅ |
 | `agent-bridge` skill | ✅ | ✅ |
 | `/oab:setup`, `/oab:peers`, `/oab:send`, `/oab:inbox` | ✅ | — |
-| SessionStart / SessionEnd hooks | ✅ | — |
+| SessionStart / SessionEnd hooks | ✅ | ✅ (SessionEnd clamped to 3s) |
 
-Codex plugins only support skills and MCP servers, so anything Codex must also
-understand lives in the skill rather than in a command.
+The curated Codex plugins declare only skills, apps and MCP servers, but the
+runtime does read a plugin's `hooks.json` — it just caps SessionEnd hooks at
+three seconds. Commands remain Claude Code only, so anything Codex must also
+understand belongs in the skill rather than in a command.
 
 That's it — no dedicated terminal for the registry, no manual `.mcp.json` editing. Claude Code now has six MCP tools: `agent_bridge_guide`, `list_agents`, `channel_inbox`, `channel_clear`, `message_client_session`, `reply`.
 

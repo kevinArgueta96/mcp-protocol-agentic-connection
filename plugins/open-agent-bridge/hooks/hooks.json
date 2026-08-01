@@ -18,7 +18,8 @@
           {
             "type": "command",
             "command": "open-agent-bridge prune >/dev/null 2>&1 || true",
-            "timeout": 15
+            "_comment": "3s, not more: Codex clamps SessionEnd hooks to 3s and warns about anything higher. A local prune is a couple of HTTP calls, so it fits.",
+            "timeout": 3
           }
         ]
       }
